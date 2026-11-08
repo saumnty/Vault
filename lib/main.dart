@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'features/auth/screens/pin_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -11,16 +12,16 @@ class VaultApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Vault App',
+      title: 'Vault',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.deepPurple,
-          brightness: Brightness.dark, // Modo oscuro ideal para apps de seguridad
+          brightness: Brightness.dark,
         ),
         useMaterial3: true,
       ),
-      home: const SkeletonHomeView(),
+      home: const PinScreen(),
     );
   }
 }
