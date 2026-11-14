@@ -41,7 +41,8 @@ class VaultImportService {
       final destFilePath = '${appDir.path}/$itemId.vault';
       final destFile = File(destFilePath);
 
-      // 4. Cifrar por bloques de 1 MB
+      // 4. Cifrar en formato .vault v2 (bloques de 1 MiB, streaming).
+      // Si falla, encryptFile borra el destino parcial y lanza excepción.
       await _cryptoService.encryptFile(sourceFile, destFile, filesKey);
 
       // Verificar que el archivo cifrado realmente se creó en el sandbox

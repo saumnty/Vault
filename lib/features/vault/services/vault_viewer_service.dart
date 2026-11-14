@@ -1,14 +1,19 @@
 import 'dart:io';
 import 'package:cryptography/cryptography.dart';
+import '../../../core/crypto/crypto_service.dart';
 import '../../../core/services/cache_manager.dart';
 import '../../../data/services/google_drive_service.dart';
 
 class VaultViewerService {
   final CacheManager _cacheManager = CacheManager.instance;
   final GoogleDriveService _driveService = GoogleDriveService();
-  final AesGcm _aes = AesGcm.with256bits();
+  final CryptoService _cryptoService = CryptoService();
 
-  /// Obtiene el archivo listo para mostrarse (en texto plano temporal) bajo demanda
+  /// Obtiene el archivo listo para mostrarse (en texto plano temporal) bajo demanda.
+  ///
+  /// [secretKey] debe ser la subllave "files" (`VaultSession().filesKey`).
+  // TODO(F6): sustituir el archivo plano temporal por streaming con
+  // CryptoService.openReader (lectura por rangos) y caché cifrada.
   Future<File?> getPlainFileForViewing({
     required String cloudId,
     required String fileName,
@@ -25,41 +30,27 @@ class VaultViewerService {
 
       // 2. Si no está en caché, descargarlo cifrado desde Google Drive (appDataFolder)
       final tempEncryptedFile = File('${cacheDir.path}/enc_$fileName');
-      final downloaded = await _driveService.downloadEncryptedFile(cloudId, tempEncryptedFile);
+      try {
+        final downloaded = await _driveService.downloadEncryptedFile(
+          cloudId,
+          tempEncryptedFile,
+        );
+        if (!downloaded) return null;
 
-      if (!downloaded) return null;
-      final downloadedFile = tempEncryptedFile;
-
-      // 3. Leer los bytes cifrados (nonce + mac + cipherText)
-      // TODO(F6): no coincide con el formato por bloques de CryptoService.encryptFile.
-      final encryptedBytes = await downloadedFile.readAsBytes();
-      
-      // Extraer componentes del empaquetado binario
-      final nonce = encryptedBytes.sublist(0, 12);
-      final macBytes = encryptedBytes.sublist(12, 28);
-      final cipherText = encryptedBytes.sublist(28);
-
-      final secretBox = SecretBox(
-        cipherText,
-        nonce: nonce,
-        mac: Mac(macBytes),
-      );
-
-      // 4. Descifrar usando AES-GCM con la llave maestra (DEK)
-      final decryptedBytes = await _aes.decrypt(
-        secretBox,
-        secretKey: secretKey,
-      );
-
-      // 5. Guardar temporalmente en texto plano en la caché para visualización inmediata
-      await localPlainFile.writeAsBytes(decryptedBytes);
-
-      // Limpiar el archivo cifrado temporal descargado
-      if (await downloadedFile.exists()) {
-        await downloadedFile.delete();
+        // 3. Descifrar el .vault v2 en streaming. Si falla la autenticación,
+        // decryptFile borra el archivo plano parcial y lanza excepción.
+        await _cryptoService.decryptFile(
+          tempEncryptedFile,
+          localPlainFile,
+          secretKey,
+        );
+        return localPlainFile;
+      } finally {
+        // Limpiar el archivo cifrado temporal descargado
+        if (await tempEncryptedFile.exists()) {
+          await tempEncryptedFile.delete();
+        }
       }
-
-      return localPlainFile;
     } catch (e) {
       return null;
     }

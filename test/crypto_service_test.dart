@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/core/crypto/crypto_service.dart';
 import 'package:vault/core/crypto/kdf.dart';
@@ -23,26 +22,14 @@ void main() {
 
     tearDown(() => tmp.delete(recursive: true));
 
-    test('encryptFile/decryptFile ida y vuelta (varios bloques)', () async {
-      // 2,5 MB → 3 bloques de 1 MB.
-      final data = List<int>.generate(2621440, (i) => (i * 31) % 256);
-      final src = File('${tmp.path}/src.bin')..writeAsBytesSync(data);
-      final enc = File('${tmp.path}/src.vault');
-      final out = File('${tmp.path}/src.out');
-
-      await crypto.encryptFile(src, enc, keys.files);
-      expect(enc.readAsBytesSync().sublist(0, 4), [86, 76, 84, 1]);
-      await crypto.decryptFile(enc, out, keys.files);
-      expect(out.readAsBytesSync(), data);
-    });
-
+    // Las pruebas del formato .vault v2 están en vault_file_format_test.dart.
     test('otra subllave no descifra', () async {
       final src = File('${tmp.path}/a.bin')..writeAsBytesSync([1, 2, 3]);
       final enc = File('${tmp.path}/a.vault');
       await crypto.encryptFile(src, enc, keys.files);
       await expectLater(
         crypto.decryptFile(enc, File('${tmp.path}/a.out'), keys.thumbs),
-        throwsA(isA<SecretBoxAuthenticationError>()),
+        throwsA(isA<VaultAuthException>()),
       );
     });
 

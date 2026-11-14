@@ -3,20 +3,33 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 
+import 'vault_file_format.dart';
+
+export 'vault_file_format.dart'
+    show
+        VaultCryptoException,
+        VaultFormatException,
+        VaultAuthException,
+        VaultHeader,
+        VaultFileReader;
+
 typedef StringMap = Map<String, String>;
 
-/// Cifrado de archivos `.vault` (formato v1, se reemplaza en F2).
+/// Fachada de cifrado de la app.
 ///
-/// La llave que recibe debe ser la subllave "files" de la jerarquía
-/// (`VaultSession().keys.files`), nunca la DEK ni algo derivado del PIN.
-/// La derivación del PIN vive ahora en `kdf.dart` / `auth_controller.dart`.
+/// * Archivos y bytes: formato `.vault` v2 (ver `vault_file_format.dart` para
+///   el layout byte a byte). Llave = subllave "files" (`VaultSession().filesKey`)
+///   para archivos y "thumbs" para miniaturas; nunca la DEK ni algo derivado
+///   del PIN.
+/// * Textos cortos: [encryptData]/[decryptData] (AES-GCM, usado por
+///   VaultRepository).
+///
+/// Errores de formato → [VaultFormatException]; de autenticación (llave
+/// incorrecta, alteración, reordenado, truncado, bloque ajeno) →
+/// [VaultAuthException].
 class CryptoService {
   final AesGcm _aes = AesGcm.with256bits();
-
-  // 1 MB por bloque (optimiza RAM y velocidad)
-  static const int _chunkSize = 1024 * 1024;
-  // "VLT" + Versión 1
-  static const List<int> _magicHeader = [86, 76, 84, 1];
+  final VaultFileFormat _format = VaultFileFormat();
 
   /// Cifra un texto corto (AES-256-GCM). Usado por VaultRepository.
   Future<StringMap> encryptData(String plainText, SecretKey secretKey) async {
@@ -49,101 +62,65 @@ class CryptoService {
   }
 
   // =====================================================================
-  // CIFRADO POR BLOQUES (ARCHIVOS PESADOS)
+  // ARCHIVOS .vault v2
   // =====================================================================
 
-  /// Cifra un archivo físico por bloques de 1MB hacia un nuevo archivo `.vault`
-  Future<void> encryptFile(
+  /// Cifra [sourceFile] hacia [destFile] en streaming. Devuelve el
+  /// encabezado (fileId) generado. Si falla, [destFile] se borra.
+  Future<VaultHeader> encryptFile(
     File sourceFile,
     File destFile,
-    SecretKey masterKey,
-  ) async {
-    final raf = await sourceFile.open(mode: FileMode.read);
-    final sink = destFile.openWrite();
-    final length = await raf.length();
-    int offset = 0;
+    SecretKey filesKey, {
+    int blockSize = VaultHeader.defaultBlockSize,
+  }) =>
+      _format.encryptFile(sourceFile, destFile, filesKey, blockSize: blockSize);
 
-    // 1. Escribir Encabezado Global
-    sink.add(_magicHeader);
-
-    // 2. Procesar por bloques
-    while (offset < length) {
-      final bytesToRead = (length - offset < _chunkSize)
-          ? (length - offset)
-          : _chunkSize;
-      final chunk = await raf.read(bytesToRead);
-      offset += bytesToRead;
-
-      final nonce = _aes.newNonce();
-      final secretBox = await _aes.encrypt(
-        chunk,
-        secretKey: masterKey,
-        nonce: nonce,
-      );
-
-      // Calcular tamaño del ciphertext en 4 bytes (Endianness little)
-      final lengthData = ByteData(4);
-      lengthData.setUint32(0, secretBox.cipherText.length, Endian.little);
-
-      // Escribir bloque: Tamaño -> Nonce -> MAC -> Ciphertext
-      sink.add(lengthData.buffer.asUint8List());
-      sink.add(nonce);
-      sink.add(secretBox.mac.bytes);
-      sink.add(secretBox.cipherText);
-    }
-
-    await raf.close();
-    await sink.close();
-  }
-
-  /// Descifra un archivo `.vault` por bloques hacia un archivo temporal
+  /// Descifra un `.vault` completo en streaming. Si falla, [destFile] se
+  /// borra y se relanza la excepción.
   Future<void> decryptFile(
     File encryptedFile,
     File destFile,
-    SecretKey masterKey,
+    SecretKey filesKey,
+  ) => _format.decryptFile(encryptedFile, destFile, filesKey);
+
+  /// Descifra solo el bloque [index] de un `.vault`.
+  Future<Uint8List> decryptBlock(
+    File encryptedFile,
+    int index,
+    SecretKey filesKey,
+  ) => _format.decryptBlock(encryptedFile, index, filesKey);
+
+  /// Abre un lector con acceso aleatorio (bloques, rangos, stream).
+  /// Con [verifyFinal] autentica de entrada la longitud total.
+  Future<VaultFileReader> openReader(
+    File encryptedFile,
+    SecretKey filesKey, {
+    bool verifyFinal = true,
+  }) => VaultFileReader.open(encryptedFile, filesKey, verifyFinal: verifyFinal);
+
+  /// Lee [length] bytes en claro desde [offset] (recortado al final).
+  Future<Uint8List> readRange(
+    File encryptedFile,
+    int offset,
+    int length,
+    SecretKey filesKey,
   ) async {
-    final raf = await encryptedFile.open(mode: FileMode.read);
-    final length = await raf.length();
-
-    // 1. Validar Encabezado
-    final header = await raf.read(4);
-    for (int i = 0; i < 4; i++) {
-      if (header[i] != _magicHeader[i]) {
-        await raf.close();
-        throw Exception('Archivo corrupto o versión no soportada.');
-      }
-    }
-
-    final sink = destFile.openWrite();
-    int offset = 4; // Empezamos después del encabezado
-
-    // try/finally: cerrar los descriptores aunque falle la autenticación
-    // (en Windows un archivo abierto no se puede borrar).
+    final reader = await openReader(encryptedFile, filesKey);
     try {
-      // 2. Leer y descifrar por bloques
-      while (offset < length) {
-        final lengthBytes = await raf.read(4);
-        final cipherLen = ByteData.sublistView(
-          Uint8List.fromList(lengthBytes),
-        ).getUint32(0, Endian.little);
-
-        final nonce = await raf.read(12);
-        final mac = await raf.read(16);
-        final cipherText = await raf.read(cipherLen);
-
-        final secretBox = SecretBox(cipherText, nonce: nonce, mac: Mac(mac));
-        final plainTextBytes = await _aes.decrypt(
-          secretBox,
-          secretKey: masterKey,
-        );
-
-        sink.add(plainTextBytes);
-
-        offset += 4 + 12 + 16 + cipherLen; // Tamaño + Nonce + MAC + Ciphertext
-      }
+      return await reader.readRange(offset, length);
     } finally {
-      await raf.close();
-      await sink.close();
+      await reader.close();
     }
   }
+
+  /// Cifra bytes en memoria con el formato v2 (miniaturas: subllave "thumbs").
+  Future<Uint8List> encryptBytes(
+    List<int> plain,
+    SecretKey key, {
+    int blockSize = VaultHeader.defaultBlockSize,
+  }) => _format.encryptBytes(plain, key, blockSize: blockSize);
+
+  /// Inverso de [encryptBytes].
+  Future<Uint8List> decryptBytes(List<int> encrypted, SecretKey key) =>
+      _format.decryptBytes(encrypted, key);
 }
