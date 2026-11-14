@@ -10,12 +10,12 @@ class VaultMediaViewerScreen extends StatefulWidget {
   final SecretKey secretKey;
 
   const VaultMediaViewerScreen({
-    Key? key,
+    super.key,
     required this.cloudId,
     required this.fileName,
     required this.mimeType,
     required this.secretKey,
-  }) : super(key: key);
+  });
 
   @override
   State<VaultMediaViewerScreen> createState() => _VaultMediaViewerScreenState();

@@ -57,6 +57,9 @@ class VaultDatabase {
   factory VaultDatabase() => _instance;
   VaultDatabase._internal();
 
+  /// Instancia única (equivalente a `VaultDatabase()`).
+  static VaultDatabase get instance => _instance;
+
   Future<Database> get database async {
     if (_database != null) return _database!;
     _database = await _initDB('vault_secure.db');
@@ -69,6 +72,7 @@ class VaultDatabase {
 
     return await openDatabase(
       path,
+      // TODO(F3): usar la subllave "sqlcipher" de VaultSession().keys.
       password: 'temporal_dev_password',
       version: 2, // Subimos versión para aplicar migración de la tabla items
       onCreate: _createDB,

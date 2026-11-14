@@ -42,3 +42,9 @@ android {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // biometric_storage exige que el tema de la Activity herede de Theme.AppCompat
+    // (si no, BiometricPrompt falla en Android < 10). Ver styles.xml.
+    implementation("androidx.appcompat:appcompat:1.7.0")
+}

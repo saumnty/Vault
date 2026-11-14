@@ -6,9 +6,9 @@ Rama de trabajo: `dev-claude` (no se hace push ni se toca main sin petición).
 
 | Fase | Descripción | Modelo | Estado |
 |---|---|---|---|
-| F0 | Auditoría | Sonnet | 🧪 hecha ← estás aquí (esperando "sigue") |
-| F1 | Llaves (DEK, KEK_pin, KEK_rec, biometría, HKDF, retraso) | Opus/Fable | ⬜ |
-| F2 | Formato .vault v2 | Opus/Fable | ⬜ |
+| F0 | Auditoría | Sonnet | 🧪 hecha |
+| F1 | Llaves (DEK, KEK_pin, KEK_rec, biometría, HKDF, retraso) | Opus | 🧪 analyze/test/build apk OK; biometría real sin probar |
+| F2 | Formato .vault v2 | Opus/Fable | ⬜ ← estás aquí |
 | F3 | Base de datos (esquema, rutas relativas) | Sonnet | ⬜ |
 | F4 | Importación desde la galería | Sonnet | ⬜ |
 | F5 | Sincronización con Drive | Sonnet | ⬜ |

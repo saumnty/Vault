@@ -8,8 +8,8 @@ class VaultPreferenceService {
   final CacheManager _cacheManager = CacheManager.instance;
 
   /// Alternar estado de Favorito
-  Future<void> toggleFavorite(String dbKey, String itemId, bool currentStatus) async {
-    final db = await VaultDatabase.instance.database(dbKey);
+  Future<void> toggleFavorite(String itemId, bool currentStatus) async {
+    final db = await VaultDatabase.instance.database;
     await db.update(
       'vault_items',
       {'isFavorite': currentStatus ? 0 : 1},
@@ -19,17 +19,17 @@ class VaultPreferenceService {
   }
 
   /// Alternar modo Sin Conexión (Offline Mode)
-  Future<bool> toggleOfflineMode(String dbKey, String itemId, String cloudId, String fileName, bool makeOffline) async {
+  Future<bool> toggleOfflineMode(String itemId, String cloudId, String fileName, bool makeOffline) async {
     try {
-      final db = await VaultDatabase.instance.database(dbKey);
+      final db = await VaultDatabase.instance.database;
       final cacheDir = await _cacheManager.getCacheDirectory();
       final targetFile = File('${cacheDir.path}/$fileName');
 
       if (makeOffline) {
         // Si se marca como offline, debemos asegurar que el archivo cifrado esté descargado localmente
         if (!await targetFile.exists()) {
-          final downloaded = await _driveService.downloadEncryptedFile(cloudId, targetFile.path);
-          if (downloaded == null) return false;
+          final downloaded = await _driveService.downloadEncryptedFile(cloudId, targetFile);
+          if (!downloaded) return false;
         }
       }
 

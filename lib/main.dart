@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'core/crypto/auth_controller.dart';
 import 'features/auth/pin_screen.dart';
 import 'features/vault/home_vault_screen.dart';
 
@@ -27,7 +28,10 @@ void main() async {
 }
 
 class VaultApp extends StatelessWidget {
-  const VaultApp({Key? key}) : super(key: key);
+  const VaultApp({super.key, this.authController});
+
+  /// Inyectable para pruebas; por defecto usa almacenamiento y biometría reales.
+  final AuthController? authController;
 
   @override
   Widget build(BuildContext context) {
@@ -47,20 +51,24 @@ class VaultApp extends StatelessWidget {
         fontFamily: 'Inter', // O tu tipografía predeterminada
       ),
       // El punto de entrada inicial arranca en la pantalla de PIN / Autenticación
-      home: const VaultRootNavigator(),
+      home: VaultRootNavigator(authController: authController),
     );
   }
 }
 
 /// Administrador de rutas raíz que decide entre el muro de seguridad y la bóveda
 class VaultRootNavigator extends StatefulWidget {
-  const VaultRootNavigator({Key? key}) : super(key: key);
+  const VaultRootNavigator({super.key, this.authController});
+
+  final AuthController? authController;
 
   @override
   State<VaultRootNavigator> createState() => _VaultRootNavigatorState();
 }
 
 class _VaultRootNavigatorState extends State<VaultRootNavigator> {
+  late final AuthController _authController =
+      widget.authController ?? AuthController();
   bool _isAuthenticated = false;
 
   void _handleAuthenticationSuccess() {
@@ -74,6 +82,7 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
     if (!_isAuthenticated) {
       // Si no está autenticado, mostramos obligatoriamente el PinScreen
       return PinScreen(
+        authController: _authController,
         onAuthenticated: _handleAuthenticationSuccess,
       );
     } else {

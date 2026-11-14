@@ -7,7 +7,7 @@ class CacheManager {
   CacheManager._init();
 
   // Límite máximo de caché local (Ejemplo: 500 MB)
-  static const int maxCacheSizeBytes = 500 * 1024 * 1024; 
+  static const int maxCacheSizeBytes = 500 * 1024 * 1024;
 
   Future<Directory> getCacheDirectory() async {
     final appDir = await getApplicationDocumentsDirectory();
@@ -20,7 +20,7 @@ class CacheManager {
 
   /// Verifica si la caché excede el límite y borra los archivos más antiguos (LRU),
   /// omitiendo aquellos que estén marcados como 'isOffline' en SQLCipher.
-  Future<void> enforceLruLimit(String dbKey) async {
+  Future<void> enforceLruLimit() async {
     final cacheDir = await getCacheDirectory();
     if (!await cacheDir.exists()) return;
 
@@ -41,7 +41,8 @@ class CacheManager {
       });
 
       // Abrir conexión a la base de datos para verificar el estado de cada archivo
-      final db = await VaultDatabase.instance.database(dbKey);
+      // TODO(F3): columnas localPath/originalName aún no existen en el esquema.
+      final db = await VaultDatabase.instance.database;
 
       // Eliminar archivos hasta liberar espacio
       for (var file in files) {
@@ -82,8 +83,8 @@ class CacheManager {
     return await file.exists();
   }
 
-  Future<File> cacheFile(String fileName, List<int> bytes, String dbKey) async {
-    await enforceLruLimit(dbKey); // Aplicar limpieza pasando la llave de la BD
+  Future<File> cacheFile(String fileName, List<int> bytes) async {
+    await enforceLruLimit();
     final cacheDir = await getCacheDirectory();
     final file = File('${cacheDir.path}/$fileName');
     await file.writeAsBytes(bytes);

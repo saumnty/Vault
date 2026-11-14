@@ -1,7 +1,7 @@
+import 'package:flutter/foundation.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:sqflite_sqlcipher/sqflite.dart';
 import 'package:uuid/uuid.dart';
 import '../../core/crypto/crypto_service.dart';
 import '../../core/session/vault_session.dart';
@@ -19,8 +19,9 @@ class VaultImportService {
   }) async {
     try {
       // 1. Verificar sesión activa
-      final masterKey = VaultSession().masterKey;
-      if (masterKey == null) return false;
+      // Subllave "files" de la jerarquía (HKDF de la DEK), no la DEK.
+      final filesKey = VaultSession().filesKey;
+      if (filesKey == null) return false;
 
       // 2. Seleccionar archivo
       FilePickerResult? result = await FilePicker.platform.pickFiles(
@@ -41,7 +42,7 @@ class VaultImportService {
       final destFile = File(destFilePath);
 
       // 4. Cifrar por bloques de 1 MB
-      await _cryptoService.encryptFile(sourceFile, destFile, masterKey);
+      await _cryptoService.encryptFile(sourceFile, destFile, filesKey);
 
       // Verificar que el archivo cifrado realmente se creó en el sandbox
       if (!await destFile.exists()) return false;
@@ -68,13 +69,13 @@ class VaultImportService {
             await sourceFile.delete();
           }
         } catch (e) {
-          print('No se pudo borrar el archivo original del sistema: $e');
+          debugPrint('No se pudo borrar el archivo original del sistema: $e');
         }
       }
 
       return true;
     } catch (e) {
-      print('Error al importar y cifrar archivo: $e');
+      debugPrint('Error al importar y cifrar archivo: $e');
       return false;
     }
   }

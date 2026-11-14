@@ -21,6 +21,10 @@ plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
     id("com.android.application") version "8.11.1" apply false
     id("org.jetbrains.kotlin.android") version "2.2.20" apply false
+    // biometric_storage 5.0.1 declara `kotlin { jvmToolchain(17) }`: exige un
+    // JDK 17 exacto. Este plugin permite que Gradle lo descargue (foojay.io)
+    // si la máquina solo tiene otro JDK (p. ej. el JBR 21 de Android Studio).
+    id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
 include(":app")

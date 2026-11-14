@@ -2,12 +2,10 @@ import 'dart:io';
 import 'package:cryptography/cryptography.dart';
 import '../../../core/services/cache_manager.dart';
 import '../../../data/services/google_drive_service.dart';
-import '../../../core/crypto/crypto_service.dart';
 
 class VaultViewerService {
   final CacheManager _cacheManager = CacheManager.instance;
   final GoogleDriveService _driveService = GoogleDriveService();
-  final CryptoService _cryptoService = CryptoService();
   final AesGcm _aes = AesGcm.with256bits();
 
   /// Obtiene el archivo listo para mostrarse (en texto plano temporal) bajo demanda
@@ -27,11 +25,13 @@ class VaultViewerService {
 
       // 2. Si no está en caché, descargarlo cifrado desde Google Drive (appDataFolder)
       final tempEncryptedFile = File('${cacheDir.path}/enc_$fileName');
-      final downloadedFile = await _driveService.downloadEncryptedFile(cloudId, tempEncryptedFile.path);
+      final downloaded = await _driveService.downloadEncryptedFile(cloudId, tempEncryptedFile);
 
-      if (downloadedFile == null) return null;
+      if (!downloaded) return null;
+      final downloadedFile = tempEncryptedFile;
 
       // 3. Leer los bytes cifrados (nonce + mac + cipherText)
+      // TODO(F6): no coincide con el formato por bloques de CryptoService.encryptFile.
       final encryptedBytes = await downloadedFile.readAsBytes();
       
       // Extraer componentes del empaquetado binario

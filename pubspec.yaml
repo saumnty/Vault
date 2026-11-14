@@ -33,7 +33,9 @@ dependencies:
   sqflite_sqlcipher: ^3.4.1
   cryptography: ^2.7.0
   flutter_secure_storage: ^9.0.0
-  local_auth: ^2.1.8
+  # Biometría ligada a almacenamiento seguro del SO (ver lib/core/crypto/biometric_key_store.dart)
+  biometric_storage: 5.0.1
+  path: 1.9.1
   file_picker: ^8.0.0
   uuid: ^4.2.1
   path_provider: ^2.1.2

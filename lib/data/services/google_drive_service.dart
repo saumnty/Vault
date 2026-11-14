@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'dart:io';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
@@ -17,7 +18,7 @@ class GoogleDriveService {
       _currentUser = await _googleSignIn.signIn();
       return _currentUser != null;
     } catch (e) {
-      print('Error al iniciar sesión en Google: $e');
+      debugPrint('Error al iniciar sesión en Google: $e');
       return false;
     }
   }
@@ -41,7 +42,7 @@ class GoogleDriveService {
 
       return drive.DriveApi(httpClient);
     } catch (e) {
-      print('Error al conectar con la API de Drive: $e');
+      debugPrint('Error al conectar con la API de Drive: $e');
       return null;
     }
   }
@@ -66,7 +67,7 @@ class GoogleDriveService {
 
       return true;
     } catch (e) {
-      print('Error al subir archivo a Drive: $e');
+      debugPrint('Error al subir archivo a Drive: $e');
       return false;
     }
   }
@@ -88,7 +89,7 @@ class GoogleDriveService {
 
       return true;
     } catch (e) {
-      print('Error al descargar archivo de Drive: $e');
+      debugPrint('Error al descargar archivo de Drive: $e');
       return false;
     }
   }

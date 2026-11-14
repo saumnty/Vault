@@ -7,12 +7,13 @@ class SyncQueueService {
   bool _isSyncing = false;
 
   /// Procesa los elementos pendientes de sincronización hacia el appDataFolder
-  Future<void> processSyncQueue(String dbKey) async {
+  Future<void> processSyncQueue() async {
     if (_isSyncing) return;
     _isSyncing = true;
 
     try {
-      final db = await VaultDatabase.instance.database(dbKey);
+      // TODO(F3/F5): columnas isSynced/localPath/originalName/cloudId pendientes.
+      final db = await VaultDatabase.instance.database;
       
       // Buscar elementos no sincronizados en la base de datos local
       final rawResults = await db.query(
@@ -29,14 +30,14 @@ class SyncQueueService {
         final encryptedFile = File(localPath);
         if (await encryptedFile.exists()) {
           // 1. Subir archivo cifrado al appDataFolder de Google Drive
-          final cloudId = await _driveService.uploadEncryptedFile(encryptedFile, originalName);
+          final uploaded = await _driveService.uploadEncryptedFile(encryptedFile, originalName);
 
-          if (cloudId != null) {
+          if (uploaded) {
             // 2. Actualizar base de datos indicando que ya está sincronizado
             await db.update(
               'vault_items',
               {
-                'cloudId': cloudId,
+                // TODO(F5): guardar el id remoto que devuelva Drive.
                 'isSynced': 1,
               },
               where: 'id = ?',

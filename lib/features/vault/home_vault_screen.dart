@@ -171,7 +171,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
         }
       }
     } catch (e) {
-      print('Excepción al invocar selector: $e');
+      debugPrint('Excepción al invocar selector: $e');
     }
   }
 
@@ -290,8 +290,8 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
       floatingActionButton: FloatingActionButton(
         backgroundColor: const Color(0xFF7C3AED),
         onPressed: _showImportOptionsDialog,
-        child: const Icon(Icons.add, color: Colors.white),
         tooltip: 'Importar Archivo',
+        child: const Icon(Icons.add, color: Colors.white),
       ),
     );
   }
