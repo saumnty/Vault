@@ -51,9 +51,17 @@ Selección (long press, tocar en selección, teclas del PIN, cambio de columnas/
 `SafeArea` en barra superior, FAB, sheets y PIN (notch/isla/barra de gestos). Lo específico de iOS se limita a `statusBarBrightness` (marcado `// iOS:`).
 
 ## Limitaciones conocidas
-- Miniaturas: `VaultServices.real().thumbnailLoader` devuelve `null` hasta F6 (descifrar `thumbPath`); las celdas muestran ícono por tipo. El progreso de subida por archivo (`uploadProgress`) está cableado en `VaultGrid` pero `SyncQueueService` aún no lo emite (`TODO(F5)`).
-- Importar desde galería (`TODO(F4)`); reproductor de video (`TODO(F6)`).
+- Miniaturas: desde F4 `EncryptedThumbnailLoader` descifra `thumbPath` (subllave thumbs, LRU 96); sin miniatura la celda muestra ícono por tipo. El progreso de subida por archivo (`uploadProgress`) está cableado en `VaultGrid` pero `SyncQueueService` aún no lo emite (`TODO(F5)`).
+- Reproductor de video (`TODO(F6)`).
 - El deslizamiento solo existe en la vista de lista; en cuadrícula las acciones están en la selección.
 - El modo selección no persiste al cambiar de carpeta.
 - Las goldens se generaron con Roboto del SDK sobre Windows; en otra plataforma pueden diferir en subpíxeles (regenerar con `flutter test --update-goldens test/ui/goldens`).
 - No se probó en dispositivo: gestos reales, háptica, notch, rendimiento ni accesibilidad con TalkBack/VoiceOver (ver reporte de F3.5).
+
+## F4 parcial: importación desde galería
+- Paquetes: `photo_manager` 3.12.0 (acceso a galería, miniaturas JPEG, originFile, borrado, descarga iCloud con `PMProgressHandler`) y `video_compress` 3.1.4. Selector propio (`lib/features/gallery/`) con tokens en vez de `wechat_assets_picker`: evita otra dependencia grande con su propio tema/textos y mantiene accesibilidad coherente.
+- Compresión: `video_compress` es el único plugin simple con presets 1080p/720p en Android e iOS y cancelación. Contras: último release hace ~21 meses, cancelación en Android poco fiable, una compresión a la vez. Alternativas descartadas: `light_compressor` (hace ~3 años, solo calidades abstractas very_low..very_high, no 1080/720 explícitos) y forks de ffmpeg-kit (el proyecto upstream fue retirado; binarios pesados/GPL, +decenas de MB). Está tras la interfaz `VideoCompressor`: se puede cambiar sin tocar el servicio.
+- Estimación de tamaño: bitrates de referencia (5 Mbps 1080p, 2,5 Mbps 720p) x duración; el tamaño real se muestra durante la importación (antes -> después).
+- `contentHash` = SHA-256 del contenido que realmente se guarda (el original si no se comprimió; el comprimido si sí).
+- Borrado de originales: apagado (bandera `originalDeletionEnabled` + `cloudVerifier` de F5 + confirmación explícita). La preferencia de la UI solo se guarda.
+- Sin probar en dispositivo: permisos reales, selector real, miniaturas de video, compresión real, descarga de iCloud, borrado de originales.

@@ -32,7 +32,9 @@ class CacheManager {
 
   /// Expulsa copias locales `en_cache` (menos usadas primero) hasta bajar de
   /// [maxBytes], saltando items offline efectivos. Devuelve los ids expulsados.
-  Future<List<String>> enforceLruLimit({int maxBytes = maxCacheSizeBytes}) async {
+  Future<List<String>> enforceLruLimit({
+    int maxBytes = maxCacheSizeBytes,
+  }) async {
     await AppPaths.init();
     final cached = await _repo.getCachedItemsLru();
     final sizes = <String, int>{};

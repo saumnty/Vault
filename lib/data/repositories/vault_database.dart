@@ -59,9 +59,7 @@ class VaultSchema {
       )
     ''');
     await db.execute('CREATE INDEX idx_items_folder ON vault_items(folderId)');
-    await db.execute(
-      'CREATE INDEX idx_items_sync ON vault_items(syncStatus)',
-    );
+    await db.execute('CREATE INDEX idx_items_sync ON vault_items(syncStatus)');
     await db.execute(
       'CREATE INDEX idx_items_lastAccessed ON vault_items(lastAccessedAt)',
     );

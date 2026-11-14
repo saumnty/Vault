@@ -2,6 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- iOS: permisos de fototeca para importar desde la galería (F4) -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Vault necesita acceso a tus fotos y videos para importarlos a la bóveda cifrada.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Vault puede guardar en tu fototeca los archivos que exportes desde la bóveda.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

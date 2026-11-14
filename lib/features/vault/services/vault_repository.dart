@@ -9,9 +9,16 @@ class VaultRepository {
 
   static const String _vaultDataKey = 'vault_encrypted_items';
 
-  Future<void> saveItem(String title, String content, SecretKey secretKey) async {
+  Future<void> saveItem(
+    String title,
+    String content,
+    SecretKey secretKey,
+  ) async {
     final existingItems = await getAllItemsRaw();
-    final encryptedContent = await _cryptoService.encryptData(content, secretKey);
+    final encryptedContent = await _cryptoService.encryptData(
+      content,
+      secretKey,
+    );
 
     final newItem = {
       'id': DateTime.now().millisecondsSinceEpoch.toString(),
@@ -28,15 +35,18 @@ class VaultRepository {
     );
   }
 
-  Future<List < Map < String, dynamic > > > getAllItemsRaw() async {
+  Future<List<Map<String, dynamic>>> getAllItemsRaw() async {
     final rawData = await _secureStorage.read(key: _vaultDataKey);
     if (rawData == null) return [];
 
     final List<dynamic> decoded = jsonDecode(rawData);
-    return decoded.cast < Map < String, dynamic > > ();
+    return decoded.cast<Map<String, dynamic>>();
   }
 
-  Future<String> decryptItemContent(Map<String, dynamic> encryptedItem, SecretKey secretKey) async {
+  Future<String> decryptItemContent(
+    Map<String, dynamic> encryptedItem,
+    SecretKey secretKey,
+  ) async {
     final encryptedData = Map<String, String>.from(encryptedItem['data']);
     return await _cryptoService.decryptData(encryptedData, secretKey);
   }

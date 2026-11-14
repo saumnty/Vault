@@ -17,7 +17,8 @@ import 'package:vault/data/repositories/vault_database.dart';
 // SQLCipher real solo se puede probar en dispositivo/emulador
 // (integration_test/vault_database_sqlcipher_test.dart).
 
-Future<Database> _ffiOpener(String path, OpenDatabaseOptions options) => databaseFactoryFfi.openDatabase(path, options: options);
+Future<Database> _ffiOpener(String path, OpenDatabaseOptions options) =>
+    databaseFactoryFfi.openDatabase(path, options: options);
 
 Future<KeyHierarchy> _keys(int seed) => KeyHierarchy.fromDek(
   Uint8List.fromList(List.generate(32, (i) => i + seed)),
@@ -196,7 +197,10 @@ void main() {
         throwsArgumentError,
       );
       expect(await repo.getItem('2'), isNull);
-      await expectLater(repo.setThumbPath('1', '/abs/t.thumb'), throwsArgumentError);
+      await expectLater(
+        repo.setThumbPath('1', '/abs/t.thumb'),
+        throwsArgumentError,
+      );
 
       await repo.renameItem('1', 'nuevo');
       await repo.updateSyncStatus('1', SyncStatus.enNube, driveFileId: 'drv1');

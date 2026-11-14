@@ -11,7 +11,7 @@ Rama de trabajo: `dev-claude` (no se hace push ni se toca main sin petición).
 | F2 | Formato .vault v2 | Opus | 🧪 analyze/test OK (56 tests) |
 | F3 | Base de datos (esquema, rutas relativas) | Sonnet | 🧪 analyze/test OK (71); SQLCipher en emulador NO probado (test de integración escrito) |
 | F3.5 | Rediseño UI | Sonnet | 🧪 analyze/test OK (131); capturas golden en docs/screens; gestos/háptica no probados en dispositivo |
-| F4 | Importación desde la galería | Sonnet | ⬜ ← estás aquí (solo parte probable sin emulador) |
+| F4 | Importación desde la galería | Sonnet | 🧪 parcial: analyze/test OK; permisos, selector, compresión e iCloud reales sin probar |
 | F5 | Sincronización con Drive | Sonnet | ⬜ |
 | F6 | Visor y caché (streaming aparte) | Sonnet/Opus | ⬜ |
 | F7 | Seguridad del sistema | Sonnet/Haiku | ⬜ |

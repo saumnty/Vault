@@ -7,6 +7,11 @@ import '../../shared/haptics.dart';
 import '../../shared/navigation/app_page_route.dart';
 import '../../shared/widgets/empty_state.dart';
 import '../../shared/widgets/pinch_detector.dart';
+import '../../data/gallery/gallery_asset_source.dart';
+import '../../data/gallery/gallery_import_service.dart';
+import '../gallery/gallery_picker_screen.dart';
+import '../gallery/import_options_sheet.dart';
+import '../gallery/import_progress_sheet.dart';
 import 'models/browser_entry.dart';
 import 'vault_browser_controller.dart';
 import 'vault_media_viewer_screen.dart';
@@ -196,6 +201,50 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     );
   }
 
+  Future<void> _importFromGallery() async {
+    final gallery = _services.gallery;
+    if (gallery == null) {
+      _snack('Importar desde galería no está disponible');
+      return;
+    }
+    final picked = await Navigator.of(context).push<List<GalleryAsset>>(
+      AppPageRoute<List<GalleryAsset>>(
+        builder: (_) => GalleryPickerScreen(source: gallery.source),
+      ),
+    );
+    if (picked == null || picked.isEmpty || !mounted) return;
+    final prefDelete = await gallery.preferences
+        .getDeleteOriginalsWhenInCloud();
+    if (!mounted) return;
+    final choices = await showImportOptionsSheet(
+      context,
+      assets: picked,
+      deleteOriginalsWhenInCloud: prefDelete,
+    );
+    if (choices == null || !mounted) return;
+    await gallery.preferences.setDeleteOriginalsWhenInCloud(
+      choices.deleteOriginalsWhenInCloud,
+    );
+    if (!mounted) return;
+    final result = await showImportProgressSheet(
+      context,
+      service: gallery.service,
+      assets: picked,
+      options: ImportOptions(
+        folderId: widget.currentFolderId,
+        videoQuality: choices.videoQuality,
+      ),
+    );
+    await _controller.load();
+    if (result == null) return;
+    AppHaptics.success();
+    _snack(
+      result.failed == 0 && !result.cancelled
+          ? 'Importación completa'
+          : '${result.succeeded} importado(s), ${result.failed} con error',
+    );
+  }
+
   Future<void> _newFolder() async {
     final name = await showNewFolderSheet(context);
     if (name == null || !mounted) return;
@@ -306,10 +355,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                             FabAction(
                               icon: Icons.photo_library_outlined,
                               label: 'Importar desde galería',
-                              // TODO(F4): selector de galería (photo_manager).
-                              onTap: () => _snack(
-                                'Importar desde galería llegará pronto',
-                              ),
+                              onTap: _importFromGallery,
                             ),
                           ],
                         ),

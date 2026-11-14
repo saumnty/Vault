@@ -1,13 +1,21 @@
 import 'dart:io';
 
 import 'package:flutter/painting.dart';
+import 'package:path/path.dart' as p;
 
+import '../../core/crypto/secure_kv_store.dart';
 import '../../core/services/app_paths.dart';
 import '../../core/session/vault_session.dart';
+import '../../data/gallery/gallery_import_service.dart';
+import '../../data/gallery/import_preferences.dart';
+import '../../data/gallery/photo_manager_gallery_source.dart';
+import '../../data/gallery/video_compress_plugin.dart';
 import '../../data/models/vault_item_model.dart';
 import '../../data/repositories/vault_data_repository.dart';
 import '../../data/services/sync_queue_service.dart';
 import '../../data/services/vault_import_service.dart';
+import '../gallery/gallery_deps.dart';
+import 'services/thumbnail_loader.dart';
 import 'services/vault_preferences_service.dart';
 import 'services/vault_viewer_service.dart';
 
@@ -41,6 +49,7 @@ class VaultServices {
     required this.mediaLoader,
     required this.fileCleaner,
     required this.offlineToggler,
+    this.gallery,
   });
 
   final VaultDataRepository repository;
@@ -53,8 +62,13 @@ class VaultServices {
   final FileCleaner fileCleaner;
   final OfflineToggler offlineToggler;
 
+  /// Importación desde galería (`null` = no disponible).
+  final GalleryDeps? gallery;
+
   /// Servicios reales. Las dependencias pesadas se crean bajo demanda.
   factory VaultServices.real() {
+    _sharedThumbs ??= _createThumbs();
+    final thumbs = _sharedThumbs!;
     final repository = VaultDataRepository();
     final importer = VaultImportService();
     final sync = SyncQueueService();
@@ -66,8 +80,8 @@ class VaultServices {
             deleteOriginal: deleteOriginal,
           ),
       syncRunner: sync.processSyncQueue,
-      // TODO(F6): descifrar miniaturas (subllave "thumbs") desde thumbPath.
-      thumbnailLoader: (item) async => null,
+      // Miniaturas: descifra thumbs/<id>.thumb con la subllave "thumbs" (LRU).
+      thumbnailLoader: thumbs.call,
       // TODO(F6): lectura por rangos y caché cifrada.
       mediaLoader: (item) async {
         final key = VaultSession().filesKey;
@@ -98,6 +112,41 @@ class VaultServices {
       },
       offlineToggler: (id, makeOffline) =>
           VaultPreferenceService().toggleOfflineMode(id, makeOffline),
+      gallery: _sharedGallery ??= _createGallery(repository),
+    );
+  }
+
+  static EncryptedThumbnailLoader? _sharedThumbs;
+  static GalleryDeps? _sharedGallery;
+
+  static EncryptedThumbnailLoader _createThumbs() {
+    final session = VaultSession();
+    final loader = EncryptedThumbnailLoader(
+      thumbsKey: () => session.keysOrNull?.thumbs,
+    );
+    // Al bloquear, la caché en memoria se vacía.
+    session.addOnClear(loader.clear);
+    return loader;
+  }
+
+  static GalleryDeps _createGallery(VaultDataRepository repository) {
+    final session = VaultSession();
+    final source = PhotoManagerGallerySource();
+    final service = GalleryImportService(
+      source: source,
+      compressor: VideoCompressPlugin(),
+      repository: repository,
+      filesKey: () => session.filesKey,
+      thumbsKey: () => session.keysOrNull?.thumbs,
+      tempDirProvider: () =>
+          Directory(p.join(AppPaths.cacheDir.path, 'import_tmp')),
+      // Borrado de originales apagado hasta que F5 verifique la copia en la
+      // nube (cloudVerifier). Ver GalleryImportService.
+    );
+    return GalleryDeps(
+      source: source,
+      service: service,
+      preferences: GalleryImportPreferences(FlutterSecureKeyValueStore()),
     );
   }
 }

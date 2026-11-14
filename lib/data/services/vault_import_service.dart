@@ -51,8 +51,7 @@ class VaultImportService {
         sink.add(chunk);
       }
       sink.close();
-      final contentHash = (await sink.hash())
-          .bytes
+      final contentHash = (await sink.hash()).bytes
           .map((b) => b.toRadixString(16).padLeft(2, '0'))
           .join();
 

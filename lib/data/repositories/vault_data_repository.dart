@@ -109,7 +109,10 @@ class VaultDataRepository {
   Future<List<String>> deleteFolderRecursive(String folderId) async {
     final db = await _dbProvider();
     return db.transaction((txn) async {
-      final folderIds = [folderId, ...await _descendantFolderIds(txn, folderId)];
+      final folderIds = [
+        folderId,
+        ...await _descendantFolderIds(txn, folderId),
+      ];
       final marks = List.filled(folderIds.length, '?').join(',');
       final rows = await txn.rawQuery(
         'SELECT id FROM vault_items WHERE folderId IN ($marks)',
@@ -121,7 +124,11 @@ class VaultDataRepository {
         where: 'folderId IN ($marks)',
         whereArgs: folderIds,
       );
-      await txn.delete('folders', where: 'id IN ($marks)', whereArgs: folderIds);
+      await txn.delete(
+        'folders',
+        where: 'id IN ($marks)',
+        whereArgs: folderIds,
+      );
       return itemIds;
     });
   }
@@ -240,10 +247,9 @@ class VaultDataRepository {
   }
 
   /// Marca el acceso (para LRU). [at] por defecto: ahora.
-  Future<void> touchLastAccessed(String id, {DateTime? at}) => _updateItem(
-    id,
-    {'lastAccessedAt': (at ?? DateTime.now()).millisecondsSinceEpoch},
-  );
+  Future<void> touchLastAccessed(String id, {DateTime? at}) => _updateItem(id, {
+    'lastAccessedAt': (at ?? DateTime.now()).millisecondsSinceEpoch,
+  });
 
   Future<void> setItemOffline(String id, bool isOffline) =>
       _updateItem(id, {'isOffline': isOffline ? 1 : 0});

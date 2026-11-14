@@ -60,6 +60,11 @@ abstract final class AppSizes {
   static const double searchMaxWidth = 480;
   static const double breadcrumbHeight = 36;
   static const double progressStroke = 3;
+
+  /// Selector de galería: lado mínimo de celda y miniatura pedida (px).
+  static const double pickerTileExtent = 110;
+  static const int pickerThumbPx = 256;
+  static const double progressBarHeight = 6;
 }
 
 /// Rejilla de archivos.

@@ -48,7 +48,10 @@ class GoogleDriveService {
   }
 
   /// Sube un archivo cifrado (.vault) al appDataFolder de Google Drive
-  Future<bool> uploadEncryptedFile(File localFile, String remoteFileName) async {
+  Future<bool> uploadEncryptedFile(
+    File localFile,
+    String remoteFileName,
+  ) async {
     try {
       final driveApi = await _getDriveApi();
       if (driveApi == null) return false;
@@ -60,10 +63,7 @@ class GoogleDriveService {
 
       final media = drive.Media(localFile.openRead(), localFile.lengthSync());
 
-      await driveApi.files.create(
-        driveFile,
-        uploadMedia: media,
-      );
+      await driveApi.files.create(driveFile, uploadMedia: media);
 
       return true;
     } catch (e) {
@@ -73,15 +73,20 @@ class GoogleDriveService {
   }
 
   /// Descarga un archivo cifrado desde Google Drive al almacenamiento local
-  Future<bool> downloadEncryptedFile(String fileId, File localDestination) async {
+  Future<bool> downloadEncryptedFile(
+    String fileId,
+    File localDestination,
+  ) async {
     try {
       final driveApi = await _getDriveApi();
       if (driveApi == null) return false;
 
-      drive.Media media = await driveApi.files.get(
-        fileId,
-        downloadOptions: drive.DownloadOptions.fullMedia,
-      ) as drive.Media;
+      drive.Media media =
+          await driveApi.files.get(
+                fileId,
+                downloadOptions: drive.DownloadOptions.fullMedia,
+              )
+              as drive.Media;
 
       final IOSink sink = localDestination.openWrite();
       await media.stream.pipe(sink);
