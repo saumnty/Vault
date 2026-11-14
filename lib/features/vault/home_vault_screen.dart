@@ -1,294 +1,352 @@
 import 'package:flutter/material.dart';
-import 'package:uuid/uuid.dart';
-import '../../data/repositories/vault_data_repository.dart';
-import '../../core/services/app_paths.dart';
-import '../../data/models/vault_item_model.dart';
-import '../../data/models/folder_model.dart';
-import '../../data/services/vault_import_service.dart';
-import '../../data/services/google_drive_service.dart';
 
+import '../../core/theme/app_colors.dart';
+import '../../core/theme/app_motion.dart';
+import '../../core/theme/app_spacing.dart';
+import '../../shared/haptics.dart';
+import '../../shared/navigation/app_page_route.dart';
+import '../../shared/widgets/empty_state.dart';
+import '../../shared/widgets/pinch_detector.dart';
+import 'models/browser_entry.dart';
+import 'vault_browser_controller.dart';
+import 'vault_media_viewer_screen.dart';
+import 'vault_services.dart';
+import 'widgets/breadcrumb_bar.dart';
+import 'widgets/expandable_fab.dart';
+import 'widgets/swipe_action_row.dart';
+import 'widgets/vault_grid.dart';
+import 'widgets/vault_sheets.dart';
+import 'widgets/vault_top_bar.dart';
+
+/// Nombre de ruta de una carpeta (para que las migas de pan puedan volver a
+/// ella con `popUntil`). La raíz es la ruta `/`.
+String folderRouteName(String? folderId) =>
+    folderId == null ? '/' : 'folder/$folderId';
+
+/// Explorador de una carpeta de la bóveda (null = raíz).
 class HomeVaultScreen extends StatefulWidget {
-  final String? currentFolderId;
-  final String currentFolderName;
-
   const HomeVaultScreen({
     super.key,
     this.currentFolderId,
     required this.currentFolderName,
+    this.services,
+    this.initialColumns = AppGrid.defaultColumns,
   });
+
+  final String? currentFolderId;
+  final String currentFolderName;
+
+  /// Inyectable para pruebas; por defecto los servicios reales.
+  final VaultServices? services;
+  final int initialColumns;
 
   @override
   State<HomeVaultScreen> createState() => _HomeVaultScreenState();
 }
 
 class _HomeVaultScreenState extends State<HomeVaultScreen> {
-  final VaultDataRepository _repo = VaultDataRepository();
-  final VaultImportService _importService = VaultImportService();
-  
-  List<FolderModel> _folders = [];
-  List<VaultItemModel> _items = [];
-  bool _isLoading = true;
+  late final VaultServices _services = widget.services ?? VaultServices.real();
+  late final VaultBrowserController _controller = VaultBrowserController(
+    services: _services,
+    folderId: widget.currentFolderId,
+    columns: widget.initialColumns,
+  )..load();
+  final TextEditingController _search = TextEditingController();
+  bool _searching = false;
+  bool _pinching = false;
 
   @override
-  void initState() {
-    super.initState();
-    _initAndLoadData();
+  void dispose() {
+    _controller.dispose();
+    _search.dispose();
+    super.dispose();
   }
 
-  Future<void> _initAndLoadData() async {
-    await _loadData();
+  // ---------------------------------------------------------------- helpers
+
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _loadData() async {
-    setState(() => _isLoading = true);
-    final folders = await _repo.getFoldersByParent(widget.currentFolderId);
-    final items = await _repo.getItemsByFolder(widget.currentFolderId);
-    
-    setState(() {
-      _folders = folders;
-      _items = items;
-      _isLoading = false;
-    });
+  void _toggleSearch() {
+    setState(() => _searching = !_searching);
+    if (!_searching) {
+      _search.clear();
+      _controller.setQuery('');
+    }
   }
 
-  Future<void> _createNewFolder(String name) async {
-    if (name.trim().isEmpty) return;
-
-    final newFolder = FolderModel(
-      id: const Uuid().v4(),
-      name: name.trim(),
-      parentId: widget.currentFolderId,
-      createdAt: DateTime.now().toIso8601String(),
+  void _toggleView() {
+    AppHaptics.selection();
+    _controller.setColumns(
+      _controller.columns == 1 ? AppGrid.defaultColumns : 1,
     );
-
-    await _repo.createFolder(newFolder);
-    await _loadData(); 
   }
 
-  final GoogleDriveService _driveService = GoogleDriveService();
+  void _onPinch(int delta) {
+    final before = _controller.columns;
+    _controller.stepColumns(delta);
+    if (_controller.columns != before) AppHaptics.selection();
+  }
 
-  Future<void> _syncToGoogleDrive() async {
-    // 1. Intentar iniciar sesión (si no está autenticado)
-    bool signedIn = await _driveService.signIn();
-    if (!signedIn) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No se pudo iniciar sesión en Google Drive.'), backgroundColor: Colors.red),
-        );
-      }
+  // ------------------------------------------------------------ interacción
+
+  void _onTap(BrowserEntry e) {
+    if (_controller.isSelecting) {
+      AppHaptics.selection();
+      _controller.toggleSelection(e);
       return;
     }
-
-    // 2. Subir cada archivo cifrado local al Drive
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Sincronizando archivos con Google Drive...'), backgroundColor: Color(0xFF7C3AED)),
-      );
-    }
-
-    int uploadedCount = 0;
-    for (var item in _items) {
-      final file = AppPaths.resolve(item.encryptedPath);
-      if (await file.exists()) {
-        // Subimos el archivo usando su ID único con extensión .vault
-        bool success = await _driveService.uploadEncryptedFile(file, '${item.id}.vault');
-        if (success) uploadedCount++;
-      }
-    }
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('¡Sincronización completa! $uploadedCount archivos respaldados en la nube.'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    }
-  }
-
-  /// Muestra un diálogo preguntando si se desea eliminar el archivo original de la galería
-  void _showImportOptionsDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF18181C),
-        title: const Text('Importar al Vault', style: TextStyle(color: Colors.white)),
-        content: const Text(
-          '¿Deseas eliminar el archivo original de la galería pública de tu dispositivo después de cifrarlo?',
-          style: TextStyle(color: Colors.white70),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _importFile(deleteOriginal: false);
-            },
-            child: const Text('Conservar original', style: TextStyle(color: Colors.white54)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF7C3AED)),
-            onPressed: () {
-              Navigator.pop(context);
-              _importFile(deleteOriginal: true);
-            },
-            child: const Text('Cifrar y Eliminar', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _importFile({required bool deleteOriginal}) async {
-    try {
-      bool success = await _importService.importAndEncryptFile(
-        targetFolderId: widget.currentFolderId,
-        deleteOriginal: deleteOriginal,
-      );
-      
-      if (success) {
-        await _loadData(); 
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                deleteOriginal 
-                  ? '¡Archivo cifrado y original eliminado con éxito!' 
-                  : '¡Archivo importado y cifrado exitosamente!',
-              ),
-              backgroundColor: const Color(0xFF7C3AED),
+    switch (e) {
+      case FolderEntry():
+        Navigator.of(context).push(
+          AppPageRoute<void>(
+            settings: RouteSettings(name: folderRouteName(e.folder.id)),
+            builder: (_) => HomeVaultScreen(
+              currentFolderId: e.folder.id,
+              currentFolderName: e.folder.name,
+              services: _services,
+              initialColumns: _controller.columns,
             ),
-          );
-        }
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Importación cancelada o sesión sin llave.')),
-          );
-        }
-      }
-    } catch (e) {
-      debugPrint('Excepción al invocar selector: $e');
+          ),
+        );
+      case FileEntry():
+        Navigator.of(context).push(
+          AppPageRoute<void>(
+            builder: (_) => VaultMediaViewerScreen(
+              item: e.item,
+              heroTag: e.heroTag,
+              mediaLoader: _services.mediaLoader,
+            ),
+          ),
+        );
     }
   }
 
-  void _showCreateFolderDialog() {
-    final TextEditingController nameController = TextEditingController();
-    
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF18181C),
-        title: const Text('Nueva Carpeta', style: TextStyle(color: Colors.white)),
-        content: TextField(
-          controller: nameController,
-          style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(
-            hintText: 'Nombre de la carpeta',
-            hintStyle: TextStyle(color: Colors.white54),
-            focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: Color(0xFF7C3AED))),
-          ),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancelar', style: TextStyle(color: Colors.white54)),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _createNewFolder(nameController.text);
-            },
-            child: const Text('Crear', style: TextStyle(color: Color(0xFF7C3AED))),
-          ),
-        ],
-      ),
+  void _onLongPress(BrowserEntry e) {
+    AppHaptics.selection();
+    _controller.toggleSelection(e);
+  }
+
+  void _onCrumbTap(Crumb crumb) {
+    final target = folderRouteName(crumb.id);
+    Navigator.of(
+      context,
+    ).popUntil((r) => r.settings.name == target || r.isFirst);
+  }
+
+  // ---------------------------------------------------------------- acciones
+
+  Future<void> _delete(List<BrowserEntry> targets) async {
+    if (targets.isEmpty) return;
+    final ok = await showConfirmDeleteSheet(
+      context,
+      count: targets.length,
+      includesFolders: targets.any((e) => e is FolderEntry),
+    );
+    if (!ok || !mounted) return;
+    AppHaptics.destructive();
+    await _controller.delete(targets);
+    _snack(targets.length == 1 ? 'Elemento eliminado' : 'Elementos eliminados');
+  }
+
+  Future<void> _move(List<BrowserEntry> targets) async {
+    if (targets.isEmpty) return;
+    final pick = await showMoveSheet(
+      context,
+      repository: _services.repository,
+      excludeFolderIds: {
+        for (final e in targets)
+          if (e is FolderEntry) e.folder.id,
+      },
+    );
+    if (pick == null || !mounted) return;
+    try {
+      await _controller.move(targets, pick.id);
+      _snack('Movido');
+    } on Object {
+      // moveFolder rechaza mover una carpeta dentro de sí misma.
+      _snack('No se pudo mover a esa carpeta');
+    }
+  }
+
+  Future<void> _offline(List<BrowserEntry> targets) async {
+    if (targets.isEmpty) return;
+    final failures = await _controller.setOffline(targets, true);
+    _snack(
+      failures == 0
+          ? 'Disponible sin conexión'
+          : 'No se pudo guardar $failures elemento(s) sin conexión',
     );
   }
+
+  Future<void> _importFile() async {
+    final deleteOriginal = await showImportConfirmSheet(context);
+    if (deleteOriginal == null || !mounted) return;
+    final ok = await _controller.importFile(deleteOriginal: deleteOriginal);
+    _snack(
+      ok
+          ? (deleteOriginal
+                ? 'Archivo cifrado y original eliminado'
+                : 'Archivo importado y cifrado')
+          : 'Importación cancelada o bóveda bloqueada',
+    );
+  }
+
+  Future<void> _newFolder() async {
+    final name = await showNewFolderSheet(context);
+    if (name == null || !mounted) return;
+    await _controller.createFolder(name);
+  }
+
+  List<SwipeAction> _swipeActions(BrowserEntry e) => [
+    SwipeAction(
+      icon: Icons.drive_file_move_outline,
+      label: 'Mover',
+      color: AppColors.accent,
+      onTap: () => _move([e]),
+    ),
+    SwipeAction(
+      icon: Icons.offline_pin_outlined,
+      label: 'Sin conexión',
+      color: AppColors.surfaceHighest,
+      onTap: () => _offline([e]),
+    ),
+    SwipeAction(
+      icon: Icons.delete_outline,
+      label: 'Eliminar',
+      color: AppColors.dangerFill,
+      onTap: () => _delete([e]),
+    ),
+  ];
+
+  // ------------------------------------------------------------------ build
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0B0B0E),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF0B0B0E),
-        elevation: 0,
-        title: Text(
-          widget.currentFolderName,
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        ),
-        iconTheme: const IconThemeData(color: Colors.white),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.cloud_upload, color: Colors.blueAccent),
-            onPressed: _syncToGoogleDrive,
-            tooltip: 'Sincronizar con Google Drive',
-          ),
-          IconButton(
-            icon: const Icon(Icons.create_new_folder, color: Color(0xFF7C3AED)),
-            onPressed: _showCreateFolderDialog,
-            tooltip: 'Crear carpeta',
-          ),
-          IconButton(
-            icon: const Icon(Icons.upload_file, color: Color(0xFF7C3AED)),
-            onPressed: _showImportOptionsDialog,
-            tooltip: 'Importar archivo',
-          ),
-        ],
-      ),
-      body: _isLoading 
-        ? const Center(child: CircularProgressIndicator(color: Color(0xFF7C3AED)))
-        : (_folders.isEmpty && _items.isEmpty)
-            ? const Center(
-                child: Text(
-                  'Esta carpeta está vacía',
-                  style: TextStyle(color: Colors.white54, fontSize: 16),
-                ),
-              )
-            : ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  ..._folders.map((folder) => ListTile(
-                    leading: const Icon(Icons.folder, color: Color(0xFF7C3AED), size: 40),
-                    title: Text(folder.name, style: const TextStyle(color: Colors.white)),
-                    subtitle: Text(
-                      folder.createdAt.substring(0, 10), 
-                      style: const TextStyle(color: Colors.white38, fontSize: 12),
+    return ListenableBuilder(
+      listenable: _controller,
+      builder: (context, _) {
+        final c = _controller;
+        return PopScope(
+          canPop: !c.isSelecting,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) c.clearSelection();
+          },
+          child: Scaffold(
+            body: Stack(
+              fit: StackFit.expand,
+              children: [
+                Column(
+                  children: [
+                    VaultTopBar(
+                      title: widget.currentFolderName,
+                      crumbs: [
+                        const Crumb(id: null, label: 'Mi Bóveda'),
+                        for (final f in c.breadcrumbs)
+                          Crumb(id: f.id, label: f.name),
+                      ],
+                      canGoBack: Navigator.of(context).canPop(),
+                      onBack: () => Navigator.of(context).maybePop(),
+                      onCrumbTap: _onCrumbTap,
+                      searching: _searching,
+                      searchController: _search,
+                      onSearchChanged: c.setQuery,
+                      onSearchToggle: _toggleSearch,
+                      isListView: c.columns == 1,
+                      onToggleView: _toggleView,
+                      selectionCount: c.selection.length,
+                      onClearSelection: c.clearSelection,
+                      onSelectAll: c.selectAll,
+                      onMove: () => _move(c.selectedEntries),
+                      onOffline: () => _offline(c.selectedEntries),
+                      onDelete: () => _delete(c.selectedEntries),
                     ),
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => HomeVaultScreen(
-                            currentFolderId: folder.id,
-                            currentFolderName: folder.name,
-                          ),
+                    Expanded(
+                      child: PinchDetector(
+                        onStep: _onPinch,
+                        onPinchingChanged: (v) => setState(() => _pinching = v),
+                        child: VaultGrid(
+                          entries: c.entries,
+                          columns: c.columns,
+                          isLoading: c.isLoading,
+                          thumbnailLoader: _services.thumbnailLoader,
+                          isSelected: c.isSelected,
+                          selectionMode: c.isSelecting,
+                          onTap: _onTap,
+                          onLongPress: _onLongPress,
+                          onRefresh: c.refresh,
+                          scrollLocked: _pinching,
+                          swipeActionsFor: _swipeActions,
+                          empty: _emptyState(c),
                         ),
-                      );
-                    },
-                  )),
-                  
-                  ..._items.map((item) => ListTile(
-                    leading: const Icon(Icons.lock_outline, color: Colors.blueAccent, size: 36),
-                    title: Text(item.name, style: const TextStyle(color: Colors.white)),
-                    subtitle: Text(
-                      '${(item.fileSize / 1024 / 1024).toStringAsFixed(2)} MB • Cifrado seguro',
-                      style: const TextStyle(color: Colors.white38, fontSize: 12),
+                      ),
                     ),
-                    onTap: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Archivo seleccionado: ${item.name}')),
-                      );
-                    },
-                  )),
-                ],
-              ),
-      floatingActionButton: FloatingActionButton(
-        backgroundColor: const Color(0xFF7C3AED),
-        onPressed: _showImportOptionsDialog,
-        tooltip: 'Importar Archivo',
-        child: const Icon(Icons.add, color: Colors.white),
-      ),
+                  ],
+                ),
+                AnimatedSwitcher(
+                  duration: AppMotion.fast,
+                  child: c.isSelecting
+                      ? const SizedBox.shrink()
+                      : ExpandableFab(
+                          actions: [
+                            FabAction(
+                              icon: Icons.create_new_folder_outlined,
+                              label: 'Nueva carpeta',
+                              onTap: _newFolder,
+                            ),
+                            FabAction(
+                              icon: Icons.upload_file_outlined,
+                              label: 'Importar archivo',
+                              onTap: _importFile,
+                            ),
+                            FabAction(
+                              icon: Icons.photo_library_outlined,
+                              label: 'Importar desde galería',
+                              // TODO(F4): selector de galería (photo_manager).
+                              onTap: () => _snack(
+                                'Importar desde galería llegará pronto',
+                              ),
+                            ),
+                          ],
+                        ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _emptyState(VaultBrowserController c) {
+    if (c.error != null) {
+      return EmptyState(
+        title: 'No se pudo cargar',
+        message: 'Revisa que la bóveda esté desbloqueada e inténtalo de nuevo.',
+        actionLabel: 'Reintentar',
+        onAction: c.load,
+      );
+    }
+    if (c.query.isNotEmpty) {
+      return const EmptyState(
+        kind: EmptyKind.search,
+        title: 'Sin resultados',
+        message: 'Ningún elemento de esta carpeta coincide con tu búsqueda.',
+      );
+    }
+    return EmptyState(
+      title: widget.currentFolderId == null
+          ? 'Tu bóveda está vacía'
+          : 'Esta carpeta está vacía',
+      message:
+          'Toca + para importar fotos, videos o archivos. '
+          'Todo se cifra en tu dispositivo antes de guardarse.',
+      actionLabel: 'Importar archivo',
+      onAction: _importFile,
     );
   }
 }

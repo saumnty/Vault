@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'core/crypto/auth_controller.dart';
+import 'core/theme/app_motion.dart';
+import 'core/theme/app_theme.dart';
 import 'features/auth/pin_screen.dart';
 import 'features/vault/home_vault_screen.dart';
+import 'features/vault/vault_services.dart';
 
 void main() async {
   // Asegurar la inicialización de los bindings de Flutter
@@ -14,53 +17,41 @@ void main() async {
     DeviceOrientation.portraitDown,
   ]);
 
-  // Configurar la barra de estado transparente con iconos claros (estética OLED)
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-      systemNavigationBarColor: Color(0xFF0B0B0E),
-      systemNavigationBarIconBrightness: Brightness.light,
-    ),
-  );
+  // Barra de estado transparente con iconos claros (estética OLED)
+  SystemChrome.setSystemUIOverlayStyle(AppTheme.overlayStyle);
 
   runApp(const VaultApp());
 }
 
 class VaultApp extends StatelessWidget {
-  const VaultApp({super.key, this.authController});
+  const VaultApp({super.key, this.authController, this.services});
 
-  /// Inyectable para pruebas; por defecto usa almacenamiento y biometría reales.
+  /// Inyectables para pruebas; por defecto usan almacenamiento, biometría y
+  /// base de datos reales.
   final AuthController? authController;
+  final VaultServices? services;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Vault',
       debugShowCheckedModeBanner: false,
-      // Definir tema oscuro global basado en la paleta OLED y morado neón
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF0B0B0E),
-        primaryColor: const Color(0xFF7C3AED),
-        colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF7C3AED),
-          secondary: Color(0xFF3B82F6),
-          surface: Color(0xFF18181C),
-        ),
-        fontFamily: 'Inter', // O tu tipografía predeterminada
-      ),
+      theme: AppTheme.dark,
       // El punto de entrada inicial arranca en la pantalla de PIN / Autenticación
-      home: VaultRootNavigator(authController: authController),
+      home: VaultRootNavigator(
+        authController: authController,
+        services: services,
+      ),
     );
   }
 }
 
 /// Administrador de rutas raíz que decide entre el muro de seguridad y la bóveda
 class VaultRootNavigator extends StatefulWidget {
-  const VaultRootNavigator({super.key, this.authController});
+  const VaultRootNavigator({super.key, this.authController, this.services});
 
   final AuthController? authController;
+  final VaultServices? services;
 
   @override
   State<VaultRootNavigator> createState() => _VaultRootNavigatorState();
@@ -79,18 +70,23 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
 
   @override
   Widget build(BuildContext context) {
-    if (!_isAuthenticated) {
-      // Si no está autenticado, mostramos obligatoriamente el PinScreen
-      return PinScreen(
-        authController: _authController,
-        onAuthenticated: _handleAuthenticationSuccess,
-      );
-    } else {
-      // Una vez superado el PIN o la biometría, entramos a la raíz de la Bóveda
-      return const HomeVaultScreen(
-        currentFolderId: null, // null indica la raíz de la bóveda
-        currentFolderName: 'Mi Bóveda',
-      );
-    }
+    // Transición suave entre el muro de seguridad y la bóveda.
+    return AnimatedSwitcher(
+      duration: AppMotion.medium,
+      switchInCurve: AppMotion.standard,
+      child: _isAuthenticated
+          // null indica la raíz de la bóveda
+          ? HomeVaultScreen(
+              key: const ValueKey('vault'),
+              currentFolderId: null,
+              currentFolderName: 'Mi Bóveda',
+              services: widget.services,
+            )
+          : PinScreen(
+              key: const ValueKey('pin'),
+              authController: _authController,
+              onAuthenticated: _handleAuthenticationSuccess,
+            ),
+    );
   }
 }

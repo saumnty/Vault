@@ -1,4 +1,3 @@
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/core/crypto/auth_controller.dart';
 import 'package:vault/core/session/vault_session.dart';
@@ -21,7 +20,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Crea un nuevo PIN'), findsOneWidget);
-    expect(find.byType(TextField), findsOneWidget);
+    // Teclado propio: 10 dígitos + borrar, y el botón Continuar.
+    expect(find.text('5'), findsOneWidget);
     expect(find.text('Continuar'), findsOneWidget);
   });
 }
