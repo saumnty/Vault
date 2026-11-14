@@ -1,15 +1,18 @@
 import 'package:flutter/foundation.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:cryptography/cryptography.dart';
 import 'package:uuid/uuid.dart';
 import '../../core/crypto/crypto_service.dart';
 import '../../core/session/vault_session.dart';
-import '../repositories/vault_database.dart';
+import '../../core/services/app_paths.dart';
+import '../models/sync_status.dart';
+import '../models/vault_item_model.dart';
+import '../repositories/vault_data_repository.dart';
 
 class VaultImportService {
   final CryptoService _cryptoService = CryptoService();
-  final VaultDatabase _vaultDatabase = VaultDatabase();
+  final VaultDataRepository _repo = VaultDataRepository();
 
   /// Abre el explorador de archivos, cifra por bloques, guarda en la BD
   /// y opcionalmente borra el archivo original de la galería pública.
@@ -36,10 +39,22 @@ class VaultImportService {
       final sourceFile = File(sourcePath);
 
       // 3. Preparar ruta destino interna (.vault)
-      final appDir = await getApplicationDocumentsDirectory();
+      await AppPaths.init();
       final itemId = const Uuid().v4();
-      final destFilePath = '${appDir.path}/$itemId.vault';
-      final destFile = File(destFilePath);
+      // En la BD solo va la ruta RELATIVA (vault/<id>.vault).
+      final relativePath = AppPaths.vaultRelativePath(itemId);
+      final destFile = AppPaths.resolve(relativePath);
+
+      // SHA-256 del contenido original (streaming).
+      final sink = Sha256().newHashSink();
+      await for (final chunk in sourceFile.openRead()) {
+        sink.add(chunk);
+      }
+      sink.close();
+      final contentHash = (await sink.hash())
+          .bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
 
       // 4. Cifrar en formato .vault v2 (bloques de 1 MiB, streaming).
       // Si falla, encryptFile borra el destino parcial y lanza excepción.
@@ -49,19 +64,19 @@ class VaultImportService {
       if (!await destFile.exists()) return false;
 
       // 5. Registrar en SQLCipher
-      final db = await _vaultDatabase.database;
       final itemModel = VaultItemModel(
         id: itemId,
         name: fileName,
         folderId: targetFolderId,
-        encryptedPath: destFilePath,
+        encryptedPath: relativePath,
         fileSize: fileSize,
         mimeType: result.files.single.extension ?? 'unknown',
         createdAt: DateTime.now().toIso8601String(),
-        isOffline: 0,
+        syncStatus: SyncStatus.pendiente,
+        contentHash: contentHash,
       );
 
-      await _vaultDatabase.insertItem(db, itemModel);
+      await _repo.insertItem(itemModel);
 
       // 6. Si el usuario activó la opción, borrar el archivo original de la galería
       if (deleteOriginal) {

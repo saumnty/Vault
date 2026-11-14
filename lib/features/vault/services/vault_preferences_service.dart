@@ -1,46 +1,43 @@
-import 'dart:io';
-import '../../../data/repositories/vault_database.dart';
-import '../../../core/services/cache_manager.dart';
+import '../../../core/services/app_paths.dart';
+import '../../../data/models/sync_status.dart';
+import '../../../data/repositories/vault_data_repository.dart';
 import '../../../data/services/google_drive_service.dart';
 
 class VaultPreferenceService {
   final GoogleDriveService _driveService = GoogleDriveService();
-  final CacheManager _cacheManager = CacheManager.instance;
+  final VaultDataRepository _repo = VaultDataRepository();
 
   /// Alternar estado de Favorito
-  Future<void> toggleFavorite(String itemId, bool currentStatus) async {
-    final db = await VaultDatabase.instance.database;
-    await db.update(
-      'vault_items',
-      {'isFavorite': currentStatus ? 0 : 1},
-      where: 'id = ?',
-      whereArgs: [itemId],
-    );
-  }
+  Future<void> toggleFavorite(String itemId, bool currentStatus) =>
+      _repo.setItemFavorite(itemId, !currentStatus);
 
-  /// Alternar modo Sin Conexión (Offline Mode)
-  Future<bool> toggleOfflineMode(String itemId, String cloudId, String fileName, bool makeOffline) async {
+  /// Alternar modo Sin Conexión de un item. Al activarlo se asegura la copia
+  /// local cifrada (`encryptedPath`), descargándola de Drive si falta.
+  Future<bool> toggleOfflineMode(String itemId, bool makeOffline) async {
     try {
-      final db = await VaultDatabase.instance.database;
-      final cacheDir = await _cacheManager.getCacheDirectory();
-      final targetFile = File('${cacheDir.path}/$fileName');
+      final item = await _repo.getItem(itemId);
+      if (item == null) return false;
 
       if (makeOffline) {
-        // Si se marca como offline, debemos asegurar que el archivo cifrado esté descargado localmente
-        if (!await targetFile.exists()) {
-          final downloaded = await _driveService.downloadEncryptedFile(cloudId, targetFile);
+        await AppPaths.init();
+        final target = AppPaths.resolve(item.encryptedPath);
+        if (!await target.exists()) {
+          final driveId = item.driveFileId;
+          if (driveId == null) return false;
+          final downloaded = await _driveService.downloadEncryptedFile(
+            driveId,
+            target,
+          );
           if (!downloaded) return false;
         }
+        await _repo.updateSyncStatus(itemId, SyncStatus.sinConexion);
+      } else if (item.syncStatus == SyncStatus.sinConexion) {
+        await _repo.updateSyncStatus(
+          itemId,
+          item.driveFileId != null ? SyncStatus.enCache : SyncStatus.pendiente,
+        );
       }
-
-      // Actualizar base de datos
-      await db.update(
-        'vault_items',
-        {'isOffline': makeOffline ? 1 : 0},
-        where: 'id = ?',
-        whereArgs: [itemId],
-      );
-
+      await _repo.setItemOffline(itemId, makeOffline);
       return true;
     } catch (e) {
       return false;

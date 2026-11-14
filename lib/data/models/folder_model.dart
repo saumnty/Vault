@@ -4,28 +4,31 @@ class FolderModel {
   final String? parentId;
   final String createdAt;
 
-  FolderModel({
+  /// Marcada para uso sin conexión; el contenido la hereda
+  /// (ver `VaultDataRepository.isEffectivelyOffline`).
+  final bool isOffline;
+
+  const FolderModel({
     required this.id,
     required this.name,
     this.parentId,
     required this.createdAt,
+    this.isOffline = false,
   });
 
-  Map<String, dynamic> toMap() {
-    return {
-      'id': id,
-      'name': name,
-      'parentId': parentId,
-      'createdAt': createdAt,
-    };
-  }
+  Map<String, dynamic> toMap() => {
+    'id': id,
+    'name': name,
+    'parentId': parentId,
+    'createdAt': createdAt,
+    'isOffline': isOffline ? 1 : 0,
+  };
 
-  factory FolderModel.fromMap(Map<String, dynamic> map) {
-    return FolderModel(
-      id: map['id'],
-      name: map['name'],
-      parentId: map['parentId'],
-      createdAt: map['createdAt'],
-    );
-  }
+  factory FolderModel.fromMap(Map<String, dynamic> map) => FolderModel(
+    id: map['id'] as String,
+    name: map['name'] as String,
+    parentId: map['parentId'] as String?,
+    createdAt: map['createdAt'] as String,
+    isOffline: (map['isOffline'] ?? 0) == 1,
+  );
 }

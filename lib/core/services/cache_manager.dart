@@ -1,92 +1,80 @@
 import 'dart:io';
-import 'package:path_provider/path_provider.dart';
-import '../../data/repositories/vault_database.dart'; // Asegúrate de importar tu ruta correcta a la BD
 
+import '../../data/models/sync_status.dart';
+import '../../data/repositories/vault_data_repository.dart';
+import 'app_paths.dart';
+
+/// Caché local de archivos cifrados de items que ya están en la nube.
+///
+/// Un item `en_cache` tiene copia local en `vault/<id>.vault` que se puede
+/// expulsar (LRU por `lastAccessedAt`) sin perder datos, porque existe en
+/// Drive. Los items offline efectivos (propios o por carpeta) nunca se
+/// expulsan. TODO(F6): afinar política y tamaño configurable.
 class CacheManager {
-  static final CacheManager instance = CacheManager._init();
-  CacheManager._init();
+  static final CacheManager instance = CacheManager._init(
+    VaultDataRepository(),
+  );
+  CacheManager._init(this._repo);
+
+  /// Para pruebas / inyección.
+  CacheManager.withRepository(this._repo);
+
+  final VaultDataRepository _repo;
 
   // Límite máximo de caché local (Ejemplo: 500 MB)
   static const int maxCacheSizeBytes = 500 * 1024 * 1024;
 
+  /// Directorio de temporales de descarga/visualización.
   Future<Directory> getCacheDirectory() async {
-    final appDir = await getApplicationDocumentsDirectory();
-    final cacheDir = Directory('${appDir.path}/vault_cache');
-    if (!await cacheDir.exists()) {
-      await cacheDir.create(recursive: true);
-    }
-    return cacheDir;
+    await AppPaths.init();
+    return AppPaths.cacheDir;
   }
 
-  /// Verifica si la caché excede el límite y borra los archivos más antiguos (LRU),
-  /// omitiendo aquellos que estén marcados como 'isOffline' en SQLCipher.
-  Future<void> enforceLruLimit() async {
-    final cacheDir = await getCacheDirectory();
-    if (!await cacheDir.exists()) return;
-
-    final files = cacheDir.listSync().whereType<File>().toList();
-    int totalSize = 0;
-
-    // Calcular tamaño total de la caché
-    for (var file in files) {
-      totalSize += await file.length();
-    }
-
-    // Si superamos el límite, ordenamos por última fecha de acceso (más antiguo primero)
-    if (totalSize > maxCacheSizeBytes) {
-      files.sort((a, b) {
-        final statA = a.statSync();
-        final statB = b.statSync();
-        return statA.accessed.compareTo(statB.accessed);
-      });
-
-      // Abrir conexión a la base de datos para verificar el estado de cada archivo
-      // TODO(F3): columnas localPath/originalName aún no existen en el esquema.
-      final db = await VaultDatabase.instance.database;
-
-      // Eliminar archivos hasta liberar espacio
-      for (var file in files) {
-        if (totalSize <= maxCacheSizeBytes) break;
-
-        // Extraer el nombre del archivo o ID guardado en caché
-        final fileName = file.uri.pathSegments.last;
-        // Limpiamos prefijos temporales si los hubiera (ej: 'plain_' o 'enc_')
-        final cleanName = fileName.replaceFirst(RegExp(r'^(plain_|enc_)'), '');
-
-        // Consultar en SQLCipher si este archivo está marcado como offline permanente
-        final result = await db.query(
-          'vault_items',
-          where: 'localPath LIKE ? OR originalName = ?',
-          whereArgs: ['%$cleanName%', cleanName],
-          limit: 1,
-        );
-
-        bool isOfflineProtected = false;
-        if (result.isNotEmpty) {
-          isOfflineProtected = result.first['isOffline'] == 1;
-        }
-
-        // Si está protegido (marcado como sin conexión), lo saltamos y NO lo borramos
-        if (isOfflineProtected) continue;
-
-        // Si no está protegido, proceder con la purga LRU
-        final fileSize = await file.length();
-        await file.delete();
-        totalSize -= fileSize;
+  /// Expulsa copias locales `en_cache` (menos usadas primero) hasta bajar de
+  /// [maxBytes], saltando items offline efectivos. Devuelve los ids expulsados.
+  Future<List<String>> enforceLruLimit({int maxBytes = maxCacheSizeBytes}) async {
+    await AppPaths.init();
+    final cached = await _repo.getCachedItemsLru();
+    final sizes = <String, int>{};
+    var total = 0;
+    for (final item in cached) {
+      final f = AppPaths.resolve(item.encryptedPath);
+      if (await f.exists()) {
+        final len = await f.length();
+        sizes[item.id] = len;
+        total += len;
       }
     }
+    if (total <= maxBytes) return const [];
+
+    final protected = await _repo.getEffectiveOfflineItemIds();
+    final evicted = <String>[];
+    for (final item in cached) {
+      if (total <= maxBytes) break;
+      if (protected.contains(item.id)) continue;
+      final size = sizes[item.id];
+      if (size == null) continue;
+      if (item.driveFileId == null) continue; // sin copia en la nube: no borrar
+      await AppPaths.resolve(item.encryptedPath).delete();
+      await _repo.updateSyncStatus(item.id, SyncStatus.enNube);
+      total -= size;
+      evicted.add(item.id);
+    }
+    return evicted;
   }
 
-  Future<bool> isFileLocallyAvailable(String fileName) async {
-    final cacheDir = await getCacheDirectory();
-    final file = File('${cacheDir.path}/$fileName');
-    return await file.exists();
+  /// `true` si el archivo cifrado del item existe localmente.
+  Future<bool> isItemLocallyAvailable(String itemId) async {
+    final item = await _repo.getItem(itemId);
+    if (item == null) return false;
+    await AppPaths.init();
+    return AppPaths.resolve(item.encryptedPath).exists();
   }
 
   Future<File> cacheFile(String fileName, List<int> bytes) async {
     await enforceLruLimit();
     final cacheDir = await getCacheDirectory();
-    final file = File('${cacheDir.path}/$fileName');
+    final file = File('${cacheDir.path}${Platform.pathSeparator}$fileName');
     await file.writeAsBytes(bytes);
     return file;
   }

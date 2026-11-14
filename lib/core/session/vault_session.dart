@@ -14,6 +14,11 @@ class VaultSession {
   VaultSession.create();
 
   KeyHierarchy? _keys;
+  final List<void Function()> _onClear = [];
+
+  /// Registra un callback que se invoca al bloquear ([clear]). Lo usa la BD
+  /// para cerrar la conexión SQLCipher.
+  void addOnClear(void Function() listener) => _onClear.add(listener);
 
   bool get isUnlocked => _keys != null;
 
@@ -38,5 +43,8 @@ class VaultSession {
   void clear() {
     _keys?.destroy();
     _keys = null;
+    for (final l in List.of(_onClear)) {
+      l();
+    }
   }
 }

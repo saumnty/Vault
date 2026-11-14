@@ -1,8 +1,8 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
-import 'package:sqflite_sqlcipher/sqflite.dart';
-import '../../data/repositories/vault_database.dart';
+import '../../data/repositories/vault_data_repository.dart';
+import '../../core/services/app_paths.dart';
+import '../../data/models/vault_item_model.dart';
 import '../../data/models/folder_model.dart';
 import '../../data/services/vault_import_service.dart';
 import '../../data/services/google_drive_service.dart';
@@ -22,9 +22,8 @@ class HomeVaultScreen extends StatefulWidget {
 }
 
 class _HomeVaultScreenState extends State<HomeVaultScreen> {
-  final VaultDatabase _vaultDatabase = VaultDatabase();
+  final VaultDataRepository _repo = VaultDataRepository();
   final VaultImportService _importService = VaultImportService();
-  Database? _db;
   
   List<FolderModel> _folders = [];
   List<VaultItemModel> _items = [];
@@ -37,16 +36,13 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
   }
 
   Future<void> _initAndLoadData() async {
-    _db = await _vaultDatabase.database;
     await _loadData();
   }
 
   Future<void> _loadData() async {
-    if (_db == null) return;
-    
     setState(() => _isLoading = true);
-    final folders = await _vaultDatabase.getFoldersByParent(_db!, widget.currentFolderId);
-    final items = await _vaultDatabase.getItemsByFolder(_db!, widget.currentFolderId);
+    final folders = await _repo.getFoldersByParent(widget.currentFolderId);
+    final items = await _repo.getItemsByFolder(widget.currentFolderId);
     
     setState(() {
       _folders = folders;
@@ -56,7 +52,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
   }
 
   Future<void> _createNewFolder(String name) async {
-    if (_db == null || name.trim().isEmpty) return;
+    if (name.trim().isEmpty) return;
 
     final newFolder = FolderModel(
       id: const Uuid().v4(),
@@ -65,7 +61,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
       createdAt: DateTime.now().toIso8601String(),
     );
 
-    await _vaultDatabase.createFolder(_db!, newFolder);
+    await _repo.createFolder(newFolder);
     await _loadData(); 
   }
 
@@ -92,7 +88,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
 
     int uploadedCount = 0;
     for (var item in _items) {
-      final file = File(item.encryptedPath);
+      final file = AppPaths.resolve(item.encryptedPath);
       if (await file.exists()) {
         // Subimos el archivo usando su ID único con extensión .vault
         bool success = await _driveService.uploadEncryptedFile(file, '${item.id}.vault');
