@@ -283,7 +283,7 @@ void main() {
     await tester.tap(find.text('Importar archivo'));
     await _settle(tester);
     expect(find.text('Importar al Vault'), findsOneWidget);
-    await tester.tap(find.text('Cifrar y conservar original'));
+    await tester.tap(find.text('Cifrar e importar'));
     await _settle(tester);
     await _settle(tester);
     expect(calls.imports, 1);

@@ -15,6 +15,7 @@ import '../../data/sync/sync_service.dart';
 import '../../shared/format.dart';
 import '../../shared/widgets/app_buttons.dart';
 import '../../shared/widgets/choice_sheet.dart';
+import '../gallery/delete_originals_sheet.dart';
 import '../sync/quota_bar.dart';
 import '../vault/vault_services.dart';
 import 'pin_flows.dart';
@@ -241,6 +242,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) setState(() => _deleteOriginals = now);
   }
 
+  Future<void> _deleteOriginalsNow() async {
+    final gallery = widget.services.gallery;
+    if (gallery == null) return;
+    final n = await showDeleteOriginalsSheet(context, service: gallery.service);
+    if (n > 0) {
+      _snack(
+        n == 1
+            ? 'Se borró 1 original del dispositivo'
+            : 'Se borraron $n originales del dispositivo',
+      );
+    }
+  }
+
   // ----------------------------------------------------------- almacenamiento
 
   Future<void> _pickCacheLimit() async {
@@ -460,6 +474,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       value: _deleteOriginals,
       onChanged: _toggleDeleteOriginals,
     ),
+    if (_deleteOriginals && widget.services.gallery != null)
+      SettingsTile(
+        icon: Icons.cleaning_services_outlined,
+        title: 'Borrar ahora los originales verificados',
+        subtitle:
+            'Muestra la lista y pide confirmación. Solo archivos con su '
+            'copia verificada en Drive.',
+        onTap: _deleteOriginalsNow,
+      ),
   ];
 
   List<Widget> _storageTiles() {

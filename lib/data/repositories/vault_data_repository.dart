@@ -306,6 +306,11 @@ class VaultDataRepository {
     'cloudSize': size,
   });
 
+  /// Olvida el id del original en la galería (ya se borró del dispositivo):
+  /// el item deja de ser candidato al borrado de originales.
+  Future<void> clearSourceAssetId(String id) =>
+      _updateItem(id, {'sourceAssetId': null}, notify: false);
+
   Future<void> setThumbDriveFileId(String id, String? thumbDriveFileId) =>
       _updateItem(id, {'thumbDriveFileId': thumbDriveFileId});
 

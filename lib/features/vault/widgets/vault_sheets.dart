@@ -9,8 +9,10 @@ import '../../../data/repositories/vault_data_repository.dart';
 import '../../../shared/widgets/app_buttons.dart';
 import '../../../shared/widgets/blur_sheet.dart';
 
-/// Pregunta si se elimina el original tras cifrar. `true` = eliminar,
-/// `false` = conservar, `null` = cancelar.
+/// Confirma la importación de un archivo. NUNCA elimina el original: el
+/// selector de archivos entrega una copia y el borrado de originales solo
+/// existe tras verificar la copia en la nube (Ajustes > Importación).
+/// `false` = importar (conservando el original), `null` = cancelar.
 Future<bool?> showImportConfirmSheet(BuildContext context) {
   return showBlurSheet<bool>(
     context,
@@ -29,18 +31,20 @@ class ImportConfirmContent extends StatelessWidget {
         const SheetHeader(
           title: 'Importar al Vault',
           message:
-              '¿Quieres eliminar el archivo original de tu dispositivo '
-              'después de cifrarlo?',
+              'Se cifrará una copia en la bóveda y tu archivo original no se '
+              'toca. Si quieres liberar espacio, activa "Borrar originales '
+              'cuando estén en la nube" en Ajustes: solo se borran con su '
+              'copia verificada en Drive y tras tu confirmación.',
         ),
         AppFilledButton(
-          label: 'Cifrar y eliminar original',
+          label: 'Cifrar e importar',
           icon: Icons.lock_outline,
-          onPressed: () => Navigator.of(context).pop(true),
+          onPressed: () => Navigator.of(context).pop(false),
         ),
         const SizedBox(height: AppSpacing.sm),
         AppTextButton(
-          label: 'Cifrar y conservar original',
-          onPressed: () => Navigator.of(context).pop(false),
+          label: 'Cancelar',
+          onPressed: () => Navigator.of(context).pop(),
         ),
       ],
     );

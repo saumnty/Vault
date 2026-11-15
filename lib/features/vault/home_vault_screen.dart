@@ -252,9 +252,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     }
     _snack(
       ok
-          ? (deleteOriginal
-                ? 'Archivo cifrado y original eliminado'
-                : 'Archivo importado y cifrado')
+          ? 'Archivo importado y cifrado'
           : 'Importación cancelada o bóveda bloqueada',
     );
   }

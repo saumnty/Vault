@@ -16,10 +16,11 @@ class VaultImportService {
   final VaultDataRepository _repo = VaultDataRepository();
 
   /// Abre el explorador de archivos, cifra por bloques, guarda en la BD
-  /// y opcionalmente borra el archivo original de la galería pública.
+  /// y NUNCA borra el original (ver [deleteOriginal]).
   Future<bool> importAndEncryptFile({
     required String? targetFolderId,
-    bool deleteOriginal = false, // <-- Bandera para borrar el original
+    @Deprecated('Se ignora: el original nunca se borra al importar.')
+    bool deleteOriginal = false,
   }) async {
     try {
       // 1. Verificar sesión activa
@@ -78,16 +79,10 @@ class VaultImportService {
 
       await _repo.insertItem(itemModel);
 
-      // 6. Si el usuario activó la opción, borrar el archivo original de la galería
-      if (deleteOriginal) {
-        try {
-          if (await sourceFile.exists()) {
-            await sourceFile.delete();
-          }
-        } catch (e) {
-          debugPrint('No se pudo borrar el archivo original del sistema: $e');
-        }
-      }
+      // 6. El original NUNCA se borra aquí: el selector entrega una copia (el
+      // borrado real de originales exige verificar la copia en la nube y la
+      // confirmación del usuario; ver `GalleryImportService`). [deleteOriginal]
+      // se ignora a propósito.
 
       return true;
     } catch (e) {

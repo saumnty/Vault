@@ -147,6 +147,7 @@ class GalleryImportService {
     DateTime Function()? clock,
     bool? isIOS,
     this.originalDeletionEnabled = false,
+    this.deletionEnabledProvider,
     this.cloudVerifier,
     this.thumbnailSize = 256,
   }) : _crypto = crypto ?? CryptoService(),
@@ -169,6 +170,20 @@ class GalleryImportService {
   /// Bandera maestra del borrado de originales. APAGADA hasta que F5 verifique
   /// la copia en la nube.
   final bool originalDeletionEnabled;
+
+  /// Si se da, manda sobre [originalDeletionEnabled]: se consulta en cada
+  /// intento (la preferencia del usuario, apagada por defecto).
+  final Future<bool> Function()? deletionEnabledProvider;
+
+  Future<bool> get isDeletionEnabled async {
+    final provider = deletionEnabledProvider;
+    if (provider == null) return originalDeletionEnabled;
+    try {
+      return await provider();
+    } on Object {
+      return false;
+    }
+  }
 
   /// Lo aporta F5: confirma (hash/tamaño) que la copia de Drive coincide.
   /// Sin verificador no se borra nada.
@@ -334,6 +349,7 @@ class GalleryImportService {
       if (asset.isVideo &&
           options.videoQuality != VideoQualityOption.original) {
         emit(ImportStage.compressing, fraction: 0, original: originalBytes);
+        final compressWatch = Stopwatch()..start();
         final out = await compressor.compress(
           origin.file,
           options.videoQuality,
@@ -344,6 +360,16 @@ class GalleryImportService {
           ),
         );
         check();
+        if (!kReleaseMode) {
+          // Solo tamaños y duración (sin nombres ni rutas).
+          debugPrint(
+            '[vault-import] compresion ${options.videoQuality.name}: '
+            'original $originalBytes B -> '
+            '${out == null ? 'sin resultado' : '${out.sizeBytes} B'} '
+            'en ${compressWatch.elapsedMilliseconds} ms; se usa el '
+            'comprimido: ${out != null && out.sizeBytes < originalBytes}',
+          );
+        }
         if (out != null) {
           toDelete.add(out.file);
           // Solo se usa si realmente ahorra espacio.
@@ -478,6 +504,30 @@ class GalleryImportService {
     ];
   }
 
+  /// Candidatos cuya copia en la nube SE VERIFICA ahora mismo (consulta a
+  /// Drive). Es la lista que se muestra al usuario antes de pedir la
+  /// confirmación. Vacía si el borrado está apagado o no hay verificador. No
+  /// borra nada.
+  Future<List<VaultItemModel>> verifiedDeleteCandidates() async {
+    final verifier = cloudVerifier;
+    if (verifier == null || !await isDeletionEnabled) return const [];
+    // Un mismo original puede haberse importado varias veces (p. ej. con
+    // otra calidad): se lista UNA vez por original, con la copia más grande
+    // que se verifique.
+    final all = await deleteOriginalCandidates()
+      ..sort((a, b) => b.fileSize.compareTo(a.fileSize));
+    final seen = <String>{};
+    final out = <VaultItemModel>[];
+    for (final c in all) {
+      if (seen.contains(c.sourceAssetId)) continue;
+      if (await verifier(c)) {
+        seen.add(c.sourceAssetId!);
+        out.add(c);
+      }
+    }
+    return out;
+  }
+
   /// Borra de la galería los originales de [candidates] (subconjunto de
   /// [deleteOriginalCandidates] que el usuario VIO y confirmó).
   ///
@@ -489,10 +539,11 @@ class GalleryImportService {
     required List<VaultItemModel> candidates,
     required bool userConfirmed,
   }) async {
-    if (!userConfirmed || !originalDeletionEnabled) return const [];
+    if (!userConfirmed || !await isDeletionEnabled) return const [];
     final verifier = cloudVerifier;
     if (verifier == null) return const [];
-    final eligible = {for (final c in await deleteOriginalCandidates()) c.id};
+    final candidatesNow = await deleteOriginalCandidates();
+    final eligible = {for (final c in candidatesNow) c.id};
     final byAsset = <String, String>{}; // assetId -> itemId
     for (final c in candidates) {
       if (!eligible.contains(c.id)) continue;
@@ -505,10 +556,18 @@ class GalleryImportService {
     }
     if (byAsset.isEmpty) return const [];
     final deletedAssets = await source.deleteAssets(byAsset.keys.toList());
-    return [
+    final deletedItems = [
       for (final a in deletedAssets)
         if (byAsset.containsKey(a)) byAsset[a]!,
     ];
+    // Ya no hay original: ningún item de ese asset vuelve a ser candidato.
+    final gone = deletedAssets.toSet();
+    for (final c in candidatesNow) {
+      if (gone.contains(c.sourceAssetId)) {
+        await repository.clearSourceAssetId(c.id);
+      }
+    }
+    return deletedItems;
   }
 }
 

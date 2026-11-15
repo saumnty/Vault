@@ -210,3 +210,43 @@ Causa más probable: **crear la bóveda no pedía confirmar el PIN**; un toque p
 10. Modo avión durante la barra de progreso -> "No se pudo restaurar" + Reintentar; NO debe entrar a la bóveda hasta terminar.
 11. Restaurar con otra cuenta de Google sin respaldo -> "No hay respaldo en esta cuenta de Google".
 12. Anota cualquier diferencia (diálogo de Google, Keychain, rutas).
+
+## Pruebas pendientes cerradas (🧪 emulador Android Pixel_7; iOS 📝 sin probar)
+
+Evidencia en `docs/screens/emu/p_*.png` (sin correos; el código de recuperación de la bóveda de prueba NO se guardó en el repo). Instalación limpia (`adb uninstall` + build debug con `VAULT_ALLOW_SCREENSHOTS=true`), bóveda PIN 123456, huella activada y Drive conectado desde el onboarding.
+
+**1. Compresión con `video_grande.mp4` (1080p, 25 s). OK.** Se añadió un log de depuración (`[vault-import] compresion ...`, solo cifras).
+
+| Calidad | Original (B) | Resultado del compresor (B) | Se usó | Guardado (B) | .vault cifrado (B) | Tiempos |
+|---|---|---|---|---|---|---|
+| Original | 24 912 622 | sin compresión | original | 24 912 622 | 24 913 318 | SHA-256 9,5 s, cifrado 4,3 s (~14 s total) |
+| 1080p | 24 912 622 | 27 490 363 (mayor: +10,3 %) | NO, se conservó el original | 24 912 622 | 24 913 318 | compresión 92,9 s; SHA 1,5 s; cifrado 1,3 s |
+| 720p | 24 912 622 | 12 372 658 (-50,3 %) | SÍ (pesa menos) | 12 372 658 | 12 373 018 | compresión 74,6 s; SHA 1,0 s; cifrado 0,7 s |
+
+- El servicio usa el comprimido solo si `sizeBytes < original` (log: `se usa el comprimido: false` en 1080p y `true` en 720p). Con 1080p el original ya era 1080p: no hubo reducción (el compresor lo reencodó más grande) y se conservó; con 720p la hoja final mostró "ahorro de 11,96 MB por compresión". El overhead del .vault es 696 B (360 B en el de 720p).
+- Los tres quedaron `En la nube` (verificados tamaño+MD5). El de 720p (11,80 MB) se abrió y reproduce por streaming con duración 0:25 (`p_t1_720p_reproduce.png`, posición 0:07).
+- Observación: el plugin `video_compress` lanza `Unsupported value: 'kotlin.Unit'` en `deleteAllCache` (limpieza); el servicio ya lo ignora (best-effort), solo ensucia el log. Los tiempos de compresión son del emulador (CPU por software).
+
+**2. Invalidación de la llave biométrica. OK sin cambios de código.** Con la biometría activa se registró una huella nueva (`FINGERPRINT_ENROLL`, PIN 1234, `adb emu finger touch 2` x12). `force-stop` + reabrir: la app no se cuelga ni entra; muestra el PIN con "Biometría desactivada. Ingresa tu PIN maestro" (`p_t2_biometria_invalidada.png`). El PIN 123456 abre la bóveda con los archivos intactos; en Ajustes el interruptor quedó apagado (`p_t2_ajustes_biometria_off.png`); se reactivó (prompt con la huella 2) y tras `force-stop` el desbloqueo biométrico funcionó con la llave nueva. Ya existía el test `auth_controller_test` "llave invalidada por el SO -> false y se desactiva".
+
+**3. Gestos y háptica. OK (todo probado, incluido el pellizco).**
+- Toque largo (`input swipe x y x y 800`) -> modo selección ("1 seleccionado", barra de acciones; `p_t3_seleccion_toque_largo.png`); un toque en otra celda la suma; "Cancelar selección" sale.
+- Vista de lista: deslizar la fila revela Mover / Sin conexión / Eliminar (`p_t3_deslizar_fila_acciones.png`). "Sin conexión" marca el archivo y "Eliminar" abre la confirmación ("también se eliminará de la nube") y borra al confirmar.
+- Pull-to-refresh (swipe hacia abajo desde arriba): spinner y el icono de nube pasa a "sincronizando" (`p_t3_pull_to_refresh.png`).
+- Pellizco: `adb shell input` no lo permite y `sendevent` exige root (`adbd cannot run as root`), pero la consola del emulador sí: `adb emu event send 3:47:<slot> 3:57:<id> 3:53:<x> 3:54:<y> ... 0:0:0` (protocolo MT B, dispositivo `virtio_input_multi_touch`). Separando los dedos la cuadrícula pasa a lista (`p_t3_pellizco_abrir_lista.png`); juntándolos sube a 5 columnas (`p_t3_pellizco_5_columnas.png`).
+- Háptica: el emulador SÍ registra vibraciones. `adb shell dumpsys vibrator_manager` ("Recent vibrations") lista cada `performHapticFeedback` de `com.saumnty.vault` con su constante. Cada tecla del PIN y Borrar -> `constant=4`; PIN incorrecto -> `constant=6`; PIN correcto -> `constant=3`; toque largo (entrar a selección) y toque que selecciona -> `constant=4`; confirmar Eliminar -> `constant=0`. Cancelar selección, "Sin conexión" y pull-to-refresh no vibran (no estaba previsto). La sensación física no se puede juzgar en el emulador.
+
+**4. Borrado de originales. Había un hueco y dos bugs; corregidos.**
+- Hallazgo A: el flujo de UI para disparar el borrado NO existía: nadie llamaba `deleteOriginalsConfirmedInCloud` y `originalDeletionEnabled` nunca era true (el interruptor de Ajustes era solo una preferencia). Implementado: `GalleryImportService.deletionEnabledProvider` (lee la preferencia en cada intento; apagado por defecto), `verifiedDeleteCandidates()` (consulta a Drive con `cloudVerifier` y lista SOLO lo verificado, una vez por original), hoja `features/gallery/delete_originals_sheet.dart` (lista con tamaños, aviso "no se puede deshacer", botón destructivo y Cancelar) y un tile "Borrar ahora los originales verificados" en Ajustes > Importación, visible solo con el interruptor encendido. Tras borrar, `clearSourceAssetId` en los items (quedan intactos, `en_nube`, con su .vault).
+- Hallazgo B (bug visto en el emulador): un mismo original importado 3 veces (original, 1080p, 720p) aparecía como "3 originales, 59,32 MB" aunque era 1 archivo de 23,76 MB (`p_t4_lista_antes_dedupe.png`). Corregido: se lista y borra una vez por `sourceAssetId` (la copia verificada más grande) y se limpian todos los items de ese asset.
+- Hallazgo C (bug preexistente): "Importar archivo" ofrecía "Cifrar y eliminar original" y borraba el archivo justo tras cifrar localmente, SIN verificar la nube; además en Android el selector entrega una copia de caché, así que no borraba el original y el mensaje decía "original eliminado" (comprobado: `prueba_video.mp4` siguió en `/sdcard/DCIM/Camera`). Corregido: la hoja solo ofrece "Cifrar e importar" (explica que el original no se toca y remite a Ajustes; `p_t4_importar_archivo_sin_borrar.png`) y `VaultImportService` ignora `deleteOriginal` (`@Deprecated`).
+- (a) Apagado por defecto en instalación limpia: Ajustes (`p_t4a_ajustes.png`) y hoja de importación de galería (`p_t4a_hoja_importacion.png`) con el interruptor apagado.
+- (b) Interruptor ENCENDIDO con un archivo no verificado: se importó `images.jpeg` con el Wi-Fi apagado y "solo Wi-Fi" activo (`Pendiente de subir`, "2 pendientes"). La hoja listó solo el video verificado y NO el pendiente; `images.jpeg` siguió en `/sdcard/Download` (`p_t4b_lista_solo_verificados.png`). Pendiente/subiendo/error/en_nube sin md5 cubiertos con tests.
+- (d) Cancelar: "Cancelar" en la hoja -> `ls /sdcard/DCIM/Camera` idéntico (video_grande.mp4 de 24 912 622 B incluido). Denegar el diálogo del sistema ("Deny") tampoco borra nada (`ls` idéntico, también con 2 archivos).
+- (c) Confirmación explícita + verificado: hoja "¿Borrar 1 original del dispositivo? (23,76 MB)" -> "Borrar original" -> Android 11+ muestra "Allow vault to delete this video?" (`p_t4c_dialogo_sistema.png`) -> Allow -> `video_grande.mp4` desaparece de `/sdcard/DCIM/Camera` y de MediaStore. La carpeta `vault/` quedó igual (`ls -l` antes/después idéntico) y los 3 items siguen "En la nube" (`p_t4c_tras_borrar.png`). Reabrir la hoja: "No hay originales para borrar". El original se restauró después con `adb push`.
+- Observación no reproducida: una vez, tras tocar Deny, la pantalla se vio en blanco aunque `uiautomator` veía el árbol de Ajustes; no se repitió en dos intentos más. Se atribuye a un artefacto del render por software del emulador.
+- Tests nuevos: `test/gallery_import_service_test.dart` (7 casos) y `test/ui/delete_originals_sheet_test.dart` (5 casos, incluido que la hoja de "Importar archivo" ya no ofrece eliminar). Golden `test/ui/goldens/bottom_sheet.png` regenerado y `vault_home_test` actualizado al nuevo texto.
+
+**5. Verificación final.** `flutter analyze`: No issues found. `flutter test`: 548 tests, All tests passed (536 + 12 nuevos). `flutter build apk --debug`: Built build\app\outputs\flutter-apk\app-debug.apk. Nota: bajo carga `test/ui/settings_test.dart` ("PIN actual incorrecto") falló una vez dentro de la suite completa (temporización) y pasa sola y en las corridas siguientes.
+
+**Pendiente (iOS).** Borrado de originales en iOS (PhotoKit tiene su propio diálogo), pellizco/háptica en iPhone e invalidación biométrica con Face ID (`.biometryCurrentSet`) siguen sin probar en dispositivo.

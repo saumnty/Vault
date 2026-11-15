@@ -7,11 +7,11 @@ Rama de trabajo: `dev-claude` (no se hace push ni se toca main sin petición).
 | Fase | Descripción | Modelo | Estado |
 |---|---|---|---|
 | F0 | Auditoría | Sonnet | 🧪 hecha |
-| F1 | Llaves (DEK, KEK_pin, KEK_rec, biometría, HKDF, retraso) | Opus | 🧪 analyze/test/build apk OK; biometría real sin probar |
+| F1 | Llaves (DEK, KEK_pin, KEK_rec, biometría, HKDF, retraso) | Opus | 🧪 analyze/test/build apk OK; biometría real e invalidación por huella nueva probadas en emulador |
 | F2 | Formato .vault v2 | Opus | 🧪 analyze/test OK (56 tests) |
 | F3 | Base de datos (esquema, rutas relativas) | Sonnet | 🧪 analyze/test OK; SQLCipher real probado en emulador (llave cruda x'hex') |
-| F3.5 | Rediseño UI | Sonnet | 🧪 analyze/test OK; capturas en emulador (docs/screens/emu); gestos finos/háptica sin probar |
-| F4 | Importación desde la galería | Sonnet | 🧪 parcial: importación real en emulador OK (permiso, selector, compresión, miniaturas cifradas); iCloud y video real grande sin probar |
+| F3.5 | Rediseño UI | Sonnet | 🧪 analyze/test OK; capturas en emulador (docs/screens/emu); gestos (toque largo, deslizar fila, pull-to-refresh, pellizco) y háptica probados en emulador |
+| F4 | Importación desde la galería | Sonnet | 🧪 parcial: importación real en emulador OK (permiso, selector, compresión, miniaturas cifradas); video real de 24,9 MB (Original/1080p/720p) y borrado de originales con confirmación probados en emulador; iCloud sin probar |
 | F5 | Sincronización con Drive | Sonnet | 🧪 analyze/test OK; emulador: login Google, subida verificada (tamaño+MD5), cuota, reanudación y corte de red OK; iOS sin probar; borrado de copias en Drive hecho en F6a |
 | F6 | Visor y caché | Sonnet/Opus | 🧪 F6a (visor fotos/video completo-primero, caché LRU, sin conexión, borrado remoto) analyze/test/emulador OK; F6b (streaming por bloques con servidor loopback, sin texto plano en disco, respaldo automático a completo-primero) analyze/test/emulador OK (Android); iOS sin probar; rendimiento limitado por AES-GCM en Dart puro (pendiente: AES nativo o isolates) |
 | F7 | Seguridad del sistema | Sonnet/Haiku | 🧪 autobloqueo configurable con suspensión por UI del sistema, lock cancela unlock en vuelo, FLAG_SECURE Android, sin respaldo Android: analyze/test/emulador OK; 📝 iOS (cobertura multitarea, exclusión de iCloud) escrito sin probar en dispositivo |

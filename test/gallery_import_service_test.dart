@@ -124,6 +124,7 @@ void main() {
 
   GalleryImportService build({
     bool enabled = false,
+    Future<bool> Function()? enabledProvider,
     Future<bool> Function(dynamic)? verifier,
     SecretKey? Function()? files,
   }) => GalleryImportService(
@@ -134,6 +135,7 @@ void main() {
     thumbsKey: () => keys.thumbs,
     tempDirProvider: () => Directory('${tmp.path}/import_tmp'),
     originalDeletionEnabled: enabled,
+    deletionEnabledProvider: enabledProvider,
     cloudVerifier: verifier == null ? null : (i) => verifier(i),
     isIOS: false,
   );
@@ -438,6 +440,208 @@ void main() {
       expect(deleted.length, 1);
     });
   });
+
+  group(
+    'borrado de originales: flujo con confirmación (pruebas pendientes)',
+    () {
+      // Cuatro estados: verificado, pendiente, subiendo, error (y uno en_nube
+      // sin md5 que el verificador real rechaza).
+      Future<Map<String, String>> seedStates() async {
+        final assets = [
+          source.add('ok', GalleryAssetType.image, 100),
+          source.add('pend', GalleryAssetType.image, 100),
+          source.add('sub', GalleryAssetType.image, 100),
+          source.add('err', GalleryAssetType.image, 100),
+          source.add('nomd5', GalleryAssetType.image, 100),
+        ];
+        final res = await build().importAssets(assets, const ImportOptions());
+        final ids = {
+          for (var i = 0; i < assets.length; i++)
+            assets[i].id: res.items[i].itemId!,
+        };
+        await repo.markCloudVerified(
+          ids['ok']!,
+          driveFileId: 'drv',
+          md5: 'abc',
+          size: 100,
+        );
+        await repo.updateSyncStatus(ids['sub']!, SyncStatus.subiendo);
+        await repo.updateSyncStatus(ids['err']!, SyncStatus.error);
+        await repo.updateSyncStatus(
+          ids['nomd5']!,
+          SyncStatus.enNube,
+          driveFileId: 'drv2',
+        );
+        return ids;
+      }
+
+      // Verificador como el real: exige md5 y tamaño guardados.
+      Future<bool> realLike(dynamic i) async =>
+          i.cloudMd5 != null && i.cloudSize != null;
+
+      test('apagado por defecto: nada que listar ni borrar', () async {
+        await seedStates();
+        final svc = build(verifier: realLike); // sin proveedor ni bandera
+        expect(await svc.isDeletionEnabled, isFalse);
+        expect(await svc.verifiedDeleteCandidates(), isEmpty);
+        final all = await repo.getItemsByFolder(null);
+        expect(
+          await svc.deleteOriginalsConfirmedInCloud(
+            candidates: all,
+            userConfirmed: true,
+          ),
+          isEmpty,
+        );
+        expect(source.deleted, isEmpty);
+      });
+
+      test(
+        'encendido: solo el verificado; pendiente/subiendo/error/sin md5 no',
+        () async {
+          final ids = await seedStates();
+          final svc = build(
+            enabledProvider: () async => true,
+            verifier: realLike,
+          );
+          final listed = await svc.verifiedDeleteCandidates();
+          expect(listed.map((e) => e.id), [ids['ok']]);
+          final all = await repo.getItemsByFolder(null);
+          final deleted = await svc.deleteOriginalsConfirmedInCloud(
+            candidates: all,
+            userConfirmed: true,
+          );
+          expect(deleted, [ids['ok']]);
+          expect(source.deleted, ['ok']);
+        },
+      );
+
+      test('cancelar (sin confirmación) no borra nada', () async {
+        await seedStates();
+        final svc = build(
+          enabledProvider: () async => true,
+          verifier: realLike,
+        );
+        final listed = await svc.verifiedDeleteCandidates();
+        expect(listed, isNotEmpty);
+        expect(
+          await svc.deleteOriginalsConfirmedInCloud(
+            candidates: listed,
+            userConfirmed: false,
+          ),
+          isEmpty,
+        );
+        expect(source.deleted, isEmpty);
+      });
+
+      test(
+        'tras borrar, el item queda intacto y deja de ser candidato',
+        () async {
+          final ids = await seedStates();
+          final svc = build(
+            enabledProvider: () async => true,
+            verifier: realLike,
+          );
+          final listed = await svc.verifiedDeleteCandidates();
+          await svc.deleteOriginalsConfirmedInCloud(
+            candidates: listed,
+            userConfirmed: true,
+          );
+          final item = await repo.getItem(ids['ok']!);
+          expect(item, isNotNull);
+          expect(item!.syncStatus, SyncStatus.enNube);
+          expect(item.sourceAssetId, isNull);
+          expect(
+            File(AppPaths.resolve(item.encryptedPath).path).existsSync(),
+            isTrue,
+          );
+          expect(await svc.verifiedDeleteCandidates(), isEmpty);
+          // Segundo intento: no vuelve a pedir borrar el mismo asset.
+          await svc.deleteOriginalsConfirmedInCloud(
+            candidates: listed,
+            userConfirmed: true,
+          );
+          expect(source.deleted, ['ok']);
+        },
+      );
+
+      test(
+        'un mismo original importado varias veces se lista y borra una vez',
+        () async {
+          final a = source.add('dup', GalleryAssetType.image, 100);
+          final res = await build().importAssets([a, a], const ImportOptions());
+          final ids = [for (final r in res.items) r.itemId!];
+          expect(ids, hasLength(2));
+          for (final id in ids) {
+            await repo.markCloudVerified(
+              id,
+              driveFileId: 'd$id',
+              md5: 'm',
+              size: 100,
+            );
+          }
+          final svc = build(
+            enabledProvider: () async => true,
+            verifier: realLike,
+          );
+          final listed = await svc.verifiedDeleteCandidates();
+          expect(listed, hasLength(1));
+          final deleted = await svc.deleteOriginalsConfirmedInCloud(
+            candidates: listed,
+            userConfirmed: true,
+          );
+          expect(deleted, hasLength(1));
+          expect(source.deleted, ['dup']);
+          // Ambos items conservados y ninguno vuelve a ser candidato.
+          for (final id in ids) {
+            final it = await repo.getItem(id);
+            expect(it, isNotNull);
+            expect(it!.sourceAssetId, isNull);
+          }
+          expect(await svc.verifiedDeleteCandidates(), isEmpty);
+        },
+      );
+
+      test('la preferencia se lee en cada intento (se puede apagar)', () async {
+        await seedStates();
+        var on = true;
+        final svc = build(enabledProvider: () async => on, verifier: realLike);
+        expect(await svc.verifiedDeleteCandidates(), isNotEmpty);
+        on = false;
+        expect(await svc.verifiedDeleteCandidates(), isEmpty);
+        final all = await repo.getItemsByFolder(null);
+        expect(
+          await svc.deleteOriginalsConfirmedInCloud(
+            candidates: all,
+            userConfirmed: true,
+          ),
+          isEmpty,
+        );
+        expect(source.deleted, isEmpty);
+      });
+
+      test(
+        'si el verificador falla en el último momento no se borra',
+        () async {
+          await seedStates();
+          var calls = 0;
+          final svc = build(
+            enabledProvider: () async => true,
+            verifier: (i) async => ++calls == 1, // lista OK, re-verificación no
+          );
+          final listed = await svc.verifiedDeleteCandidates();
+          expect(listed, hasLength(1));
+          expect(
+            await svc.deleteOriginalsConfirmedInCloud(
+              candidates: listed,
+              userConfirmed: true,
+            ),
+            isEmpty,
+          );
+          expect(source.deleted, isEmpty);
+        },
+      );
+    },
+  );
 
   group('EncryptedThumbnailLoader', () {
     test('descifra, cachea con LRU y falla a null sin llave/archivo', () async {

@@ -323,6 +323,7 @@ class VaultServices {
   ) {
     final session = VaultSession();
     final source = PhotoManagerGallerySource();
+    final preferences = GalleryImportPreferences(FlutterSecureKeyValueStore());
     final service = GalleryImportService(
       source: source,
       compressor: VideoCompressPlugin(),
@@ -333,14 +334,15 @@ class VaultServices {
           Directory(p.join(AppPaths.cacheDir.path, 'import_tmp')),
       // F5: verificador real (en_nube + driveFileId + MD5/tamaño). La bandera
       // maestra sigue APAGADA: el borrado de originales exige además la
-      // confirmación explícita del usuario y activar la bandera. No se borra
-      // nada automáticamente.
+      // confirmación explícita del usuario y la preferencia (apagada por
+      // defecto, leída en cada intento). No se borra nada automáticamente.
+      deletionEnabledProvider: preferences.getDeleteOriginalsWhenInCloud,
       cloudVerifier: sync.cloudVerifier,
     );
     return GalleryDeps(
       source: source,
       service: service,
-      preferences: GalleryImportPreferences(FlutterSecureKeyValueStore()),
+      preferences: preferences,
     );
   }
 }
