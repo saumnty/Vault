@@ -17,6 +17,15 @@ Future<void> showRecoveryCodeSheet(BuildContext context, String code) {
   );
 }
 
+/// Parte el código (`XXXX-XXXX-...`) en filas de 3 grupos.
+List<List<String>> _groupRows(String code) {
+  final groups = code.split('-').where((g) => g.isNotEmpty).toList();
+  return [
+    for (var i = 0; i < groups.length; i += 3)
+      groups.sublist(i, i + 3 > groups.length ? groups.length : i + 3),
+  ];
+}
+
 class RecoveryCodeContent extends StatelessWidget {
   const RecoveryCodeContent({super.key, required this.code});
 
@@ -45,10 +54,29 @@ class RecoveryCodeContent extends StatelessWidget {
             ),
             child: Semantics(
               label: 'Código de recuperación: $code',
-              child: SelectableText(
-                code,
-                textAlign: TextAlign.center,
-                style: AppTypography.code,
+              // Cada grupo de 4 caracteres es un widget indivisible: nunca se
+              // parte entre líneas. Se muestran 3 grupos por fila.
+              child: ExcludeSemantics(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final row in _groupRows(code))
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          for (final group in row)
+                            Padding(
+                              padding: AppSpacing.recoveryGroup,
+                              child: SelectableText(
+                                group,
+                                maxLines: 1,
+                                style: AppTypography.code,
+                              ),
+                            ),
+                        ],
+                      ),
+                  ],
+                ),
               ),
             ),
           ),

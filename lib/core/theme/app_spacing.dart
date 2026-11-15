@@ -14,6 +14,8 @@ abstract final class AppSpacing {
   static const EdgeInsets page = EdgeInsets.all(lg);
   static const EdgeInsets pageHorizontal = EdgeInsets.symmetric(horizontal: lg);
   static const EdgeInsets card = EdgeInsets.all(md);
+  static const EdgeInsets recoveryGroup =
+      EdgeInsets.symmetric(horizontal: sm, vertical: xs);
   static const EdgeInsets sheet = EdgeInsets.fromLTRB(lg, sm, lg, lg);
   static const EdgeInsets gridPage = EdgeInsets.fromLTRB(
     lg,
