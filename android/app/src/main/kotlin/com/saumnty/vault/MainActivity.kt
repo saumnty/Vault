@@ -1,4 +1,4 @@
-package com.saumnty.vault.vault
+package com.saumnty.vault
 
 import io.flutter.embedding.android.FlutterFragmentActivity
 
