@@ -300,3 +300,41 @@ Lo de iOS se revisó solo leyendo el código: Keychain y Face ID, `SceneDelegate
 
 ### Verificación final
 `flutter analyze`: No issues found. `flutter test`: 563 tests, All tests passed (548 + 15 nuevos/ajustados de esta revisión). `flutter build apk --debug`: Built build\app\outputs\flutter-apk\app-debug.apk. No cambia el formato .vault v2, ni el esquema de la BD, ni el formato del respaldo de recuperación: compatible con los datos existentes.
+
+## F10 APK release (2026-11-15)
+
+Comando final: `flutter build apk --release --obfuscate --split-debug-info=build/symbols` (R8 por defecto + ofuscación de Dart, hallazgo S-10). Símbolos en `build/symbols/` (fuera del control de versiones, ignorado por `build/`).
+
+| Campo | Valor |
+|---|---|
+| Ruta | `build/vault-release-signed.apk` (copia de `build/app/outputs/flutter-apk/app-release.apk`) |
+| Tamaño | 74.127.300 bytes (70,7 MB; el debug pesa 203,7 MB) |
+| SHA-256 | `8aeaed98ad390354af609e2ea5a7266905368870a98f14b1be834efe99a45145` |
+| Firma | `apksigner verify --print-certs`: Verifies; esquema v2; 1 firmante, CN=Vault, O=Saumnty, C=MX, RSA 2048 |
+| SHA-1 del certificado | `98:41:90:61:8B:DA:8C:ED:11:FA:FA:1B:D5:08:65:89:E9:0D:AD:A6` (coincide con la esperada) |
+| SHA-256 del certificado | `9E:C5:D7:7D:48:3F:8C:73:4D:2E:64:3B:03:BE:44:C3:6F:68:AD:FA:6F:0D:D2:B5:B1:56:60:91:3B:57:B2:EA` |
+
+Ofuscación: con R8 + `--obfuscate` la app funcionó igual en la regresión (onboarding, importación con compresión, SQLCipher, AES nativo, Argon2 nativo, biometría, streaming de video, sincronización con Drive, restauración), sin crashes ni `FATAL` en logcat. Se recomienda y queda documentada en README.md. S-10 sigue parcialmente pendiente: el build sin `key.properties` aún cae en silencio a la llave debug.
+
+Variante de prueba: para ejercitar Google en el emulador se generó `build/vault-release-debugkey.apk` (mismo comando, firmada con la llave DEBUG renombrando temporalmente `android/key.properties`, restaurado después; SHA-256 `ccc3381f1be0fdc0e2a40e95ae638640a603d5982f03a3a77d2be6ed1c5c49f3`). Es solo para pruebas locales: no distribuir. No se subió ningún APK a ningún sitio.
+
+**Acción manual pendiente**: registrar la SHA-1 de release en el cliente Android de Google Cloud. Hasta entonces el inicio de sesión de Google con el APK firmado con la llave de release falla con ApiException 10 (ver paso 1b abajo).
+
+## Regresión final (emulador Pixel_7, APK release con R8 + ofuscación)
+
+APK usados: **[R]** `vault-release-signed.apk` (llave de release; pasos sin Google) y **[D]** `vault-release-debugkey.apk` (misma compilación firmada con la llave debug; pasos con Google, que la SHA-1 de release aún no tiene registrada). Capturas en `docs/screens/emu/reg_*.png` (correo y código difuminados). En release `FLAG_SECURE` está activo: tras crear cada bóveda se desactivó "Proteger pantalla" en Ajustes para capturar (preferencia del usuario, persiste).
+
+| # | Paso | APK | Resultado |
+|---|---|---|---|
+| 1a | Onboarding completo: PIN con confirmación (un PIN de confirmación distinto da "Los PIN no coinciden"), código de recuperación, confirmación de 4 caracteres (los de posiciones aleatorias; unos incorrectos dan "Esos caracteres no coinciden"), biometría (huella `finger touch`), Drive | R y D | OK |
+| 1b | Google con llave de release | R | Falla esperada: selector de cuenta y luego "Google rechazó la configuración OAuth (código 10): revisa que el cliente Android ... tenga el package com.saumnty.vault y el SHA-1 de esta firma". Se omite con "Más tarde". Capturas negras por FLAG_SECURE; evidencia: texto leído con `uiautomator dump` |
+| 1c | Google con llave debug | D | OK: cuenta conectada, "Entrar a mi bóveda" |
+| 2a | Importar 2 fotos + video corto, sin Google; abrir foto con zoom (doble toque), reproducir video; bloquear con botón, huella y PIN | R | OK (`reg_02`..`reg_06`) |
+| 2b | Importar 2 fotos + video corto + video grande a 720p (23,76 MB → 11,80 MB, ahorro 11,96 MB) | D | OK (`reg_07`) |
+| 3 | Sincronizar hasta "Todo está al día"; cuota Drive | D | OK: pendientes 0, con error 0, "Espacio de Drive: 133,66 MB de 15,00 GB" (`reg_08`) |
+| 4 | Foto con zoom; video grande por streaming, seek a 0:04 y a otra posición | D | OK (`reg_09`..`reg_12`) |
+| 5 | Carpeta "Offline" marcada sin conexión (2 fotos); caché vaciada (0 B; sin conexión 236,1 KB); wifi y datos cortados | D | OK: la foto de la carpeta offline abre sin red (`reg_14`); el video no offline muestra "No se pudo reproducir: Sin conexión a internet. Este archivo solo está en la nube; conéctate y vuelve a intentarlo." con Reintentar (`reg_13`); red restaurada y ping OK. Nota: durante este paso el emulador mostró un fotograma obsoleto de la pantalla de bloqueo y un diálogo "System UI isn't responding" (SystemUI del emulador mientras GMS compilaba), se recuperó con el toque habitual; no es de la app |
+| 6 | Bloquear (botón); PIN incorrecto ("PIN incorrecto") y luego correcto; huella; autobloqueo a 15 s | D (y R para botón/PIN/huella) | OK: en segundo plano 6 s sigue abierta, 25 s pide desbloqueo (`reg_15`) |
+| 7 | Restaurar: `adb uninstall`, reinstalar, "Ya tengo una bóveda", Google, código incorrecto ("Código incorrecto") y luego el correcto, PIN nuevo con confirmación, huella opcional | D | OK: "6 archivos y 1 carpeta recuperados"; la carpeta conserva "disponible sin conexión"; foto, foto de la carpeta offline y video grande (descarga de Drive 100 %, descifrado y reproducción) abren (`reg_16`..`reg_21`) |
+
+Sin bugs nuevos ni cambios de código. La ofuscación no rompió nada.

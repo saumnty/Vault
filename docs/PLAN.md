@@ -17,7 +17,7 @@ Rama de trabajo: `dev-claude` (no se hace push ni se toca main sin petición).
 | F7 | Seguridad del sistema | Sonnet/Haiku | 🧪 autobloqueo configurable con suspensión por UI del sistema, lock cancela unlock en vuelo, FLAG_SECURE Android, sin respaldo Android: analyze/test/emulador OK; 📝 iOS (cobertura multitarea, exclusión de iCloud) escrito sin probar en dispositivo |
 | F8 | Onboarding y ajustes | Haiku/Sonnet | 🧪 onboarding obligatorio (bienvenida, PIN, código + confirmación por posiciones, biometría, Drive), `regenerateRecoveryCode`, Ajustes completos: analyze/test (485)/emulador Android OK; iOS sin probar; liberar/vaciar caché probado con BD real en tests (emulador con bóveda vacía) |
 | F9 | Restauración | Sonnet | 🧪 restaurar en instalación limpia (Google -> código -> PIN nuevo -> BD y miniaturas), snapshot siempre fresco (sucio + debounce + al bloquear): analyze/test/emulador Android OK; 📝 iOS sin probar (ver checklist en REPORTE.md) |
-| F10 | Despliegue (Codemagic, Sideloadly) | Sonnet/Haiku | ⬜ |
+| F10 | Despliegue (Codemagic, Sideloadly) | Sonnet/Haiku | 🧪 APK release firmado (SHA-1 verificada) con R8 + `--obfuscate`, regresión final completa en emulador Android OK (REPORTE: F10 APK release y Regresión final); ⬜ acción manual: registrar la SHA-1 de release en Google Cloud; 📝 Codemagic/iOS sin probar |
 
 ## Hallazgos F0
 - `docs/CONTEXTO.md` NO existe en el repo (tampoco en el historial). Se usó el mensaje de especificación como fuente única.

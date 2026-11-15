@@ -28,6 +28,14 @@ flutter build apk --debug
 flutter build apk --release                  # firmado con la llave de release si existe android/key.properties
 ```
 
+**Comando de release recomendado** (R8 + ofuscación de Dart; verificado en la regresión final, ver `docs/REPORTE.md` F10/Regresión final):
+
+```bash
+flutter build apk --release --obfuscate --split-debug-info=build/symbols
+```
+
+Guarda `build/symbols/` fuera del repo (ya está ignorado por `build/`) para desofuscar trazas. Verifica la firma con `apksigner verify --print-certs build/app/outputs/flutter-apk/app-release.apk` (SHA-1 esperada en la sección de firma). Cuidado: sin `android/key.properties` el build se firma con la llave debug.
+
 Emulador (en Windows con WHPX, el arranque fiable es con GPU por software):
 
 ```bash
