@@ -44,3 +44,12 @@ F5 (sincronización) necesita: proyecto en Google Cloud, Drive API, pantalla de 
 - ✅ Cerrar la app (force-stop) y reabrir → pantalla de PIN; PIN correcto → bóveda desbloqueada (tras ≈40 s).
 - No ejecutado: PIN incorrecto ×5 (bloqueo 30 s), biometría (el emulador no tiene huella enrolada), cambio de huella.
 - Observaciones: (1) el desbloqueo/creación tarda ~40 s en el emulador (Argon2id m=19456 en Dart puro sobre CPU emulada); en teléfono real debería ser mucho menor, pero hay que medirlo — si pasa de ~2 s, reducir parámetros o usar `cryptography_flutter`. (2) El código de recuperación se parte en 2 líneas ("FDPJ" huérfano): ajuste cosmético pendiente. (3) Sin indicador de progreso claro durante la derivación aparte del spinner del botón.
+
+---
+## Actualización: Argon2id nativo (libsodium)
+
+- `lib/core/crypto/argon2_backend.dart`: interfaz `Argon2Backend` inyectable (`Argon2Backend.current`). Android/iOS: `FallbackArgon2Backend(SodiumArgon2Backend → IsolateDartArgon2Backend)`; escritorio: Dart puro en isolate; `flutter test`: Dart en el mismo isolate (FakeAsync). `Argon2Params.deriveKey` delega en él; API y JSON sin cambios.
+- Paquete: `sodium_libs` 3.4.6+4 + `sodium` 3.4.6 (libsodium 1.0.20 precompilado, `crypto_pwhash` ALG_ARGON2ID13, corre en otro isolate con `runIsolated`). `cryptography_flutter` NO implementa Argon2 (solo AES/ChaCha/HMAC/PBKDF2/Ed25519/X25519/ECDSA/RSA). `sodium_libs` está marcado como discontinuado en favor de `sodium` 4.x, que compila libsodium con build hooks (exige `make`+bash en Windows y Dart ≥3.12 en sus versiones nuevas): migrar cuando se suba el SDK.
+- Parámetros SIN cambios: m=19456 KiB, t=2, p=1. Resultado idéntico: vector phc-winner-argon2 (test/argon2_backend_test.dart) y libsodium == Dart en el emulador (integration_test/argon2_native_test.dart).
+- Tiempos en emulador (Pixel_7, x86_64), por derivación: Dart en hilo UI (antes) release 0,5–1,2 s / debug 1,5–3,4 s (primera hasta 6–7 s en debug); libsodium (ahora) release 70–140 ms / debug 0,3–1,1 s. El flujo completo crear/desbloquear sigue en ~4,5–6 s release: el resto se va fuera de Argon2id (probablemente SQLCipher: la llave se pasa como texto hex → PBKDF2-SHA512 256 000 iteraciones al abrir; usar llave cruda `x'…'` lo evitaría — pendiente, fuera de este cambio).
+- Android descarga el zip de libsodium (verificado por SHA-512) en la primera compilación; iOS lo hace en `pod install` (prepare_command). iOS sin probar.

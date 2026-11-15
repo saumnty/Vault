@@ -44,6 +44,11 @@ dependencies:
   extension_google_sign_in_as_googleapis_auth: ^2.0.2 # <-- Añade esta línea
   photo_manager: 3.12.0
   video_compress: 3.1.4
+  # Argon2id nativo (libsodium crypto_pwhash) en Android/iOS. Ver
+  # lib/core/crypto/argon2_backend.dart. Línea 3.x: binarios precompilados
+  # (la 4.x compila libsodium con build hooks y exige make/bash en Windows).
+  sodium_libs: 3.4.6+4
+  sodium: 3.4.6
 
 dev_dependencies:
   flutter_test:

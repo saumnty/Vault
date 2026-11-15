@@ -1,7 +1,10 @@
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
-import 'package:cryptography/dart.dart';
+
+import 'argon2_backend.dart';
+
+export 'argon2_backend.dart' show Argon2Backend;
 
 /// Parámetros de Argon2id.
 ///
@@ -63,31 +66,36 @@ class Argon2Params {
     return Argon2Params(memoryKiB: m, iterations: t, parallelism: p);
   }
 
+  /// Longitud de la llave derivada (bytes). Fija: AES-256.
+  int get hashLength => 32;
+
   /// Deriva una llave de 256 bits (KEK) a partir de [secret] y [salt].
   ///
-  /// Se usa explícitamente la implementación en Dart puro ([DartArgon2id])
-  /// para que el resultado sea idéntico en cualquier plataforma (el respaldo
-  /// de recuperación debe poder abrirse en otro teléfono). Dicha
-  /// implementación cede el hilo periódicamente, así que no congela la UI
-  /// por completo, aunque sí la ralentiza durante ~0,5–2 s en producción.
-  Future<SecretKeyData> deriveKey(List<int> secret, List<int> salt) async {
-    final argon2 = DartArgon2id(
-      memory: memoryKiB,
-      iterations: iterations,
-      parallelism: parallelism,
-      hashLength: 32,
-    );
-    final key = await argon2.deriveKey(
-      secretKey: SecretKeyData(
-        Uint8List.fromList(secret),
-        overwriteWhenDestroyed: true,
-      ),
-      nonce: salt,
-    );
-    return SecretKeyData(
-      Uint8List.fromList(await key.extractBytes()),
-      overwriteWhenDestroyed: true,
-    );
+  /// El cálculo lo hace [Argon2Backend.current] (o [backend] si se indica):
+  /// libsodium nativo en Android/iOS y Dart puro en otras plataformas, en la
+  /// app siempre fuera del isolate de la UI (en `flutter test`, en el mismo
+  /// isolate por compatibilidad con FakeAsync). Todos los backends producen el mismo
+  /// resultado (Argon2id v1.3), así que el respaldo de recuperación se abre en
+  /// cualquier teléfono. Ver `argon2_backend.dart`.
+  Future<SecretKeyData> deriveKey(
+    List<int> secret,
+    List<int> salt, {
+    Argon2Backend? backend,
+  }) async {
+    final s = Uint8List.fromList(secret);
+    try {
+      final out = await (backend ?? Argon2Backend.current).derive(
+        secret: s,
+        salt: Uint8List.fromList(salt),
+        params: this,
+      );
+      if (out.length != hashLength) {
+        throw StateError('Argon2id devolvió ${out.length} bytes');
+      }
+      return SecretKeyData(out, overwriteWhenDestroyed: true);
+    } finally {
+      s.fillRange(0, s.length, 0);
+    }
   }
 
   @override
