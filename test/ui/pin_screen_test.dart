@@ -201,6 +201,12 @@ void main() {
 
     await _type(tester, '2468');
     await tester.tap(find.text('Continuar'));
+    await tester.pump();
+    // Paso de confirmación: se pide el mismo PIN otra vez.
+    expect(find.text('Confirma tu PIN'), findsOneWidget);
+    expect(_dots(tester).filled, 0);
+    await _type(tester, '2468');
+    await tester.tap(find.text('Continuar'));
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 500)),
     );

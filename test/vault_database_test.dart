@@ -376,6 +376,37 @@ void main() {
       expect(passwords[0], isNot(passwords[1]));
     });
 
+    test('aperturas concurrentes comparten una sola conexión', () async {
+      session.open(await _keys(1));
+      final dbs = await Future.wait([for (var i = 0; i < 5; i++) vdb.database]);
+      for (final db in dbs) {
+        expect(identical(db, dbs.first), isTrue);
+      }
+      expect(passwords.length, 1);
+    });
+
+    test('lock durante la apertura: la conexión queda cerrada', () async {
+      session.open(await _keys(1));
+      final opening = vdb.database;
+      session.clear();
+      await opening;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(vdb.isOpen, isFalse);
+      await expectLater(vdb.database, throwsStateError);
+    });
+
+    test('desbloquear otra vez con la misma DEK no cierra la conexión ni '
+        'destruye las llaves en uso', () async {
+      final keys = await _keys(1);
+      session.open(keys);
+      final db = await vdb.database;
+      session.open(await _keys(1)); // doble desbloqueo (misma DEK)
+      expect(keys.isDestroyed, isFalse);
+      expect(identical(await vdb.database, db), isTrue);
+      expect(db.isOpen, isTrue);
+      expect(passwords.length, 1);
+    });
+
     test('exportEncryptedSnapshot copia el .db y reabre luego', () async {
       session.open(await _keys(1));
       final repo = VaultDataRepository(dbProvider: () => vdb.database);

@@ -1,8 +1,10 @@
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 
 import 'argon2_backend.dart';
+import 'crypto_debug.dart';
 
 export 'argon2_backend.dart' show Argon2Backend;
 
@@ -82,9 +84,14 @@ class Argon2Params {
     List<int> salt, {
     Argon2Backend? backend,
   }) async {
+    // Copia propia del secreto, solo para esta llamada: se pone a cero al
+    // terminar, cuando el backend ya no la usa (las llamadas concurrentes
+    // nunca comparten este buffer).
     final s = Uint8List.fromList(secret);
+    final b = backend ?? Argon2Backend.current;
+    final sw = kDebugMode ? (Stopwatch()..start()) : null;
     try {
-      final out = await (backend ?? Argon2Backend.current).derive(
+      final out = await b.derive(
         secret: s,
         salt: Uint8List.fromList(salt),
         params: this,
@@ -92,7 +99,23 @@ class Argon2Params {
       if (out.length != hashLength) {
         throw StateError('Argon2id devolvió ${out.length} bytes');
       }
+      if (sw != null) {
+        final used = b is FallbackArgon2Backend ? b.lastUsed : b.name;
+        cryptoDebugLog(
+          'argon2id ok backend=$used m=$memoryKiB t=$iterations '
+          'p=$parallelism secretLen=${s.length} saltLen=${salt.length} '
+          'salt#=${fingerprint(salt)} ${sw.elapsedMilliseconds} ms',
+        );
+      }
       return SecretKeyData(out, overwriteWhenDestroyed: true);
+    } catch (e) {
+      if (sw != null) {
+        cryptoDebugLog(
+          'argon2id ERROR backend=${b.name} ${sw.elapsedMilliseconds} ms: '
+          '${e.runtimeType}',
+        );
+      }
+      rethrow;
     } finally {
       s.fillRange(0, s.length, 0);
     }

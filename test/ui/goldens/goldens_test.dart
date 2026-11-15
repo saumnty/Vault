@@ -215,6 +215,9 @@ void main() {
       await tester.pump();
       await _digits(tester, '1357');
       await tester.tap(find.text('Continuar'));
+      await tester.pump();
+      await _digits(tester, '1357'); // confirmación
+      await tester.tap(find.text('Continuar'));
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 500)),
       );

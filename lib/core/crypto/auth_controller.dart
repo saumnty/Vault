@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
 import '../session/vault_session.dart';
 import 'biometric_key_store.dart';
+import 'crypto_debug.dart';
 import 'kdf.dart';
 import 'key_hierarchy.dart';
 import 'key_recovery_service.dart';
@@ -91,6 +93,10 @@ class AuthController {
   /// vez; para reemplazarla usa [restoreFromRecovery]).
   Future<VaultCreationResult> createVault(String pin) async {
     _checkPin(pin);
+    return _serialized(() => _createVault(pin));
+  }
+
+  Future<VaultCreationResult> _createVault(String pin) async {
     if (await hasVault()) {
       throw StateError('Ya existe una bóveda en este dispositivo');
     }
@@ -131,16 +137,95 @@ class AuthController {
   Future<Duration?> pinLockoutRemaining() => _limiter.remainingLockout();
 
   /// Desbloquea con el PIN. Devuelve `false` si es incorrecto.
-  /// Lanza [PinLockedOutException] si hay que esperar.
-  Future<bool> unlockWithPin(String pin) async {
-    final dek = await _verifyPin(pin);
-    if (dek == null) return false;
-    try {
-      await _openSession(dek);
-      return true;
-    } finally {
-      dek.fillRange(0, dek.length, 0);
+  /// Lanza [PinLockedOutException] si hay que esperar y [StateError] si no
+  /// hay bóveda (no es un "PIN incorrecto").
+  ///
+  /// Concurrencia: si ya hay un desbloqueo con el MISMO PIN en vuelo (doble
+  /// toque, auto-envío del último dígito + botón), se devuelve ese mismo
+  /// resultado: no se deriva dos veces ni cuenta como otro intento. Cualquier
+  /// otra operación de llaves espera su turno ([_serialized]), así el
+  /// contador de intentos nunca se lee y escribe a la vez.
+  Future<bool> unlockWithPin(String pin) {
+    final inFlight = _pinUnlockInFlight;
+    if (inFlight != null && _pinUnlockInFlightPin == pin) {
+      cryptoDebugLog(
+        'unlock#${_attemptSeq + 1}: ignorado, unlock#$_pinUnlockInFlightId '
+        'con el mismo PIN ya en vuelo',
+      );
+      return inFlight;
     }
+    final id = ++_attemptSeq;
+    if (inFlight != null || _busy) {
+      cryptoDebugLog('unlock#$id: hay otra operación en vuelo; se encola');
+    }
+    final future = _serialized(() => _unlockWithPin(pin, id));
+    _pinUnlockInFlight = future;
+    _pinUnlockInFlightPin = pin;
+    _pinUnlockInFlightId = id;
+    void clear() {
+      if (identical(_pinUnlockInFlight, future)) {
+        _pinUnlockInFlight = null;
+        _pinUnlockInFlightPin = null;
+        _pinUnlockInFlightId = null;
+      }
+    }
+
+    future.then((_) => clear(), onError: (Object _) => clear());
+    return future;
+  }
+
+  Future<bool> _unlockWithPin(String pin, int id) async {
+    final sw = Stopwatch()..start();
+    cryptoDebugLog('unlock#$id: inicio (${pin.length} dígitos)');
+    try {
+      final dek = await _verifyPin(pin, id);
+      if (dek == null) {
+        cryptoDebugLog(
+          'unlock#$id: fin INCORRECTO (${sw.elapsedMilliseconds} ms)',
+        );
+        return false;
+      }
+      try {
+        await _openSession(dek);
+        cryptoDebugLog('unlock#$id: fin OK (${sw.elapsedMilliseconds} ms)');
+        return true;
+      } finally {
+        dek.fillRange(0, dek.length, 0);
+      }
+    } catch (e) {
+      cryptoDebugLog(
+        'unlock#$id: fin ERROR ${e.runtimeType} (${sw.elapsedMilliseconds} ms)',
+      );
+      rethrow;
+    }
+  }
+
+  // Desbloqueo por PIN en vuelo (para fusionar duplicados).
+  Future<bool>? _pinUnlockInFlight;
+  String? _pinUnlockInFlightPin;
+  int? _pinUnlockInFlightId;
+  int _attemptSeq = 0;
+
+  // Cola de operaciones de llaves: una a la vez por controlador.
+  Future<void> _queue = Future<void>.value();
+  bool _busy = false;
+
+  Future<T> _serialized<T>(Future<T> Function() op) {
+    final previous = _queue;
+    final completer = Completer<void>();
+    _queue = completer.future;
+    return () async {
+      try {
+        await previous;
+      } catch (_) {}
+      _busy = true;
+      try {
+        return await op();
+      } finally {
+        _busy = false;
+        completer.complete();
+      }
+    }();
   }
 
   /// Cambia el PIN: verifica el viejo y vuelve a envolver la MISMA DEK con un
@@ -151,25 +236,41 @@ class AuthController {
     required String newPin,
   }) async {
     _checkPin(newPin);
-    final dek = await _verifyPin(oldPin);
-    if (dek == null) return false;
-    try {
-      final envelope = await _wrapWithPin(dek, newPin);
-      await _storage.write(pinEnvelopeKey, envelope.encode());
-      return true;
-    } finally {
-      dek.fillRange(0, dek.length, 0);
-    }
+    return _serialized(() async {
+      final dek = await _verifyPin(oldPin, ++_attemptSeq);
+      if (dek == null) return false;
+      try {
+        // ÚNICO flujo (junto con crear/restaurar) que genera un salt nuevo
+        // para la envoltura del PIN.
+        final envelope = await _wrapWithPin(dek, newPin);
+        await _storage.write(pinEnvelopeKey, envelope.encode());
+        return true;
+      } finally {
+        dek.fillRange(0, dek.length, 0);
+      }
+    });
   }
 
   /// Verifica el PIN con conteo pesimista de intentos. Devuelve la DEK.
-  Future<Uint8List?> _verifyPin(String pin) async {
+  /// Debe llamarse dentro de [_serialized].
+  Future<Uint8List?> _verifyPin(String pin, int id) async {
     final raw = await _storage.read(pinEnvelopeKey);
-    if (raw == null) return null;
+    if (raw == null) {
+      // Antes devolvía null y la UI mostraba "PIN incorrecto" aunque el PIN
+      // fuera correcto. Sin envoltura no hay nada que verificar.
+      cryptoDebugLog('unlock#$id: NO hay envoltura del PIN guardada');
+      throw StateError('No hay bóveda en este dispositivo');
+    }
     await _limiter.ensureNotLocked();
     // Se cuenta como fallo ANTES de derivar; se resetea si acierta.
     await _limiter.registerFailure();
     final envelope = WrappedKey.decode(raw, expectedPurpose: WrapPurpose.pin);
+    cryptoDebugLog(
+      'unlock#$id: envoltura salt#=${fingerprint(envelope.salt)} '
+      'env#=${fingerprint(utf8.encode(raw))} '
+      'kdf=m${envelope.kdf.memoryKiB}/t${envelope.kdf.iterations}'
+      '/p${envelope.kdf.parallelism}',
+    );
     final dek = await envelope.unwrap(utf8.encode(pin));
     if (dek == null) return null;
     await _limiter.reset();
@@ -210,6 +311,14 @@ class AuthController {
   }) async {
     _checkPin(newPin);
     final backup = RecoveryBackup.parse(recoveryBackupJson);
+    return _serialized(() => _restore(recoveryCode, backup, newPin));
+  }
+
+  Future<bool> _restore(
+    String recoveryCode,
+    RecoveryBackup backup,
+    String newPin,
+  ) async {
     final dek = await _recovery.recoverDek(recoveryCode, backup);
     if (dek == null) return false;
     try {
@@ -263,7 +372,14 @@ class AuthController {
   /// SO invalidó la llave (cambio de huellas/rostros) o si la DEK no
   /// corresponde a esta bóveda; en esos casos hay que usar el PIN.
   /// Lanza [BiometricCancelledException] si el usuario cancela.
-  Future<bool> unlockWithBiometrics() async {
+  Future<bool> unlockWithBiometrics() {
+    if (_busy) {
+      cryptoDebugLog('biometría: hay otra operación en vuelo; se encola');
+    }
+    return _serialized(_unlockWithBiometrics);
+  }
+
+  Future<bool> _unlockWithBiometrics() async {
     if (!await isBiometricUnlockEnabled() || !await hasVault()) return false;
     final dek = await _biometrics.readKey();
     if (dek == null || dek.length != 32) {

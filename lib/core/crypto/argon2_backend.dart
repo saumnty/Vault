@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:cryptography/dart.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:sodium_libs/sodium_libs_sumo.dart'
     show CryptoPwhashAlgorithm, SodiumSumo, SodiumSumoInit;
 
@@ -246,19 +246,29 @@ class FallbackArgon2Backend implements Argon2Backend {
         (primary is! SodiumArgon2Backend ||
             SodiumArgon2Backend.supports(params, salt.length));
     if (primaryOk) {
+      // El primario recibe COPIAS propias: aunque fallara a mitad de camino
+      // después de tocar sus entradas, el respaldo calcula siempre con el
+      // secreto/salt originales intactos (si no, un fallo nativo→Dart podría
+      // derivar con un buffer a cero y dar "PIN incorrecto").
+      final secretCopy = Uint8List.fromList(secret);
       try {
         final out = await primary.derive(
-          secret: secret,
-          salt: salt,
+          secret: secretCopy,
+          salt: Uint8List.fromList(salt),
           params: params,
         );
         lastUsed = primary.name;
         return out;
       } catch (e) {
         _primaryBroken = true;
-        debugPrint(
-          'Argon2id: ${primary.name} falló ($e); uso ${fallback.name}',
-        );
+        if (kDebugMode) {
+          debugPrint(
+            '[vault-auth] Argon2id: ${primary.name} falló '
+            '(${e.runtimeType}); uso ${fallback.name}',
+          );
+        }
+      } finally {
+        secretCopy.fillRange(0, secretCopy.length, 0);
       }
     }
     final out = await fallback.derive(

@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/crypto/auth_controller.dart';
+import '../../core/crypto/crypto_debug.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_motion.dart';
 import '../../core/theme/app_shadows.dart';
@@ -46,7 +48,15 @@ class _PinScreenState extends State<PinScreen> {
   bool _biometricEnabled = false;
   bool _hasError = false;
   bool _unlocked = false;
+  bool _biometricInFlight = false;
   int _shakes = 0;
+  int _submitSeq = 0;
+
+  /// Al crear la bóveda: PIN de la primera entrada, pendiente de confirmar.
+  /// Sin confirmación, un toque perdido/duplicado al crear dejaba la bóveda
+  /// con un PIN distinto del que el usuario cree tener ("PIN incorrecto"
+  /// para siempre con el PIN "correcto").
+  String? _firstPin;
 
   /// Segundos de espera restantes por bloqueo (0 = sin bloqueo).
   int _lockSeconds = 0;
@@ -54,6 +64,11 @@ class _PinScreenState extends State<PinScreen> {
 
   static const String _enterPin = 'Ingresa tu PIN maestro';
   static const String _createPin = 'Crea un nuevo PIN';
+  static const String _confirmPin = 'Confirma tu PIN';
+
+  /// Mensaje de reposo según el paso actual.
+  String get _idleMessage =>
+      _hasVault ? _enterPin : (_firstPin == null ? _createPin : _confirmPin);
 
   @override
   void initState() {
@@ -127,7 +142,7 @@ class _PinScreenState extends State<PinScreen> {
       _pin += '$digit';
       if (_hasError) {
         _hasError = false;
-        _statusMessage = _hasVault ? _enterPin : _createPin;
+        _statusMessage = _idleMessage;
       }
     });
     if (_pin.length == PinScreen.maxPinLength) _submit();
@@ -172,7 +187,44 @@ class _PinScreenState extends State<PinScreen> {
 
   Future<void> _submit() async {
     final pin = _pin;
-    if (pin.length < AuthController.minPinLength || !_inputEnabled) return;
+    // Guarda síncrona: el auto-envío del último dígito, el botón Continuar y
+    // Enter pueden llegar en el mismo frame; solo el primero pasa (_isBusy se
+    // pone a true antes de cualquier await).
+    if (pin.length < AuthController.minPinLength || !_inputEnabled) {
+      if (kDebugMode && _isBusy) {
+        cryptoDebugLog('pin-ui: envío ignorado, ya hay uno en vuelo');
+      }
+      return;
+    }
+    final id = ++_submitSeq;
+    if (kDebugMode) {
+      cryptoDebugLog(
+        'pin-ui: envío#$id ${pin.length} dígitos '
+        '(${_hasVault ? 'desbloquear' : (_firstPin == null ? 'crear' : 'confirmar')})',
+      );
+    }
+
+    if (!_hasVault && _firstPin == null) {
+      // Primer paso de la creación: pedir el mismo PIN otra vez.
+      setState(() {
+        _firstPin = pin;
+        _pin = '';
+        _statusMessage = _confirmPin;
+      });
+      return;
+    }
+    if (!_hasVault && _firstPin != pin) {
+      setState(() {
+        _firstPin = null;
+        _isBusy = true;
+      });
+      try {
+        await _fail('Los PIN no coinciden. Crea un nuevo PIN');
+      } finally {
+        if (mounted) setState(() => _isBusy = false);
+      }
+      return;
+    }
 
     setState(() {
       _isBusy = true;
@@ -190,6 +242,7 @@ class _PinScreenState extends State<PinScreen> {
         if (lockout != null && mounted) _startLockout(lockout);
       } else {
         final result = await _authController.createVault(pin);
+        _firstPin = null;
         if (!mounted) return;
         await showRecoveryCodeSheet(context, result.recoveryCode);
         if (!mounted) return;
@@ -206,6 +259,7 @@ class _PinScreenState extends State<PinScreen> {
       if (mounted) {
         setState(() {
           _pin = '';
+          _firstPin = null;
           _statusMessage = 'Error: $e';
         });
       }
@@ -224,6 +278,9 @@ class _PinScreenState extends State<PinScreen> {
   }
 
   Future<void> _unlockWithBiometrics() async {
+    // Un solo diálogo biométrico a la vez y nunca durante un envío de PIN.
+    if (_biometricInFlight || _isBusy || _unlocked) return;
+    _biometricInFlight = true;
     try {
       final ok = await _authController.unlockWithBiometrics();
       if (ok) {
@@ -243,6 +300,8 @@ class _PinScreenState extends State<PinScreen> {
       if (mounted) {
         setState(() => _statusMessage = 'No se pudo usar la biometría');
       }
+    } finally {
+      _biometricInFlight = false;
     }
   }
 
@@ -312,7 +371,7 @@ class _PinScreenState extends State<PinScreen> {
                     : AppTypography.titleSmall,
               ),
             ),
-            if (!_hasVault) ...[
+            if (!_hasVault && _firstPin == null) ...[
               const SizedBox(height: AppSpacing.xs),
               const Text(
                 'Elige de 4 a 6 dígitos',

@@ -34,9 +34,23 @@ class VaultSession {
   /// Subllave para cifrar archivos, o `null` si está bloqueada.
   SecretKey? get filesKey => _keys?.files;
 
+  /// Abre la sesión con [keys].
+  ///
+  /// Si ya está abierta con la MISMA DEK (mismo `keyCheck`; p. ej. un segundo
+  /// desbloqueo por doble toque o huella + PIN), se conservan las llaves
+  /// actuales y se destruyen las nuevas: así no se invalidan referencias que
+  /// otros servicios ya tienen (`filesKey`, la llave de la BD). Si es otra DEK,
+  /// las anteriores se destruyen.
   void open(KeyHierarchy keys) {
-    if (identical(keys, _keys)) return;
-    _keys?.destroy();
+    final current = _keys;
+    if (identical(keys, current)) return;
+    if (current != null &&
+        !current.isDestroyed &&
+        current.keyCheck == keys.keyCheck) {
+      keys.destroy();
+      return;
+    }
+    current?.destroy();
     _keys = keys;
   }
 
