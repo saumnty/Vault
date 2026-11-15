@@ -1,0 +1,71 @@
+# Codemagic — Vault
+# Genera un .ipa SIN FIRMAR para instalarlo con Sideloadly (que lo firma con tu
+# Apple ID). No requiere certificados ni perfiles en Codemagic.
+#
+# Uso: conecta el repo en https://codemagic.io, elige "codemagic.yaml" como
+# método de configuración y ejecuta el workflow `ios-unsigned`.
+# El .ipa queda como artefacto descargable (vault-unsigned.ipa).
+
+workflows:
+  ios-unsigned:
+    name: iOS .ipa sin firmar (Sideloadly)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      flutter: 3.41.6        # misma versión que usamos en local
+      xcode: latest
+      cocoapods: default
+      vars:
+        # IDs OAuth públicos (no secretos). Opcionales: ya hay valores por
+        # defecto en lib/core/config/google_config.dart.
+        # GOOGLE_IOS_CLIENT_ID: "..."
+        # GOOGLE_WEB_CLIENT_ID: "..."
+        BUNDLE_ID: com.saumnty.vault
+    triggering:
+      events: []              # solo ejecución manual
+    scripts:
+      - name: Dependencias
+        script: flutter pub get
+      - name: Analizar
+        script: flutter analyze
+      - name: Pruebas
+        script: flutter test
+      - name: Pods (descarga libsodium precompilado para iOS)
+        script: |
+          cd ios
+          pod install --repo-update
+      - name: Compilar iOS sin firmar
+        script: flutter build ios --release --no-codesign
+      - name: Empaquetar .ipa sin firmar
+        script: |
+          set -e
+          APP="build/ios/iphoneos/Runner.app"
+          test -d "$APP"
+          rm -rf Payload vault-unsigned.ipa
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry vault-unsigned.ipa Payload
+          ls -lh vault-unsigned.ipa
+    artifacts:
+      - vault-unsigned.ipa
+      - build/ios/iphoneos/Runner.app
+      - flutter_drive.log
+
+  android-release:
+    name: Android APK release (opcional)
+    instance_type: linux_x2
+    max_build_duration: 40
+    environment:
+      flutter: 3.41.6
+      java: 17
+      # Para firmar con la llave de release hay que subir el keystore a
+      # Codemagic (Teams > Code signing identities > Android keystores) y
+      # referenciarlo aquí con `android_signing`. Sin eso, firma con debug.
+    triggering:
+      events: []
+    scripts:
+      - flutter pub get
+      - flutter test
+      - flutter build apk --release
+    artifacts:
+      - build/app/outputs/flutter-apk/app-release.apk

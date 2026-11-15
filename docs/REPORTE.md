@@ -89,3 +89,15 @@ F5 (sincronización) necesita: proyecto en Google Cloud, Drive API, pantalla de 
 - **Pendiente/limitaciones:** al borrar un item no se borra su copia en Drive (`TODO(F6)`); un desbloqueo falló una vez con "PIN incorrecto" (atribuido a taps del emulador/bóveda previa; vigilar).
 - **Privacidad:** el subagente borró las capturas del emulador que mostraban el correo del usuario.
 - **Acciones tuyas:** mantener tu correo como tester; la 1.ª vez aparece "Google hasn't verified this app" → Continue y marcar el permiso de Drive. Para release con llave propia, registrar su SHA-1 en el cliente Android. Antes de F10, comprobar login iOS en Codemagic.
+
+---
+## Investigación "PIN incorrecto" (resuelta)
+Causa más probable: **crear la bóveda no pedía confirmar el PIN**; un toque perdido (emulador lento) dejaba la bóveda con otro PIN (p. ej. 12346) y "123456" fallaba siempre. Arreglado con pantalla "Confirma tu PIN". Además: operaciones de AuthController serializadas (contador de intentos con actualizaciones perdidas), unlock duplicado con el mismo PIN deduplicado (el 2.º `session.open` destruía las llaves en uso), envoltura ausente ya no cuenta como PIN incorrecto, y copia propia del secreto para el backend nativo (fallback a Dart). Descartado con evidencia: isolate de Argon2id, puesta a cero del secreto, teclado, SQLCipher; 50 desbloqueos seguidos con DEK idéntica; salt/DEK envuelta nunca se regeneran salvo `changePin`/`restore`. Logs de diagnóstico `[vault-auth]` solo en debug, sin PIN/llaves. Pendiente para F7: `lock()` debe cancelar un unlock en curso.
+
+## F10 (preparación sin acciones tuyas)
+- **Keystore de release** (fuera del repo): `%USERPROFILE%\.vault-keys\vault-release.jks`, alias `vault-release`. Las contraseñas están en `android/key.properties` (en .gitignore; **haz copia de seguridad del .jks y de key.properties**: sin ellos no podrás actualizar la app).
+- **SHA-1 de release: `98:41:90:61:8B:DA:8C:ED:11:FA:FA:1B:D5:08:65:89:E9:0D:AD:A6`**
+- SHA-256 de release: `9E:C5:D7:7D:48:3F:8C:73:4D:2E:64:3B:03:BE:44:C3:6F:68:AD:FA:6F:0D:D2:B5:B1:56:60:91:3B:57:B2:EA`
+- `flutter build apk --release` firmado con esa llave verificado con apksigner (SHA-1 coincide). Si falta `key.properties` el build cae a la llave debug.
+- `codemagic.yaml` con workflow `ios-unsigned` (.ipa sin firmar para Sideloadly) y `android-release` opcional.
+- Info.plist iOS revisado: GIDClientID + URL scheme (reversed client ID), NSPhotoLibrary*, NSFaceIDUsageDescription presentes. No hay `ios/Podfile` en el repo (lo genera Flutter en la compilación en Codemagic).
