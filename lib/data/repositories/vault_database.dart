@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_sqlcipher/sqflite.dart';
 
+import '../../core/crypto/key_hierarchy.dart';
 import '../../core/services/app_paths.dart';
 import '../../core/session/vault_session.dart';
 
@@ -113,7 +114,8 @@ typedef DatabaseOpener =
       required OpenDatabaseOptions options,
     });
 
-Future<Database> _openWithSqlCipher(
+/// Abre con SQLCipher real (móvil). Es el `opener` de la app.
+Future<Database> openSqlCipherDatabase(
   String absolutePath, {
   String? password,
   required OpenDatabaseOptions options,
@@ -137,7 +139,7 @@ Future<Database> _openWithSqlCipher(
 class VaultDatabase {
   static final VaultDatabase _instance = VaultDatabase._(
     session: VaultSession(),
-    opener: _openWithSqlCipher,
+    opener: openSqlCipherDatabase,
     useSqlCipher: true,
   );
 
@@ -197,13 +199,22 @@ class VaultDatabase {
     if (keys == null || keys.isDestroyed) {
       throw StateError('La bóveda está bloqueada: no se puede abrir la BD');
     }
-    final bytes = keys.sqlcipher.bytes;
+    return passwordFor(keys);
+  }
+
+  /// Llave SQLCipher cruda `x'<64 hex>'` de unas llaves ya derivadas (F9: se
+  /// usa para abrir el snapshot descargado ANTES de abrir la sesión).
+  static String passwordFor(KeyHierarchy keys) {
     final sb = StringBuffer();
-    for (final b in bytes) {
+    for (final b in keys.sqlcipher.bytes) {
       sb.write(b.toRadixString(16).padLeft(2, '0'));
     }
     return "x'${sb.toString()}'";
   }
+
+  /// Ruta absoluta de la BD de la app (`db/vault_secure.db`).
+  static String get defaultDbPath =>
+      p.join(AppPaths.dbDir.path, VaultSchema.dbFileName);
 
   /// Conexión abierta; la abre (o reabre si cambió la llave). Lanza
   /// [StateError] si la bóveda está bloqueada.

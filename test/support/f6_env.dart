@@ -89,7 +89,12 @@ class F6Env {
       isUnlocked: () => session.isUnlocked,
       resolvePath: AppPaths.resolve,
       recoveryBackupProvider: () async => null,
-      snapshotProvider: () async => throw UnimplementedError(),
+      snapshotProvider: () async {
+        // Copia simulada de la BD (F9: subir una miniatura ensucia el snapshot).
+        final f = File(p.join(tmp.path, 'db', 'f6.db.snapshot'));
+        await f.writeAsBytes([1, 2, 3, 4]);
+        return f;
+      },
       nowMs: () => now,
       random: Random(1),
       scheduleWakeups: false,

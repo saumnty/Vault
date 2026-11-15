@@ -20,7 +20,9 @@ import 'package:vault/core/session/vault_session.dart';
 import 'package:vault/data/models/sync_status.dart';
 import 'package:vault/data/models/vault_item_model.dart';
 import 'package:vault/features/auth/pin_screen.dart';
+import 'package:vault/data/restore/restore_service.dart';
 import 'package:vault/features/onboarding/onboarding_flow.dart';
+import 'package:vault/features/onboarding/restore_flow.dart';
 import 'package:vault/features/vault/home_vault_screen.dart';
 import 'package:vault/features/vault/vault_media_viewer_screen.dart';
 import 'package:vault/features/vault/viewer/media_opener.dart';
@@ -30,6 +32,7 @@ import 'package:vault/shared/widgets/privacy_cover.dart';
 
 import '../../support/fake_video_platform.dart';
 import '../../support/fakes.dart';
+import '../../support/scripted_restore.dart';
 import '../../support/settings_support.dart';
 import '../../support/ui_helpers.dart';
 
@@ -212,6 +215,73 @@ void main() {
       await _digits(tester, '135');
       await tester.pump(const Duration(milliseconds: 400));
       await _shot('crear_boveda.png');
+    });
+  });
+
+  group('F9: restaurar', () {
+    Future<ScriptedRestoreService> pumpRestore(
+      WidgetTester tester, {
+      RestoreStep step = RestoreStep.start,
+    }) async {
+      usePhoneSize(tester);
+      final svc = ScriptedRestoreService()
+        ..gate = Completer<void>()
+        ..script = const [
+          RestoreProgress(RestoreStage.thumbnails, done: 42, total: 120),
+        ];
+      await tester.pumpWidget(
+        testApp(
+          Scaffold(
+            body: SafeArea(
+              child: RestoreFlow(
+                service: svc,
+                initialStep: step,
+                onRestored: (_) {},
+                onCreateNew: () {},
+                onBack: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      return svc;
+    }
+
+    goldenTest('restaurar_inicio', (tester) async {
+      await pumpRestore(tester);
+      await _shot('restaurar_inicio.png');
+    });
+
+    goldenTest('restaurar_codigo', (tester) async {
+      await pumpRestore(tester, step: RestoreStep.code);
+      await tester.enterText(
+        find.byKey(const ValueKey('restore-code-field')),
+        'abcdefghjkmnpqrstuvwxyz2',
+      );
+      await tester.pump();
+      await _shot('restaurar_codigo.png');
+    });
+
+    goldenTest('restaurar_progreso', (tester) async {
+      await pumpRestore(tester, step: RestoreStep.code);
+      await tester.enterText(
+        find.byKey(const ValueKey('restore-code-field')),
+        'ABCDEFGHJKMNPQRSTUVWXYZ2',
+      );
+      await tester.pump();
+      await tester.tap(find.widgetWithText(FilledButton, 'Continuar'));
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 400));
+      }
+      for (final pin in ['1357', '1357']) {
+        await _digits(tester, pin);
+        await tester.tap(find.text('Continuar'));
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pump(const Duration(seconds: 1));
+      }
+      await _shot('restaurar_progreso.png');
     });
   });
 

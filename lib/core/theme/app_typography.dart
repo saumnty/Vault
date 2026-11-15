@@ -66,6 +66,17 @@ abstract final class AppTypography {
     color: AppColors.textPrimary,
   );
 
+
+  /// Campo donde se escribe el código completo (29 caracteres con guiones):
+  /// más compacto que [code] para que quepa en una línea en el teléfono.
+  static const TextStyle codeInput = TextStyle(
+    fontSize: 15,
+    fontFamily: 'monospace',
+    letterSpacing: 0.4,
+    height: 1.5,
+    color: AppColors.textPrimary,
+  );
+
   static const TextTheme textTheme = TextTheme(
     displaySmall: display,
     headlineSmall: title,

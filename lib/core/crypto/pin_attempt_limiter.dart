@@ -31,8 +31,11 @@ class PinLockedOutException implements Exception {
 /// vida). La defensa real contra fuerza bruta offline es Argon2id + que la
 /// envoltura del PIN nunca sale del teléfono.
 class PinAttemptLimiter {
-  PinAttemptLimiter(this._store, {Clock? clock})
-    : _clock = clock ?? DateTime.now;
+  PinAttemptLimiter(
+    this._store, {
+    Clock? clock,
+    this.key = storageKey,
+  }) : _clock = clock ?? DateTime.now;
 
   static const String storageKey = 'vault.v1.pin_attempts';
   static const int freeAttempts = 5;
@@ -49,6 +52,10 @@ class PinAttemptLimiter {
   final SecureKeyValueStore _store;
   final Clock _clock;
 
+  /// Clave de almacenamiento propia (F9: el límite de intentos del código de
+  /// recuperación es independiente del del PIN).
+  final String key;
+
   /// Retraso que se impone tras acumular [failures] fallos consecutivos.
   static Duration delayForFailures(int failures) {
     if (failures < freeAttempts) return Duration.zero;
@@ -57,7 +64,7 @@ class PinAttemptLimiter {
   }
 
   Future<_AttemptState> _load() async {
-    final raw = await _store.read(storageKey);
+    final raw = await _store.read(key);
     if (raw == null) return const _AttemptState(0, 0);
     try {
       final json = jsonDecode(raw) as Map<String, dynamic>;
@@ -73,7 +80,7 @@ class PinAttemptLimiter {
   }
 
   Future<void> _save(_AttemptState state) => _store.write(
-    storageKey,
+    key,
     jsonEncode({
       'failures': state.failures,
       'lockedUntil': state.lockedUntilMs,
@@ -114,7 +121,7 @@ class PinAttemptLimiter {
     await _save(_AttemptState(failures, lockedUntil));
   }
 
-  Future<void> reset() => _store.delete(storageKey);
+  Future<void> reset() => _store.delete(key);
 }
 
 class _AttemptState {

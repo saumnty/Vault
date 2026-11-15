@@ -170,3 +170,43 @@ Causa más probable: **crear la bóveda no pedía confirmar el PIN**; un toque p
 - Ajustes tarda ~5-8 s en mostrarse en el emulador (varias lecturas del almacén seguro); en dispositivo real debería ser menor.
 - iOS: nada probado (biometría, Drive, FLAG_SECURE no aplica).
 - `AutoLockSuspension` ya envuelve biometría y Google; el onboarding no añade diálogos nuevos del sistema.
+
+## F9 — Restauración en teléfono nuevo y snapshot fresco (🧪 emulador Android; iOS 📝 sin probar)
+
+**Diseño.** D36–D39 en DECISIONES.md. Flujo: bienvenida "Ya tengo una bóveda (restaurar)" -> Google (autobloqueo suspendido por `AutoLockSuspension` dentro de `GoogleDriveCloudStorage`) -> búsqueda en appDataFolder (sin respaldo: "No hay respaldo en esta cuenta de Google" con "Usar otra cuenta"/"Crear una bóveda nueva"; también "incompleto" e "inválido") -> código (campo tolerante, grupos de 4, validación en vivo; límite 5 fallos -> 30 s... persistido) -> PIN nuevo + confirmación -> descarga con barra (índice, apertura, miniaturas en paralelo x4 reanudables, instalación) -> resumen (archivos/carpetas, aviso de perdidos) -> biometría opcional -> bóveda. `RestoreService` prepara todo en `restore_staging/` y solo al final instala BD + miniaturas y consolida las llaves (`AuthController.commitRestore`, envoltura del PIN nueva, la biometría vieja no se traslada). Cualquier fallo antes de consolidar deja el teléfono como estaba. Limitación documentada (D37): el límite de intentos solo frena la UI; la defensa real es ≈119 bits + Argon2id.
+
+**Snapshot siempre fresco (D38).** Marca "sucio" persistida + debounce 30 s + toma tras la última subida (incluye `driveFileId`/`cloudMd5`) + toma al bloquear (antes de destruir las llaves, subida en segundo plano) + regla de 6 h.
+
+**Verificación (salidas reales).** `flutter analyze`: No issues found. `flutter test`: 536 pruebas, todas verdes ("All tests passed!"; 51 nuevas respecto a las 485 de F8). `flutter build apk --debug`: OK ("Built buildppoutputslutter-apkpp-debug.apk"). Tests nuevos: `test/f9_restore_test.dart` (restauración feliz con misma DEK/items/carpetas/miniaturas/en_nube y PIN nuevo; abrir archivo descarga y verifica MD5; sync de B no re-sube; perdidos y cola; miniatura ausente; sin respaldo / incompleto / ilegible / envoltura del PIN; código incorrecto con límite persistido y reinicio; formato inválido; llave que no abre y snapshot corrupto con rollback; corte de red a mitad y reanudación; fallo al consolidar; ya hay bóveda; barrido de restos; llave x'hex'; nombres de Drive y respaldo sin secretos), `test/f9_snapshot_test.dart` (política sucio/debounce/cola/6 h/toma tras subidas/al bloquear), `test/ui/restore_flow_test.dart` (lógica del campo, pasos, errores, reintento, cancelar, integración con el onboarding) y 3 goldens (`docs/screens/restaurar_{inicio,codigo,progreso}.png`). Se ajustó `f6_env` (el snapshot simulado ya no lanza porque subir una miniatura ahora ensucia el snapshot). Nota: el cifrado real de SQLCipher no existe en los tests de escritorio (sqlite ffi); se simula con un `opener` estricto que exige la llave y la prueba real del cifrado se hizo en el emulador.
+
+**Emulador (Pixel_7, debug con `VAULT_ALLOW_SCREENSHOTS=true`; capturas `docs/screens/emu/f9_*.png`, correo difuminado; el código de recuperación NO se guardó en el repo).**
+1. Instalación limpia: onboarding, PIN 123456, código anotado leyendo la pantalla, confirmación, Drive conectado. Carpeta "Vacaciones" con subcarpeta "Playa"; importados 4 elementos (3 imágenes + 1 video corto). Sincronización "al día". (El renombrado de items no tiene UI hoy: cubierto con tests; se movieron items entre carpetas.)
+2. Snapshot por log (`[sync] snapshot de la BD subido`): 14:14:52 tras crear carpetas (debounce 30 s), 14:18:27 DESPUÉS de las subidas de las 4 importaciones, 14:20:43 tras mover un item (sin subidas), y `snapshot subido al bloquear` 14:22:05 tras mover otro y pulsar "Bloquear ahora" (el movimiento llegó a la copia: al restaurar `prueba_1` apareció en Playa). La BD del teléfono (`run-as`, mismo contenido que el snapshot) no contiene "SQLite format" ni ninguno de los nombres (Vacaciones, Playa, prueba_1, images.jpeg...): SQLCipher real.
+3. `adb uninstall` + reinstalar -> "Ya tengo una bóveda" -> Google (cuenta con respaldo) -> código INCORRECTO `ZZZZ-...` escrito en minúsculas con espacio: "Código incorrecto" (f9_b2; el log muestra una derivación Argon2 de 2,9 s por ese intento) -> código correcto -> PIN nuevo 654321 (+confirmar) -> "Bóveda restaurada: 4 archivos y 2 carpetas" (f9_b3) -> bóveda con "Vacaciones" (f9_b4/b5) y "Playa" con sus miniaturas (f9_b6). Antes de abrir nada `vault/` estaba vacío y `thumbs/` tenía 4 miniaturas; al abrir `prueba_1.png` se descargó `a1fd84c3...vault` (121 155 B, igual que el original; `VaultFileFetcher` verifica tamaño + MD5 antes de renombrar) y se mostró (f9_b7).
+4. `force-stop`: el PIN viejo 123456 -> "PIN incorrecto"; 654321 desbloquea (envoltura nueva salt#=1138fcc2). Tras restaurar y desbloquear no aparece ningún `[sync]` de subida: no se re-subió el respaldo ni el snapshot (los .vault/.thumb no registran log; lo prueba el test "sync no re-sube").
+5. Sin respaldo (iii): simulado con el fake en tests (la cuenta del emulador siempre tiene respaldo).
+- Observaciones: el selector de cuentas y el consentimiento de Google son ventanas seguras (captura negra): se manejaron con `uiautomator`. `adb input text` pierde caracteres al teclear el código de golpe (herramienta, no app). La tipografía del campo del código se redujo (`AppTypography.codeInput`) tras ver en el emulador que 29 caracteres no cabían; ese cambio se verificó solo con el golden (`restaurar_codigo.png`), no se reinstaló en el emulador.
+
+**Riesgos / pendientes.**
+- Archivos subidos tras el último snapshot (app muerta antes del debounce): sus .vault quedan huérfanos en Drive (no se muestran ni se borran); ventana típica <= 30 s tras el último cambio, o inmediata si se bloqueó con red.
+- Cambio de cuenta: restaurar usa la cuenta elegida; si luego se cambia de cuenta, lo `en_nube` de la anterior no existe en la nueva (como en F8).
+- Fuerza bruta offline contra `recovery_backup.json`: ver D37; el límite local no la frena.
+- El snapshot se re-sube con cada cambio (como mucho cada 30 s): decenas de KB, crece con el número de items.
+- Archivos "perdidos" quedan en `error` sin acción de limpieza propia (se pueden eliminar desde la cuadrícula).
+- La reconciliación usa `list()` completo de appDataFolder: con decenas de miles de archivos son muchas páginas (200 por página).
+- `sweepOrphans` borra db/ y thumbs/ cuando el almacén seguro dice "sin bóveda"; si el almacén fallara y devolviera eso en un teléfono con datos, se perderían los datos locales (siguen en Drive si se sincronizó).
+- iOS: nada probado (Keychain tras reinstalar, Google, rutas del contenedor).
+
+**CHECKLIST MANUAL de restauración (iPhone).**
+1. En el iPhone con la bóveda actual: importa 3–4 fotos y un video, crea una carpeta con subcarpeta, conecta Drive y espera "Todo está al día". Ten a mano el código de recuperación (si no: Ajustes -> generar uno nuevo y confírmalo; espera a que sincronice).
+2. Mueve algo de carpeta, pulsa "Bloquear ahora" y espera 1 min con Wi-Fi.
+3. Desinstala la app (Sideloadly) y reinstala la misma build. Debe salir la bienvenida; si sale el PIN viejo, es el Keychain (anótalo).
+4. "Ya tengo una bóveda (restaurar)" -> Iniciar sesión con Google (misma cuenta) -> debe pedir el código (aparece tu correo).
+5. Código INCORRECTO: "Código incorrecto". Repite 5 veces: bloquea 30 s; cierra y reabre la app: el bloqueo persiste.
+6. Código correcto (minúsculas/espacios/guiones valen) -> PIN nuevo distinto + confirmar -> barra de progreso -> "Bóveda restaurada" con el número de archivos y carpetas.
+7. "Activar" Face ID o "Ahora no" -> bóveda: carpetas, nombres y miniaturas visibles; las fotos abren (descargan) y el video reproduce.
+8. Cierra la app del selector de apps: el PIN nuevo desbloquea, el viejo no.
+9. Sincronización "al día" sin re-subir todo (revisa la hoja de sincronización y el consumo de datos).
+10. Modo avión durante la barra de progreso -> "No se pudo restaurar" + Reintentar; NO debe entrar a la bóveda hasta terminar.
+11. Restaurar con otra cuenta de Google sin respaldo -> "No hay respaldo en esta cuenta de Google".
+12. Anota cualquier diferencia (diálogo de Google, Keychain, rutas).

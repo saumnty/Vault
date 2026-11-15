@@ -26,6 +26,26 @@ class UnlockCancelledException implements Exception {
   String toString() => 'Desbloqueo cancelado por bloqueo de la app';
 }
 
+/// Llaves recuperadas con el código de recuperación, aún SIN haber escrito
+/// nada en el dispositivo (F9). Sirven para abrir la BD descargada y, si todo
+/// sale bien, se consolidan con [AuthController.commitRestore]. Si se
+/// descartan, [destroy] borra las llaves de memoria.
+class RecoveryCandidate {
+  RecoveryCandidate._(this.keys, this.backupJson);
+
+  final KeyHierarchy keys;
+
+  /// Respaldo de recuperación tal como estaba en la nube.
+  final String backupJson;
+
+  bool _committed = false;
+
+  /// Libera las llaves (no hace nada si ya se consolidaron en la sesión).
+  void destroy() {
+    if (!_committed) keys.destroy();
+  }
+}
+
 /// Resultado de crear la bóveda.
 class VaultCreationResult {
   const VaultCreationResult({
@@ -66,6 +86,11 @@ class AuthController {
        _session = session ?? VaultSession(),
        _random = random ?? Random.secure() {
     _limiter = PinAttemptLimiter(_storage, clock: clock);
+    _restoreLimiter = PinAttemptLimiter(
+      _storage,
+      clock: clock,
+      key: restoreAttemptsKey,
+    );
     _recovery = KeyRecoveryService(kdfParams: _kdf, random: _random);
   }
 
@@ -80,6 +105,11 @@ class AuthController {
   /// paso del código sin poder saltarse la confirmación.
   static const String onboardingPendingKey = 'vault.v1.onboarding_pending';
 
+  /// Límite de intentos del CÓDIGO de recuperación al restaurar (F9), aparte
+  /// del del PIN. Solo frena la interfaz: el respaldo de Drive permite probar
+  /// códigos sin conexión (ver D37).
+  static const String restoreAttemptsKey = 'vault.v1.restore_attempts';
+
   static const int minPinLength = 4;
 
   final SecureKeyValueStore _storage;
@@ -88,6 +118,7 @@ class AuthController {
   final VaultSession _session;
   final Random _random;
   late final PinAttemptLimiter _limiter;
+  late final PinAttemptLimiter _restoreLimiter;
   late final KeyRecoveryService _recovery;
 
   VaultSession get session => _session;
@@ -156,6 +187,26 @@ class AuthController {
     } finally {
       dek.fillRange(0, dek.length, 0);
     }
+  }
+
+  /// iOS (F9): el Keychain sobrevive a desinstalar la app pero los archivos
+  /// no. Si hay envoltura del PIN pero la BD local no existe, es una
+  /// instalación limpia con restos del Keychain: se olvidan las llaves
+  /// locales para poder crear o restaurar una bóveda. Los datos de ESA
+  /// bóveda ya no existen en este teléfono (viven en Drive).
+  Future<void> discardLocalKeys() async {
+    for (final k in [
+      pinEnvelopeKey,
+      recoveryBackupKey,
+      keyCheckKey,
+      biometricEnabledKey,
+      onboardingPendingKey,
+      PinAttemptLimiter.storageKey,
+      restoreAttemptsKey,
+    ]) {
+      await _storage.delete(k);
+    }
+    await _safeDeleteBiometricKey();
   }
 
   /// `true` si falta confirmar el código de recuperación (ver
@@ -395,9 +446,26 @@ class AuthController {
     final dek = await _recovery.recoverDek(recoveryCode, backup);
     if (dek == null) return false;
     try {
-      final envelope = await _wrapWithPin(dek, newPin);
       final keys = await KeyHierarchy.fromDek(dek);
-      await _storage.write(recoveryBackupKey, backup.toJsonString());
+      await _commit(dek, keys, backup.toJsonString(), newPin);
+      return true;
+    } finally {
+      dek.fillRange(0, dek.length, 0);
+    }
+  }
+
+  /// Escribe el estado local de una bóveda restaurada. La envoltura del PIN
+  /// va ÚLTIMA (es la que marca que la bóveda existe): si algo falla antes,
+  /// se deshace lo escrito y no queda una bóveda a medias.
+  Future<void> _commit(
+    Uint8List dek,
+    KeyHierarchy keys,
+    String backupJson,
+    String newPin,
+  ) async {
+    try {
+      final envelope = await _wrapWithPin(dek, newPin);
+      await _storage.write(recoveryBackupKey, backupJson);
       await _storage.write(keyCheckKey, keys.keyCheck);
       // La copia biométrica podría ser de otra DEK: se descarta.
       await _storage.delete(biometricEnabledKey);
@@ -405,11 +473,70 @@ class AuthController {
       await _safeDeleteBiometricKey();
       await _limiter.reset();
       await _storage.write(pinEnvelopeKey, envelope.encode());
-      _session.open(keys);
-      return true;
-    } finally {
-      dek.fillRange(0, dek.length, 0);
+    } catch (_) {
+      await _storage.delete(pinEnvelopeKey);
+      await _storage.delete(recoveryBackupKey);
+      await _storage.delete(keyCheckKey);
+      rethrow;
     }
+    _session.open(keys);
+  }
+
+  /// Tiempo de espera restante por códigos de recuperación incorrectos al
+  /// restaurar (F9), o `null`.
+  Future<Duration?> restoreLockoutRemaining() =>
+      _restoreLimiter.remainingLockout();
+
+  /// F9, paso 1 de una restauración en un teléfono nuevo: deriva KEK_rec y
+  /// desenvuelve la DEK con [recoveryBackupJson] SIN escribir nada en el
+  /// dispositivo (salvo el contador de intentos). Devuelve las llaves, o
+  /// `null` si el código es incorrecto (cuenta como intento fallido).
+  ///
+  /// Un código con formato inválido (longitud/alfabeto) devuelve `null` sin
+  /// contar: ni siquiera llega a la derivación. Lanza [PinLockedOutException]
+  /// si hay que esperar y [FormatException] si el respaldo no es válido
+  /// (incluida una envoltura con propósito distinto, p. ej. la del PIN).
+  ///
+  /// El intento se cuenta de forma pesimista (antes de derivar) y se borra al
+  /// acertar, igual que el PIN.
+  Future<RecoveryCandidate?> verifyRecoveryCode({
+    required String recoveryCode,
+    required String recoveryBackupJson,
+  }) async {
+    final backup = RecoveryBackup.parse(recoveryBackupJson);
+    if (RecoveryCode.normalize(recoveryCode) == null) return null;
+    return _serialized(() async {
+      await _restoreLimiter.ensureNotLocked();
+      await _restoreLimiter.registerFailure();
+      final dek = await _recovery.recoverDek(recoveryCode, backup);
+      if (dek == null) return null;
+      try {
+        final keys = await KeyHierarchy.fromDek(dek);
+        await _restoreLimiter.reset();
+        return RecoveryCandidate._(keys, recoveryBackupJson);
+      } finally {
+        dek.fillRange(0, dek.length, 0);
+      }
+    });
+  }
+
+  /// F9, paso final: consolida [candidate] como la bóveda de este
+  /// dispositivo con [newPin] (envoltura nueva, la biometría vieja se
+  /// descarta) y deja la sesión desbloqueada. Si falla, no queda estado.
+  Future<void> commitRestore(RecoveryCandidate candidate, String newPin) {
+    _checkPin(newPin);
+    return _serialized(() async {
+      if (await hasVault()) {
+        throw StateError('Ya existe una bóveda en este dispositivo');
+      }
+      final dek = candidate.keys.dekBytes();
+      try {
+        await _commit(dek, candidate.keys, candidate.backupJson, newPin);
+        candidate._committed = true;
+      } finally {
+        dek.fillRange(0, dek.length, 0);
+      }
+    });
   }
 
   // ---------------------------------------------------------------------

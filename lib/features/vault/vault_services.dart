@@ -100,6 +100,7 @@ class VaultServices {
     this.downloadProgress,
     this.onUnlocked,
     this.afterOpen,
+    this.beforeLock,
     this.cache,
     this.gallery,
     this.sync,
@@ -133,6 +134,10 @@ class VaultServices {
 
   /// Tras importar: aplica el límite de la caché.
   final Future<void> Function()? afterOpen;
+
+  /// Al bloquear (F9), ANTES de cerrar la sesión: toma la copia cifrada de la
+  /// BD si hay cambios sin respaldar (la subida sigue en segundo plano).
+  final Future<void> Function()? beforeLock;
 
   /// Caché LRU (API de límite para F8).
   final CacheManager? cache;
@@ -205,6 +210,7 @@ class VaultServices {
       afterOpen: () async {
         await core.cache.enforce();
       },
+      beforeLock: sync.flushSnapshotBeforeLock,
       onUnlocked: () async {
         await core.temp.sweep();
         await core.offline.reconcile();
@@ -238,6 +244,8 @@ class VaultServices {
       if (v != null) unawaited(CachePreferences(prefsStore).setLimitBytes(v));
     }
     final sync = _createSync(repository, cache.enforce);
+    // F9: todo cambio de datos marca el snapshot como sucio (con debounce).
+    VaultDataRepository.onDataChanged = sync.notifyDataChanged;
     final fetcher = VaultFileFetcher(
       cloud: cloud,
       items: repository,

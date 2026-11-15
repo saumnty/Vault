@@ -17,11 +17,27 @@ class VaultDataRepository {
 
   final Future<Database> Function() _dbProvider;
 
+  /// F9: se invoca tras CADA cambio de datos que el snapshot de la BD debe
+  /// reflejar (items, carpetas, nombres, movidas, borrados, "sin conexión",
+  /// ids de Drive). NO se invoca para `syncStatus` ni `lastAccessedAt`
+  /// (estado derivado). Estático porque hay varias instancias del repositorio
+  /// y la app tiene un único `SyncService`.
+  static void Function()? onDataChanged;
+
+  void _changed() {
+    try {
+      onDataChanged?.call();
+    } on Object {
+      // Nunca debe romper la operación de datos.
+    }
+  }
+
   // ---------------------------------------------------------------- carpetas
 
   Future<void> createFolder(FolderModel folder) async {
     final db = await _dbProvider();
     await db.insert('folders', folder.toMap());
+    _changed();
   }
 
   Future<FolderModel?> getFolder(String id) async {
@@ -50,6 +66,7 @@ class VaultDataRepository {
       where: 'id = ?',
       whereArgs: [id],
     );
+    _changed();
   }
 
   /// Mueve una carpeta. Lanza [ArgumentError] si el destino es ella misma o
@@ -68,6 +85,7 @@ class VaultDataRepository {
       where: 'id = ?',
       whereArgs: [id],
     );
+    _changed();
   }
 
   Future<void> setFolderOffline(String id, bool isOffline) async {
@@ -78,6 +96,7 @@ class VaultDataRepository {
       where: 'id = ?',
       whereArgs: [id],
     );
+    _changed();
   }
 
   /// Ruta de migas de pan: de la raíz hasta [folderId] INCLUIDA (la última es
@@ -108,7 +127,7 @@ class VaultDataRepository {
   /// archivos (`vault/<id>.vault`, miniaturas, copia en Drive).
   Future<List<String>> deleteFolderRecursive(String folderId) async {
     final db = await _dbProvider();
-    return db.transaction((txn) async {
+    final deleted = await db.transaction((txn) async {
       final folderIds = [
         folderId,
         ...await _descendantFolderIds(txn, folderId),
@@ -131,6 +150,8 @@ class VaultDataRepository {
       );
       return itemIds;
     });
+    _changed();
+    return deleted;
   }
 
   Future<List<String>> _descendantFolderIds(
@@ -157,6 +178,7 @@ class VaultDataRepository {
     final map = item.toMap(); // valida rutas relativas antes de tocar la BD
     final db = await _dbProvider();
     await db.insert('vault_items', map);
+    _changed();
   }
 
   Future<VaultItemModel?> getItem(String id) async {
@@ -268,7 +290,7 @@ class VaultDataRepository {
   }) => _updateItem(id, {
     'syncStatus': status.dbValue,
     'driveFileId': ?driveFileId,
-  });
+  }, notify: false);
 
   /// Marca el item como `en_nube` SOLO tras verificar tamaño y MD5 de la
   /// copia remota (F5). Guarda id, MD5 y tamaño verificados.
@@ -310,7 +332,7 @@ class VaultDataRepository {
   /// Marca el acceso (para LRU). [at] por defecto: ahora.
   Future<void> touchLastAccessed(String id, {DateTime? at}) => _updateItem(id, {
     'lastAccessedAt': (at ?? DateTime.now()).millisecondsSinceEpoch,
-  });
+  }, notify: false);
 
   Future<void> setItemOffline(String id, bool isOffline) =>
       _updateItem(id, {'isOffline': isOffline ? 1 : 0});
@@ -321,9 +343,14 @@ class VaultDataRepository {
   Future<void> deleteItem(String id) async {
     final db = await _dbProvider();
     await db.delete('vault_items', where: 'id = ?', whereArgs: [id]);
+    _changed();
   }
 
-  Future<void> _updateItem(String id, Map<String, Object?> values) async {
+  Future<void> _updateItem(
+    String id,
+    Map<String, Object?> values, {
+    bool notify = true,
+  }) async {
     final db = await _dbProvider();
     final n = await db.update(
       'vault_items',
@@ -332,6 +359,7 @@ class VaultDataRepository {
       whereArgs: [id],
     );
     if (n == 0) throw StateError('El item $id no existe');
+    if (notify) _changed();
   }
 
   // ------------------------------------------------------- offline heredado
@@ -379,6 +407,7 @@ class VaultDataRepository {
       ],
     );
     await db.update('folders', {'isOffline': 0}, where: 'isOffline = 1');
+    _changed();
     return changed;
   }
 

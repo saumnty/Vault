@@ -1,4 +1,5 @@
-import 'dart:io' show Platform;
+import 'dart:async';
+import 'dart:io' show File, Platform;
 
 import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:flutter/material.dart';
@@ -13,7 +14,11 @@ import 'core/services/app_paths.dart';
 import 'core/services/plain_temp_manager.dart';
 import 'core/theme/app_motion.dart';
 import 'core/theme/app_theme.dart';
+import 'data/cloud/cloud_provider.dart';
 import 'data/gallery/import_preferences.dart';
+import 'data/repositories/vault_database.dart';
+import 'data/restore/restore_service.dart';
+import 'data/sync/sync_preferences.dart';
 import 'features/auth/pin_screen.dart';
 import 'features/onboarding/onboarding_flow.dart';
 import 'features/settings/settings_environment.dart';
@@ -74,6 +79,7 @@ class VaultApp extends StatelessWidget {
     this.autoLockClock,
     this.autoLockSuspension,
     this.autoLockDelay,
+    this.restoreService,
   });
 
   /// Inyectables para pruebas; por defecto usan almacenamiento, biometría y
@@ -83,6 +89,9 @@ class VaultApp extends StatelessWidget {
   final AutoLockClock? autoLockClock;
   final AutoLockSuspension? autoLockSuspension;
   final AutoLockDelay? autoLockDelay;
+
+  /// Pruebas: servicio de restauración (F9).
+  final RestoreService? restoreService;
 
   @override
   Widget build(BuildContext context) {
@@ -101,6 +110,7 @@ class VaultApp extends StatelessWidget {
         autoLockClock: autoLockClock,
         autoLockSuspension: autoLockSuspension,
         autoLockDelay: autoLockDelay,
+        restoreService: restoreService,
       ),
     );
   }
@@ -115,6 +125,7 @@ class VaultRootNavigator extends StatefulWidget {
     this.autoLockClock,
     this.autoLockSuspension,
     this.autoLockDelay,
+    this.restoreService,
   });
 
   final AuthController? authController;
@@ -125,6 +136,7 @@ class VaultRootNavigator extends StatefulWidget {
   final AutoLockClock? autoLockClock;
   final AutoLockSuspension? autoLockSuspension;
   final AutoLockDelay? autoLockDelay;
+  final RestoreService? restoreService;
 
   @override
   State<VaultRootNavigator> createState() => _VaultRootNavigatorState();
@@ -151,6 +163,15 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
   String? _pendingCode;
 
   VaultServices? _realServices;
+  RestoreService? _restoreService;
+
+  RestoreService get _restore =>
+      widget.restoreService ??
+      (_restoreService ??= RestoreService(
+        cloud: CloudProvider.instance,
+        auth: _authController,
+        prefs: SyncPreferences(FlutterSecureKeyValueStore()),
+      ));
 
   VaultServices get _services =>
       widget.services ?? (_realServices ??= VaultServices.real());
@@ -196,7 +217,21 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
   /// Sin bóveda -> onboarding; con bóveda -> PIN (y, si el onboarding quedó a
   /// medias, tras el PIN se vuelve al paso del código).
   Future<void> _bootstrap() async {
-    final hasVault = await _authController.hasVault();
+    var hasVault = await _authController.hasVault();
+    // F9 (iOS): llaves en el Keychain de una instalación anterior, sin BD.
+    if (Platform.isIOS &&
+        hasVault &&
+        AppPaths.isInitialized &&
+        !await _authController.isOnboardingPending() &&
+        !File(VaultDatabase.defaultDbPath).existsSync()) {
+      await _authController.discardLocalKeys();
+      hasVault = false;
+    }
+    // F9: sin bóveda no puede haber BD ni miniaturas válidas (restos de una
+    // restauración interrumpida durante la instalación).
+    if (!hasVault && widget.restoreService == null) {
+      await RestoreService.sweepOrphans();
+    }
     if (!mounted) return;
     setState(() {
       _vaultExists = hasVault;
@@ -215,7 +250,21 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
   /// desbloqueo en curso y vuelve a la pantalla de PIN con la pila de
   /// navegación vacía (visor, hojas y diálogos incluidos).
   void _lock() {
-    _authController.lock();
+    // F9: con cambios sin respaldar, la copia cifrada de la BD se toma ANTES
+    // de destruir las llaves (la interfaz ya vuelve al PIN de inmediato).
+    final flush = _phase == _Phase.vault && _authController.isUnlocked
+        ? _services.beforeLock
+        : null;
+    if (flush == null) {
+      _authController.lock();
+    } else {
+      unawaited(
+        flush()
+            .timeout(const Duration(seconds: 3))
+            .catchError((Object _) {})
+            .whenComplete(_authController.lock),
+      );
+    }
     if (!mounted) return;
     final inVault = _phase == _Phase.vault;
     // En el onboarding SIN bóveda todavía no hay nada que bloquear.
@@ -267,6 +316,8 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
             _pendingCode = code;
           },
           onRecoveryConfirmed: () => _pendingCode = null,
+          restoreProvider: () => _restore,
+          onVaultRestored: () => _vaultExists = true,
           onFinished: _finishOnboarding,
         );
       case _Phase.pin:

@@ -65,7 +65,6 @@ class Env {
 
   SyncService newService({
     int maxAttempts = 5,
-    int snapshotEveryUploads = 20,
     SyncQueueRepository? queueOverride,
   }) => SyncService(
     cloud: cloud,
@@ -85,7 +84,6 @@ class Env {
     nowMs: () => now,
     random: Random(1),
     maxAttempts: maxAttempts,
-    snapshotEveryUploads: snapshotEveryUploads,
     scheduleWakeups: false,
   );
 
@@ -745,7 +743,7 @@ void main() {
       () async {
         env.recoveryJson = null;
         env.sync.dispose();
-        env.sync = env.newService(snapshotEveryUploads: 1);
+        env.sync = env.newService();
         await env.addItem('a');
         await env.sync.run();
         final first = env.cloud.byName('vault_db.snapshot')!;

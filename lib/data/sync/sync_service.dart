@@ -173,7 +173,7 @@ class SyncService {
     int Function()? nowMs,
     Random? random,
     this.maxAttempts = 5,
-    this.snapshotEveryUploads = 20,
+    this.snapshotDebounce = const Duration(seconds: 30),
     this.snapshotMaxAge = const Duration(hours: 6),
     this.scheduleWakeups = true,
     this.afterRun,
@@ -200,7 +200,11 @@ class SyncService {
   final Future<File> Function() snapshotProvider;
 
   final int maxAttempts;
-  final int snapshotEveryUploads;
+
+  /// Espera tras el último cambio de datos antes de intentar el snapshot.
+  final Duration snapshotDebounce;
+
+  /// Edad máxima del snapshot: pasada, se sube otro aunque no haya cambios.
   final Duration snapshotMaxAge;
   final bool scheduleWakeups;
 
@@ -225,6 +229,8 @@ class SyncService {
   bool get isRunning => _running;
   CloudCancelToken? _token;
   Timer? _wake;
+  Timer? _dirtyTimer;
+  bool _lockFlushRunning = false;
   StreamSubscription<NetworkKind>? _netSub;
   bool _disposed = false;
 
@@ -256,6 +262,7 @@ class SyncService {
   void dispose() {
     _disposed = true;
     _wake?.cancel();
+    _dirtyTimer?.cancel();
     _token?.cancel();
     _netSub?.cancel();
     summary.dispose();
@@ -269,6 +276,8 @@ class SyncService {
   void cancel() {
     _wake?.cancel();
     _wake = null;
+    _dirtyTimer?.cancel();
+    _dirtyTimer = null;
     _token?.cancel();
     if (!_disposed) {
       progress.value = const {};
@@ -356,6 +365,8 @@ class SyncService {
     final token = _token = CloudCancelToken();
     _wake?.cancel();
     _wake = null;
+    _dirtyTimer?.cancel();
+    _dirtyTimer = null;
     try {
       _setPhase(SyncPhase.running);
       // Reanudación: lo que quedó `subiendo` (app cerrada/bloqueada) vuelve a
@@ -498,20 +509,77 @@ class SyncService {
     }
   }
 
+  /// Política del snapshot (F9). Se llama cuando ya no quedan trabajos
+  /// vencidos (todo lo subible está subido), de modo que la copia incluye
+  /// los `driveFileId`/`cloudMd5` de lo recién subido. Se encola si:
+  /// * hay cambios desde el último snapshot (marca "sucio" persistida), o
+  /// * el último snapshot tiene más de [snapshotMaxAge] (seguro contra una
+  ///   copia remota perdida).
   Future<void> _maybeEnqueueSnapshot() async {
-    final uploads = await prefs.getUploadsSinceSnapshot();
-    if (uploads == 0) return;
+    if (_lockFlushRunning) return;
+    final dirty = await prefs.getDirtyAt() != null;
     final at = await prefs.getSnapshotAt();
-    final due =
-        uploads >= snapshotEveryUploads ||
-        at == null ||
-        _now() - at >= snapshotMaxAge.inMilliseconds;
-    if (due) {
+    final aged = at != null && _now() - at >= snapshotMaxAge.inMilliseconds;
+    if (dirty || aged) {
       await queue.enqueue(
         SyncQueueRepository.noItem,
         SyncJobKind.dbSnapshot,
         now: _now(),
       );
+    }
+  }
+
+  /// Los datos cambiaron (lo llama `VaultDataRepository.onDataChanged`):
+  /// marca el snapshot como sucio (persistido) y programa una pasada tras
+  /// [snapshotDebounce] sin más cambios.
+  void notifyDataChanged() {
+    if (_disposed) return;
+    unawaited(
+      prefs.markDirty(_now()).catchError((Object _) {
+        // almacén seguro no disponible: se reintentará con el próximo cambio
+      }),
+    );
+    if (!scheduleWakeups) return;
+    _dirtyTimer?.cancel();
+    _dirtyTimer = Timer(snapshotDebounce, () {
+      _dirtyTimer = null;
+      if (!_disposed && !_running && isUnlocked()) unawaited(run());
+    });
+  }
+
+  /// Al bloquear (best-effort): si hay cambios sin respaldar y la red lo
+  /// permite, toma la copia cifrada de la BD AHORA (antes de que se cierre la
+  /// sesión) y la sube en segundo plano sin necesitar llaves. Devuelve
+  /// cuando la copia está tomada; la subida sigue por su cuenta. Si falla,
+  /// la marca "sucio" persiste y la próxima sesión lo reintenta.
+  Future<void> flushSnapshotBeforeLock() async {
+    if (_disposed || _lockFlushRunning || !isUnlocked()) return;
+    try {
+      if (await prefs.getDirtyAt() == null) return;
+      if (cloud.currentAccountEmail == null) return;
+      final net = await network.current();
+      if (!net.isOnline) return;
+      if (net == NetworkKind.mobile && await prefs.getWifiOnly()) return;
+      _lockFlushRunning = true;
+      final takenAt = _now();
+      final snapshot = await snapshotProvider();
+      unawaited(_uploadFlushedSnapshot(snapshot, takenAt));
+    } on Object catch (e) {
+      _lockFlushRunning = false;
+      if (kDebugMode) debugPrint('[sync] snapshot al bloquear omitido: $e');
+    }
+  }
+
+  Future<void> _uploadFlushedSnapshot(File snapshot, int takenAt) async {
+    try {
+      await _uploadSnapshotFile(snapshot, CloudCancelToken(), takenAt);
+      if (kDebugMode) debugPrint('[sync] snapshot subido al bloquear');
+    } on Object catch (e) {
+      if (kDebugMode) {
+        debugPrint('[sync] snapshot al bloquear falló: ${e.runtimeType}');
+      }
+    } finally {
+      _lockFlushRunning = false;
     }
   }
 
@@ -688,6 +756,7 @@ class SyncService {
     try {
       if (isThumb) {
         await items.setThumbDriveFileId(item.id, remote.id);
+        await prefs.markDirty(_now());
       } else {
         await items.markCloudVerified(
           item.id,
@@ -696,6 +765,7 @@ class SyncService {
           size: size,
         );
         await prefs.addUpload();
+        await prefs.markDirty(_now());
       }
     } on StateError catch (e) {
       // Borrado mientras se subía: nada que marcar. (La bloqueada se propaga.)
@@ -787,7 +857,19 @@ class SyncService {
   }
 
   Future<bool> _uploadSnapshot(CloudCancelToken token) async {
+    final takenAt = _now();
     final snapshot = await snapshotProvider();
+    return _uploadSnapshotFile(snapshot, token, takenAt);
+  }
+
+  /// Sube [snapshot] (copia ya cifrada de la BD) y la borra al terminar.
+  /// [takenAt]: instante en que se tomó la copia (ver
+  /// [SyncPreferences.markSnapshotDone]).
+  Future<bool> _uploadSnapshotFile(
+    File snapshot,
+    CloudCancelToken token,
+    int takenAt,
+  ) async {
     try {
       final size = await snapshot.length();
       final md5 = await md5OfFile(snapshot);
@@ -799,7 +881,10 @@ class SyncService {
         cancel: token,
       );
       _verify(remote, size, md5);
-      await prefs.markSnapshotDone(_now());
+      await prefs.markSnapshotDone(_now(), takenAtMs: takenAt);
+      if (kDebugMode) {
+        debugPrint('[sync] snapshot de la BD subido: $size B');
+      }
       return true;
     } finally {
       try {

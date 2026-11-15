@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -5,9 +6,11 @@ import 'package:flutter/material.dart';
 import '../../core/crypto/auth_controller.dart';
 import '../../core/security/auto_lock.dart';
 import '../../core/theme/app_motion.dart';
+import '../../data/restore/restore_service.dart';
 import '../../data/sync/sync_service.dart';
 import '../auth/pin_screen.dart';
 import '../auth/widgets/pin_prompt_screen.dart';
+import 'restore_flow.dart';
 import 'widgets/onboarding_page.dart';
 import 'widgets/onboarding_steps.dart';
 import 'widgets/recovery_code_steps.dart';
@@ -15,6 +18,9 @@ import 'widgets/recovery_code_steps.dart';
 /// Pasos del onboarding obligatorio.
 enum OnboardingStep {
   welcome,
+
+  /// F9: restaurar una bóveda existente desde Google Drive.
+  restore,
   createPin,
 
   /// Reapertura sin el código en memoria: hay que generar uno nuevo.
@@ -46,6 +52,8 @@ class OnboardingFlow extends StatefulWidget {
     this.recoveryCode,
     this.onVaultCreated,
     this.onRecoveryConfirmed,
+    this.restoreProvider,
+    this.onVaultRestored,
     this.random,
   });
 
@@ -70,6 +78,13 @@ class OnboardingFlow extends StatefulWidget {
   /// El usuario confirmó el código: el llamador debe olvidarlo.
   final VoidCallback? onRecoveryConfirmed;
 
+  /// F9: servicio de restauración. `null` oculta "Ya tengo una bóveda".
+  final RestoreService Function()? restoreProvider;
+
+  /// La bóveda se restauró y quedó desbloqueada (el llamador marca que ya
+  /// existe, p. ej. para que un bloqueo vuelva al PIN).
+  final VoidCallback? onVaultRestored;
+
   /// Posiciones reproducibles de la confirmación (pruebas).
   final Random? random;
 
@@ -85,13 +100,14 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
       : OnboardingStep.welcome;
   late String? _code = widget.recoveryCode;
   bool _confirming = false;
+  bool _restored = false;
   bool _busy = false;
   String? _bioError;
 
   static const int _totalSteps = 6;
 
   int get _stepNumber => switch (_step) {
-    OnboardingStep.welcome => 1,
+    OnboardingStep.welcome || OnboardingStep.restore => 1,
     OnboardingStep.createPin => 2,
     OnboardingStep.regenerate => 3,
     OnboardingStep.code => _confirming ? 4 : 3,
@@ -187,11 +203,30 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   SyncService? get _sync => widget.syncProvider?.call();
 
   void _afterBiometrics() {
-    if (_sync != null) {
+    if (_restored) {
+      widget.onFinished(); // Drive ya está conectado (se usó para restaurar)
+    } else if (_sync != null) {
       _go(OnboardingStep.drive);
     } else {
       widget.onFinished();
     }
+  }
+
+  Future<void> _onRestored(RestoreResult result) async {
+    _restored = true;
+    widget.onVaultRestored?.call();
+    final bio = await widget.auth.biometricAvailability();
+    if (!mounted) return;
+    if (bio == BiometricAvailability.available) {
+      _go(OnboardingStep.biometrics);
+    } else {
+      widget.onFinished();
+    }
+  }
+
+  void _createNewInstead() {
+    unawaited(RestoreService.discardStaging());
+    _go(OnboardingStep.createPin);
   }
 
   // ---------------------------------------------------------------- build
@@ -201,7 +236,18 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
       case OnboardingStep.welcome:
         return WelcomeStep(
           key: const ValueKey('step-welcome'),
-          onContinue: () => _go(OnboardingStep.createPin),
+          onContinue: _createNewInstead,
+          onRestore: widget.restoreProvider == null
+              ? null
+              : () => _go(OnboardingStep.restore),
+        );
+      case OnboardingStep.restore:
+        return RestoreFlow(
+          key: const ValueKey('step-restore'),
+          service: widget.restoreProvider!(),
+          onBack: () => _go(OnboardingStep.welcome),
+          onCreateNew: _createNewInstead,
+          onRestored: _onRestored,
         );
       case OnboardingStep.createPin:
         return MediaQuery.removePadding(
@@ -250,7 +296,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
       body: SafeArea(
         child: Column(
           children: [
-            OnboardingProgress(current: _stepNumber, total: _totalSteps),
+            if (_step != OnboardingStep.restore && !_restored)
+              OnboardingProgress(current: _stepNumber, total: _totalSteps),
             Expanded(
               child: AnimatedSwitcher(
                 duration: AppMotion.medium,

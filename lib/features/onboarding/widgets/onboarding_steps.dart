@@ -11,9 +11,12 @@ import 'onboarding_page.dart';
 
 /// Paso 1: bienvenida en tres tarjetas.
 class WelcomeStep extends StatelessWidget {
-  const WelcomeStep({super.key, required this.onContinue});
+  const WelcomeStep({super.key, required this.onContinue, this.onRestore});
 
   final VoidCallback onContinue;
+
+  /// F9: "Ya tengo una bóveda (restaurar)"; `null` oculta el botón.
+  final VoidCallback? onRestore;
 
   @override
   Widget build(BuildContext context) {
@@ -45,7 +48,16 @@ class WelcomeStep extends StatelessWidget {
               'teléfono, es la única forma de recuperar tu bóveda.',
         ),
       ],
-      footer: [AppFilledButton(label: 'Empezar', onPressed: onContinue)],
+      footer: [
+        AppFilledButton(label: 'Empezar', onPressed: onContinue),
+        if (onRestore != null) ...[
+          const SizedBox(height: AppSpacing.sm),
+          AppTextButton(
+            label: 'Ya tengo una bóveda (restaurar)',
+            onPressed: onRestore,
+          ),
+        ],
+      ],
     );
   }
 }
