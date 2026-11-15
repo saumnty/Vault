@@ -12,6 +12,7 @@ import '../../core/services/app_paths.dart';
 import '../../core/services/cache_manager.dart';
 import '../../core/services/plain_temp_manager.dart';
 import '../../core/session/vault_session.dart';
+import '../../core/streaming/vault_stream_server.dart';
 import '../../data/gallery/gallery_import_service.dart';
 import '../../data/gallery/import_preferences.dart';
 import '../../data/gallery/photo_manager_gallery_source.dart';
@@ -234,6 +235,8 @@ class VaultServices {
     final temp = PlainTempManager.instance;
     // Al bloquear: temporales descifrados fuera, SIN esperas.
     session.addOnClear(temp.purgeSync);
+    // ...y todo servidor de streaming local cerrado (corta conexiones).
+    session.addOnClear(VaultStreamServer.closeAllNow);
     final offline = OfflineService(
       items: repository,
       fetcher: fetcher,
@@ -246,6 +249,9 @@ class VaultServices {
       fetcher: fetcher,
       filesKey: () => session.filesKey,
       temp: temp,
+      session: session,
+      markInUse: cache.markInUse,
+      releaseInUse: cache.releaseInUse,
       onOpened: () async {
         await cache.enforce();
       },

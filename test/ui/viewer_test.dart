@@ -1,13 +1,17 @@
 // ignore_for_file: depend_on_referenced_packages
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:video_player/video_player.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
+import 'package:vault/core/crypto/vault_file_format.dart';
+import 'package:vault/core/services/app_paths.dart';
+import 'package:vault/core/services/plain_temp_manager.dart';
 import 'package:vault/core/session/vault_session.dart';
+import 'package:vault/core/streaming/vault_stream_server.dart';
 import 'package:vault/core/theme/app_spacing.dart';
 import 'package:vault/data/cloud/cloud_storage.dart';
 import 'package:vault/data/models/vault_item_model.dart';
@@ -15,6 +19,7 @@ import 'package:vault/features/vault/vault_media_viewer_screen.dart';
 import 'package:vault/features/vault/viewer/media_opener.dart';
 import 'package:vault/features/vault/viewer/video_page.dart';
 
+import '../support/f6_env.dart';
 import '../support/fake_video_platform.dart';
 import '../support/ui_helpers.dart';
 
@@ -24,6 +29,8 @@ class _FakeSource implements VideoSource {
   final Future<VideoPlayerController> Function(MediaProgressCallback? p) onOpen;
   int released = 0;
   VideoPlayerController? controller;
+  @override
+  Object? playbackFailure;
 
   @override
   Future<VideoPlayerController> open({
@@ -75,7 +82,7 @@ void main() {
 
   Future<VaultSession> pumpViewer(
     WidgetTester tester,
-    FakeMediaOpener opener, {
+    MediaOpener opener, {
     int initial = 0,
     List<VaultItemModel>? list,
   }) async {
@@ -462,5 +469,152 @@ void main() {
       expect(find.byType(VaultMediaViewerScreen), findsNothing);
       expect(source.released, 1);
     });
+    testWidgets(
+      'integridad durante la reproducción: mensaje de archivo dañado, sin '
+      'Reintentar, y se libera el origen',
+      (tester) async {
+        late _FakeSource source;
+        final opener = FakeMediaOpener()
+          ..videoFactory = (i) =>
+              source = _FakeSource((_) async => _readyController());
+        await pumpViewer(tester, opener, list: [videoItem]);
+        await tester.tap(find.byKey(const ValueKey('video-play')));
+        await tester.pumpAndSettle();
+        expect(find.byType(VideoPlayer), findsOneWidget);
+
+        // El servidor cortó la respuesta: el origen conoce la causa y el
+        // reproductor nativo emite un error.
+        source.playbackFailure = const VaultAuthException('bloque 3');
+        platform.emitError(platform.playerIds.last, 'Source error');
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('video-error')), findsOneWidget);
+        expect(find.textContaining('dañado'), findsOneWidget);
+        expect(find.text('Reintentar'), findsNothing);
+        expect(source.released, 1);
+      },
+    );
+
+    testWidgets('error genérico del reproductor: mensaje y Reintentar', (
+      tester,
+    ) async {
+      final opener = FakeMediaOpener()
+        ..videoFactory = (i) => _FakeSource((_) async => _readyController());
+      await pumpViewer(tester, opener, list: [videoItem]);
+      await tester.tap(find.byKey(const ValueKey('video-play')));
+      await tester.pumpAndSettle();
+      platform.emitError(platform.playerIds.last, 'codec');
+      await tester.pumpAndSettle();
+      expect(find.textContaining('no pudo leer'), findsOneWidget);
+      expect(find.text('Reintentar'), findsOneWidget);
+    });
+
+    testWidgets(
+      'app a segundo plano: libera el origen (cierra el servidor) y al volver '
+      'a reproducir reanuda en la misma posición',
+      (tester) async {
+        final sources = <_FakeSource>[];
+        final opener = FakeMediaOpener()
+          ..videoFactory = (i) {
+            final s = _FakeSource((_) async => _readyController());
+            sources.add(s);
+            return s;
+          };
+        await pumpViewer(tester, opener, list: [videoItem]);
+        await tester.tap(find.byKey(const ValueKey('video-play')));
+        await tester.pumpAndSettle();
+        await sources.single.controller!.seekTo(const Duration(seconds: 12));
+        await tester.pump(const Duration(seconds: 1));
+
+        for (final st in [
+          AppLifecycleState.inactive,
+          AppLifecycleState.hidden,
+          AppLifecycleState.paused,
+        ]) {
+          tester.binding.handleAppLifecycleStateChanged(st);
+        }
+        await tester.pump();
+        expect(sources.single.released, 1);
+
+        // (En segundo plano no se dibujan frames: se comprueba al volver.)
+        for (final st in [
+          AppLifecycleState.hidden,
+          AppLifecycleState.inactive,
+          AppLifecycleState.resumed,
+        ]) {
+          tester.binding.handleAppLifecycleStateChanged(st);
+        }
+        await tester.pumpAndSettle();
+        expect(find.byType(VideoPlayer), findsNothing);
+        expect(find.byKey(const ValueKey('video-play')), findsOneWidget);
+        platform.calls.clear();
+        await tester.tap(find.byKey(const ValueKey('video-play')));
+        await tester.pumpAndSettle();
+        expect(sources.length, 2);
+        expect(find.byType(VideoPlayer), findsOneWidget);
+        expect(platform.calls, containsAllInOrder(['seek', 'play']));
+        expect(
+          await sources.last.controller!.position,
+          const Duration(seconds: 12),
+        );
+      },
+    );
+
+    testWidgets(
+      'visor REAL: si el streaming no inicializa cae a completo-primero y '
+      'reproduce; al cerrar no queda nada en claro',
+      (tester) async {
+        final env = F6Env();
+        late VaultItemModel item;
+        await tester.runAsync(() async {
+          await env.setUp();
+          item = await env.addCloudItem(
+            'v',
+            plain: Uint8List.fromList(List.generate(300000, (i) => i % 251)),
+            name: 'clip.mp4',
+            mime: 'video/mp4',
+          );
+        });
+        final temp = PlainTempManager(dirProvider: () => AppPaths.tmpPlainDir);
+        // Plataforma que no deja usar la URL local (cleartext bloqueado).
+        platform.onCreate = (ds) async {
+          if (ds.sourceType == DataSourceType.network) {
+            throw PlatformException(code: 'VideoError', message: 'cleartext');
+          }
+        };
+        final opener = VaultMediaOpener(
+          fetcher: env.fetcher,
+          filesKey: () => env.session.filesKey,
+          temp: temp,
+          session: env.session,
+        );
+        await pumpViewer(tester, opener, list: [item]);
+        await tester.tap(find.byKey(const ValueKey('video-play')));
+        for (var i = 0; i < 100; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 30)),
+          );
+          await tester.pump();
+          if (find.byType(VideoPlayer).evaluate().isNotEmpty) break;
+        }
+        expect(find.byType(VideoPlayer), findsOneWidget);
+        expect(platform.openedUris.first, startsWith('http://127.0.0.1:'));
+        expect(platform.openedUris.last, contains(AppPaths.tmpPlainDirName));
+        expect(VaultStreamServer.liveCount, 0);
+
+        await tester.tap(find.byTooltip('Cerrar'));
+        await tester.pumpAndSettle();
+        for (var i = 0; i < 10; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 30)),
+          );
+          await tester.pump();
+        }
+        await tester.runAsync(() async {
+          final dir = AppPaths.tmpPlainDir;
+          expect(dir.existsSync() ? dir.listSync() : const [], isEmpty);
+          await env.tearDown();
+        });
+      },
+    );
   });
 }

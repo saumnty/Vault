@@ -534,4 +534,7 @@ class _GoldenSource implements VideoSource {
 
   @override
   Future<void> release() async => _c?.dispose();
+
+  @override
+  Object? get playbackFailure => null;
 }

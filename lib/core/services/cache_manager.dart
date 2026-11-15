@@ -87,6 +87,26 @@ class CacheManager {
 
   Future<void> _tail = Future<void>.value();
 
+  /// Items abiertos ahora mismo (p. ej. un video en streaming, F6b): su
+  /// `.vault` no se purga aunque se supere el límite. Contador por id.
+  final Map<String, int> _inUse = {};
+
+  /// Marca [itemId] como en uso hasta [releaseInUse].
+  void markInUse(String itemId) =>
+      _inUse.update(itemId, (n) => n + 1, ifAbsent: () => 1);
+
+  void releaseInUse(String itemId) {
+    final n = _inUse[itemId];
+    if (n == null) return;
+    if (n <= 1) {
+      _inUse.remove(itemId);
+    } else {
+      _inUse[itemId] = n - 1;
+    }
+  }
+
+  bool isInUse(String itemId) => _inUse.containsKey(itemId);
+
   Future<int> getLimitBytes() => _prefs.getLimitBytes();
 
   /// API para F8 (ajustes). Aplica el nuevo límite de inmediato.
@@ -157,6 +177,7 @@ class CacheManager {
     final evicted = <String>[];
     for (final (item, size) in candidates) {
       if (total <= limit) break;
+      if (_inUse.containsKey(item.id)) continue; // abierto: no se purga
       try {
         await _resolve(item.encryptedPath).delete();
       } on FileSystemException {

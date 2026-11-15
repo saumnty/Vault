@@ -4,10 +4,14 @@
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+    <!-- Drive y F6b: abrir sockets, incluido el servidor de video en 127.0.0.1
+         (ya llegaba por fusión desde plugins; se declara explícitamente). -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="vault"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:networkSecurityConfig="@xml/network_security_config">
         <activity
             android:name=".MainActivity"
             android:exported="true"

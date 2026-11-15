@@ -60,3 +60,30 @@ Fecha base de las primeras entradas: 2026-11-14/15.
 
 ## D15 — Video: descifrado completo a temporal primero, streaming después (F6b)
 - El temporal en claro vive en `tmp_plain/`, se borra al cerrar el visor, al bloquear y se barre al arrancar/desbloquear.
+
+## D16 — Streaming de video con servidor HTTP en loopback (F6b)
+- Contexto: reproducir sin escribir el video en claro en disco; `video_player` 2.11.1 no admite un DataSource/resource loader propio desde Dart.
+- Opciones: completo-primero (F6a); plugin nativo propio (Media3 DataSource + AVAssetResourceLoaderDelegate); media_kit/fvp; pipe/memfd; HLS AES-128; servidor HTTP local.
+- Elegida: servidor `dart:io` en 127.0.0.1 (puerto efímero) que descifra bloque a bloque bajo demanda con soporte Range. Completo-primero queda como respaldo automático.
+- Por qué: única vía con el plugin oficial; una sola implementación del formato .vault (Dart, ya probada); funciona igual en Android/iOS. El plugin nativo duplicaría la criptografía en Kotlin y Swift.
+
+## D17 — Controles de seguridad del servidor local
+- Token de 256 bits (Random.secure, base64url) en la ruta y comparación en tiempo constante; cualquier otra ruta/token → 404 vacío e indistinguible; Host obligatorio `127.0.0.1:<puerto>`/`localhost:<puerto>` (anti DNS rebinding); solo GET/HEAD; un archivo por servidor; sin CORS; `no-store` y `nosniff`; tope de 8 respuestas simultáneas; timeout de inactividad 20 s.
+- Integridad: el lector se abre con `verifyFinal` (Content-Length autenticado). Cada bloque se autentica ANTES de enviar un byte suyo; si falla antes de cabeceras → 500 vacío; a mitad → se destruye el socket. El servidor queda "envenenado" (500 a todo) y el visor muestra "archivo dañado" sin Reintentar. Sin caída a completo-primero en ese caso.
+- Cierre: al liberar el origen (cerrar visor, cambiar de página), al pasar la app a segundo plano (hidden/paused) y al bloquear (`VaultSession.addOnClear` → `VaultStreamServer.closeAllNow`, síncrono para dejar de aceptar y cortar sockets).
+- Logs: solo con `!kReleaseMode`, solo contadores/duraciones/códigos; nunca nombres, rutas, tokens ni llaves.
+
+## D18 — Cleartext de Android solo para loopback
+- `network_security_config.xml`: base-config `cleartextTrafficPermitted=false` con CA del sistema (sin CA de usuario); domain-config `true` solo para `127.0.0.1` y `localhost`. INTERNET declarado explícitamente (ya llegaba por fusión de plugins).
+- iOS: `NSAppTransportSecurity/NSAllowsLocalNetworking=true` (sin NSAllowsArbitraryLoads). Sin probar en dispositivo.
+
+## D19 — Al pasar a segundo plano se libera el video
+- Contexto: con la app oculta no debe quedar un servidor escuchando (ni un temporal en claro en el respaldo).
+- Elegida: VideoPage libera el origen en `hidden`/`paused`, recuerda la posición y reanuda desde ahí al volver a tocar Reproducir. Coste: hay que tocar Reproducir otra vez al volver.
+
+## D20 — La caché LRU no purga lo que se está reproduciendo
+- `CacheManager.markInUse/releaseInUse` (contador por id). Detectado en emulador: tras subir el video, `afterRun → enforce` borró el .vault mientras se reproducía (en Android el fd abierto siguió leyendo; en otra plataforma habría fallado).
+
+## D21 — Pendiente de decidir: AES-GCM nativo o en isolates
+- Medido en emulador (debug y profile): el descifrado AES-GCM del paquete `cryptography` en Dart puro va a ≈1–1,3 MB/s, del orden del bitrate de un 1080p (≈8 Mbit/s). El streaming arranca cuando hay ~2,5 s de búfer; con videos de bitrate alto o "cargados al principio" el arranque no es inmediato y puede haber rebuffering.
+- Opciones: (a) `cryptography_flutter` (AES-GCM nativo de Android/iOS; mismo formato, el AES-GCM es estándar); (b) pool de isolates descifrando bloques en paralelo con prelectura; (c) ambas. Requiere tu visto bueno (cambia el backend criptográfico usado también al importar).

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
@@ -26,11 +27,15 @@ String formatDuration(Duration d) {
 
 enum _VideoState { idle, opening, ready, error }
 
-/// Página de video (versión completa-primero, F6a).
+/// Página de video.
 ///
 /// No abre nada hasta que el usuario toca "Reproducir": así deslizar por la
 /// carpeta no dispara descargas/descifrados de videos grandes. Al salir de la
-/// página (o cerrar el visor) se libera el origen, que borra el temporal.
+/// página (o cerrar el visor) se libera el origen: cierra el servidor local
+/// de streaming (F6b) o borra el temporal (respaldo completo-primero).
+/// Al pasar la app a segundo plano también se libera (se recuerda la
+/// posición y se reanuda desde ahí al volver a tocar Reproducir): así no
+/// queda un servidor escuchando con la app oculta.
 class VideoPage extends StatefulWidget {
   const VideoPage({
     super.key,
@@ -57,7 +62,7 @@ class VideoPage extends StatefulWidget {
   State<VideoPage> createState() => _VideoPageState();
 }
 
-class _VideoPageState extends State<VideoPage> {
+class _VideoPageState extends State<VideoPage> with WidgetsBindingObserver {
   _VideoState _state = _VideoState.idle;
   VideoSource? _source;
   VideoPlayerController? _controller;
@@ -67,20 +72,86 @@ class _VideoPageState extends State<VideoPage> {
   bool _fullscreen = false;
   bool _disposed = false;
 
+  /// Posición a la que volver tras liberar por segundo plano.
+  Duration? _resumeAt;
+
+  /// Medición de arranque (solo logs de depuración/perfil).
+  Stopwatch? _startWatch;
+  bool _firstFrameLogged = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     unawaited(_loadThumb());
   }
 
   @override
   void dispose() {
     _disposed = true;
+    WidgetsBinding.instance.removeObserver(this);
+    _controller?.removeListener(_onValue);
     final source = _source;
     _source = null;
     if (source != null) unawaited(source.release());
     if (_fullscreen) unawaited(_applyFullscreen(false));
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused) {
+      unawaited(_suspend());
+    }
+  }
+
+  /// Segundo plano: libera el origen (servidor/temporal) y vuelve a "idle"
+  /// recordando la posición.
+  Future<void> _suspend() async {
+    final source = _source;
+    if (source == null) return;
+    final c = _controller;
+    if (c != null && c.value.isInitialized) _resumeAt = c.value.position;
+    c?.removeListener(_onValue);
+    _source = null;
+    _controller = null;
+    if (_fullscreen) {
+      _fullscreen = false;
+      unawaited(_applyFullscreen(false));
+      widget.onFullscreenChanged?.call(false);
+    }
+    if (!_disposed && mounted) setState(() => _state = _VideoState.idle);
+    await source.release();
+  }
+
+  /// Errores del reproductor DURANTE la reproducción (p. ej. el servidor
+  /// cortó la respuesta porque un bloque no autenticó).
+  void _onValue() {
+    final c = _controller;
+    if (c == null || _disposed || !mounted) return;
+    final v = c.value;
+    if (!_firstFrameLogged &&
+        v.isPlaying &&
+        v.position > Duration.zero &&
+        !kReleaseMode) {
+      _firstFrameLogged = true;
+      debugPrint(
+        '[vault-video] primer avance de posición a los '
+        '${_startWatch?.elapsedMilliseconds} ms del toque',
+      );
+    }
+    if (!v.hasError || _state != _VideoState.ready) return;
+    final source = _source;
+    final cause = source?.playbackFailure ?? const VideoPlaybackException();
+    c.removeListener(_onValue);
+    _source = null;
+    _controller = null;
+    setState(() {
+      _error = describeMediaError(cause);
+      _state = _VideoState.error;
+    });
+    if (source != null) unawaited(source.release());
   }
 
   Future<void> _loadThumb() async {
@@ -97,7 +168,10 @@ class _VideoPageState extends State<VideoPage> {
   Future<void> _start() async {
     final old = _source;
     _source = null;
+    _controller?.removeListener(_onValue);
     if (old != null) await old.release();
+    _startWatch = Stopwatch()..start();
+    _firstFrameLogged = false;
     final source = widget.opener.videoSource(widget.item);
     _source = source;
     setState(() {
@@ -118,7 +192,20 @@ class _VideoPageState extends State<VideoPage> {
         return;
       }
       _controller = controller;
+      controller.addListener(_onValue);
+      if (!kReleaseMode) {
+        debugPrint(
+          '[vault-video] inicializado a los '
+          '${_startWatch?.elapsedMilliseconds} ms del toque '
+          '(${source.runtimeType})',
+        );
+      }
       setState(() => _state = _VideoState.ready);
+      final resume = _resumeAt;
+      _resumeAt = null;
+      if (resume != null && resume > Duration.zero) {
+        await controller.seekTo(resume);
+      }
       await controller.play();
     } on Object catch (e) {
       await source.release();
@@ -229,7 +316,7 @@ class _VideoPageState extends State<VideoPage> {
     final e = _error!;
     return ViewerMessage(
       key: const ValueKey('video-error'),
-      icon: Icons.cloud_off_outlined,
+      icon: e.canRetry ? Icons.cloud_off_outlined : Icons.error_outline_rounded,
       title: 'No se pudo reproducir',
       message: e.message,
       actionLabel: e.canRetry ? 'Reintentar' : null,

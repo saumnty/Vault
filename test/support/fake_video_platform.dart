@@ -1,6 +1,7 @@
 // ignore_for_file: depend_on_referenced_packages
 import 'dart:async';
 
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
@@ -18,6 +19,20 @@ class FakeVideoPlayerPlatform extends VideoPlayerPlatform
   /// Rutas de archivo con las que se creó un reproductor.
   final List<String> openedUris = [];
 
+  /// Se ejecuta al crear un reproductor (antes de "initialized"); si lanza,
+  /// `initialize()` falla. Permite simular ExoPlayer leyendo la URL local
+  /// (o una plataforma que la bloquea).
+  Future<void> Function(DataSource dataSource)? onCreate;
+
+  /// Ids de reproductores creados, en orden.
+  final List<int> playerIds = [];
+
+  /// Emite un error de reproducción (como hace ExoPlayer si la conexión se
+  /// corta) en el reproductor [playerId].
+  void emitError(int playerId, String message) => _events[playerId]?.addError(
+    PlatformException(code: 'VideoError', message: message),
+  );
+
   @override
   Future<void> init() async => calls.add('init');
 
@@ -30,7 +45,10 @@ class FakeVideoPlayerPlatform extends VideoPlayerPlatform
   @override
   Future<int?> createWithOptions(VideoCreationOptions options) async {
     final id = _next++;
+    playerIds.add(id);
     openedUris.add(options.dataSource.uri ?? '');
+    final hook = onCreate;
+    if (hook != null) await hook(options.dataSource);
     final c = StreamController<VideoEvent>();
     _events[id] = c;
     _position[id] = Duration.zero;

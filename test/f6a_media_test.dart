@@ -47,6 +47,9 @@ void main() {
       fetcher: env.fetcher,
       filesKey: () => env.session.filesKey,
       temp: temp,
+      // Estas pruebas cubren el respaldo completo-primero (F6a); el streaming
+      // (por defecto) se prueba en f6b_streaming_test.dart.
+      streaming: false,
     );
     progressLog.clear();
   });

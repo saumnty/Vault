@@ -101,3 +101,21 @@ Causa más probable: **crear la bóveda no pedía confirmar el PIN**; un toque p
 - `flutter build apk --release` firmado con esa llave verificado con apksigner (SHA-1 coincide). Si falta `key.properties` el build cae a la llave debug.
 - `codemagic.yaml` con workflow `ios-unsigned` (.ipa sin firmar para Sideloadly) y `android-release` opcional.
 - Info.plist iOS revisado: GIDClientID + URL scheme (reversed client ID), NSPhotoLibrary*, NSFaceIDUsageDescription presentes. No hay `ios/Podfile` en el repo (lo genera Flutter en la compilación en Codemagic).
+
+---
+## F6b — Streaming de video por bloques sin texto plano en disco (🧪 emulador Android)
+- **Diseño:** `VaultStreamServer` (lib/core/streaming/) en 127.0.0.1:<efímero>, ruta `/v/<token 256 bits>.mp4`; Range completo (bytes=a-b, a-, -n; 206/200/416/HEAD); descifra bajo demanda con `VaultFileReader.streamRange` + prelectura de 1 bloque y contrapresión (`flush`), ≤2 bloques de 1 MiB en claro por conexión. `StreamingVideoSource` por defecto con caída automática a completo-primero si el reproductor no inicializa. Decisiones D16–D21.
+- **Emulador (Pixel_7 API 37, video_grande.mp4 importado en ORIGINAL → .vault 24 913 318 B = 24 bloques):** reproduce por `http://127.0.0.1` sin caer al respaldo; seek a mitad (0:13) y al final (0:24) y reanudar OK (peticiones 206 servidas); `run-as` (build debug): `tmp_plain/` vacío durante y después, ningún `.mp4/.mov` en `files/`, `cache/`, `app_flutter/`, ni en `/sdcard/Android/data/…`. Desde otro uid (adb shell) el puerto es alcanzable pero: token inventado → 404 vacío; Host `evil.example` → 403. HOME durante la reproducción → el listener desaparece de `/proc/net/tcp` y la conexión es rechazada. Estadísticas del servidor: maxBloquesVivos=2. Capturas `docs/screens/emu/f6b_*.png`.
+- **Cifras (tiempo desde el toque):**
+
+  | Modo | Inicializado | Posición avanza | Texto plano en disco |
+  |---|---|---|---|
+  | Streaming, debug | 15,8–17,1 s | 20,1–29,5 s | 0 B |
+  | Completo-primero, debug | 18,7 s | 21,7 s | 24,9 MB en tmp_plain |
+  | Streaming, profile | 16,5 s | 28,4 s (rebuffering) | 0 B |
+  | Completo-primero, profile | 19,6 s | 19,8 s | 24,9 MB en tmp_plain |
+
+  Causa: AES-GCM en Dart puro ≈1–1,3 MB/s en el emulador (igual en JIT y AOT), del orden del bitrate del video (≈8 Mbit/s); además este MP4 sintético concentra ~10 MB en los primeros 15 fotogramas y ExoPlayer pidió 17,8 MB antes de estar listo. Con un video de bitrate normal el arranque sería ~2–3 s, pero **el "inicio casi inmediato" NO se cumple con este video en este equipo**. Siguiente paso recomendado (D21): AES-GCM nativo (`cryptography_flutter`) y/o descifrado en isolates.
+- **Corregido durante la prueba:** la purga LRU borraba el .vault en reproducción (D20).
+- **No probado:** iOS (AVPlayer + ATS), dispositivo físico, bloqueo explícito de la bóveda desde la UI (no hay botón de bloqueo aún; cubierto con tests vía `VaultSession.clear`), consumo de RAM del proceso con un medidor externo (acotado por diseño/tests).
+- **Riesgos residuales:** cualquier proceso local del dispositivo puede conectar al puerto mientras el visor reproduce (necesita el token de 256 bits; la URL solo vive en memoria y en el reproductor nativo, que podría registrarla en logcat ante un error: logcat solo es legible por la propia app/adb); ventana de exposición = mientras el video está abierto en primer plano; el texto plano vive en RAM (búferes de Dart y de ExoPlayer) y no se puede poner a cero de forma fiable; descifrado en el hilo de UI (se observaron frames saltados).

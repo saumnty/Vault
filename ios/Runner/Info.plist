@@ -88,5 +88,15 @@
 	</array>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Vault usa Face ID para desbloquear tu bóveda cifrada sin escribir el PIN.</string>
+	<!-- iOS: F6b. AVPlayer reproduce desde el servidor HTTP propio en
+	     127.0.0.1 (loopback, token de 256 bits). NSAllowsLocalNetworking solo
+	     exime de ATS a localhost / direcciones locales; NO se activa
+	     NSAllowsArbitraryLoads: el resto del tráfico sigue exigiendo HTTPS.
+	     Sin probar en dispositivo (se compila en Codemagic). -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>
