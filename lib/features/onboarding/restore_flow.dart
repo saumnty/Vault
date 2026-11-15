@@ -179,8 +179,9 @@ class _RestoreFlowState extends State<RestoreFlow> {
     var ok = await showPinPrompt(
       context,
       title: 'Elige un PIN nuevo',
+      minLength: AuthController.minNewPinLength,
       message:
-          'De 4 a 6 dígitos. Solo sirve en este teléfono: no se guarda en '
+          'De 6 dígitos. Solo sirve en este teléfono: no se guarda en '
           'Drive.',
       onSubmit: (pin) async {
         first = pin;
@@ -191,6 +192,7 @@ class _RestoreFlowState extends State<RestoreFlow> {
     ok = await showPinPrompt(
       context,
       title: 'Confirma tu PIN',
+      minLength: AuthController.minNewPinLength,
       message: 'Escríbelo otra vez.',
       onSubmit: (pin) async => pin == first ? null : 'Los PIN no coinciden',
     );
@@ -236,8 +238,10 @@ class _RestoreFlowState extends State<RestoreFlow> {
     } on CloudException catch (e) {
       _fail(describeSyncError(e), retryable: true);
     } on Object {
-      _fail('No se pudo restaurar. No se cambió nada en este teléfono.',
-          retryable: true);
+      _fail(
+        'No se pudo restaurar. No se cambió nada en este teléfono.',
+        retryable: true,
+      );
     }
   }
 

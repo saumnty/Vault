@@ -128,7 +128,7 @@ void main() {
       // El PIN nuevo desbloquea tras bloquear; el viejo no.
       b.auth.lock();
       final b2 = b.newAuth();
-      expect(await b2.unlockWithPin('1234'), isFalse);
+      expect(await b2.unlockWithPin('123456'), isFalse);
       expect(await b2.unlockWithPin('654321'), isTrue);
       expect(b2.session.keys.keyCheck, a.session.keys.keyCheck);
 
@@ -150,7 +150,7 @@ void main() {
           await b.service.verifyCode(a.recoveryCode.toLowerCase()),
           isTrue,
         );
-        await b.service.restore(newPin: '2468');
+        await b.service.restore(newPin: '246800');
         final uploadsBefore = a.cloud.uploadedNames.length;
 
         final vdb = b.openDb();
@@ -204,7 +204,7 @@ void main() {
 
       b = await newB();
       await verified(b);
-      final r = await b.service.restore(newPin: '1357');
+      final r = await b.service.restore(newPin: '135700');
       expect(r.lostItems, 2);
       expect(r.items, 3);
 
@@ -224,7 +224,7 @@ void main() {
       a.cloud.remove(a.cloud.byName('i1.thumb')!.id);
       b = await newB();
       await verified(b);
-      final r = await b.service.restore(newPin: '1357');
+      final r = await b.service.restore(newPin: '135700');
       expect(r.missingThumbnails, 1); // i1 (i4 nunca tuvo miniatura)
       final vdb = b.openDb();
       addTearDown(vdb.close);
@@ -233,15 +233,18 @@ void main() {
       expect(i1.thumbDriveFileId, isNull);
     });
 
-    test('tras restaurar no hay nada "sucio" ni respaldo por re-subir', () async {
-      a = await _phoneA();
-      b = await newB();
-      await verified(b);
-      await b.service.restore(newPin: '1357');
-      expect(await b.prefs.getDirtyAt(), isNull);
-      expect(await b.prefs.getSnapshotAt(), 9000000);
-      expect(await b.prefs.getRecoveryUploadedSha(), isNotEmpty);
-    });
+    test(
+      'tras restaurar no hay nada "sucio" ni respaldo por re-subir',
+      () async {
+        a = await _phoneA();
+        b = await newB();
+        await verified(b);
+        await b.service.restore(newPin: '135700');
+        expect(await b.prefs.getDirtyAt(), isNull);
+        expect(await b.prefs.getSnapshotAt(), 9000000);
+        expect(await b.prefs.getRecoveryUploadedSha(), isNotEmpty);
+      },
+    );
   });
 
   group('sin respaldo / respaldo inválido', () {
@@ -365,7 +368,7 @@ void main() {
       a = await _phoneA();
       b = await newB();
       await verified(b);
-      await b.service.restore(newPin: '1357');
+      await b.service.restore(newPin: '135700');
       final plainCode = a.recoveryCode.replaceAll('-', '');
       for (final v in b.store.data.values) {
         expect(v.contains(plainCode), isFalse);
@@ -379,7 +382,7 @@ void main() {
       b = await newB(expected: "x'${'00' * 32}'");
       await verified(b);
       await expectLater(
-        b.service.restore(newPin: '1357'),
+        b.service.restore(newPin: '135700'),
         throwsA(isA<RestoreCorruptException>()),
       );
       await _expectNothingLocal(b);
@@ -397,7 +400,7 @@ void main() {
       b = await newB();
       await verified(b);
       await expectLater(
-        b.service.restore(newPin: '1357'),
+        b.service.restore(newPin: '135700'),
         throwsA(
           isA<RestoreCorruptException>().having(
             (e) => e.message,
@@ -420,7 +423,7 @@ void main() {
         return calls == 3 ? const CloudNoNetworkException() : null;
       };
       await expectLater(
-        b.service.restore(newPin: '1357'),
+        b.service.restore(newPin: '135700'),
         throwsA(isA<CloudNoNetworkException>()),
       );
       await _expectNothingLocal(b);
@@ -434,7 +437,7 @@ void main() {
         if (op == 'bytes') downloads++;
         return null;
       };
-      final r = await b.service.restore(newPin: '1357');
+      final r = await b.service.restore(newPin: '135700');
       expect(r.items, 4);
       // Reintento: la BD y solo las miniaturas que faltaban (de 3).
       expect(downloads, lessThan(1 + 3));
@@ -442,31 +445,33 @@ void main() {
       expect(RestoreService.stagingDir.existsSync(), isFalse);
     });
 
-    test('falla al consolidar las llaves: se deshace todo y se reintenta',
-        () async {
-      a = await _phoneA();
-      final flaky = FlakyStore();
-      b = await newB(store: flaky);
-      await verified(b);
-      flaky.failKey = AuthController.pinEnvelopeKey;
-      await expectLater(
-        b.service.restore(newPin: '1357'),
-        throwsA(isA<StateError>()),
-      );
-      await _expectNothingLocal(b);
+    test(
+      'falla al consolidar las llaves: se deshace todo y se reintenta',
+      () async {
+        a = await _phoneA();
+        final flaky = FlakyStore();
+        b = await newB(store: flaky);
+        await verified(b);
+        flaky.failKey = AuthController.pinEnvelopeKey;
+        await expectLater(
+          b.service.restore(newPin: '135700'),
+          throwsA(isA<StateError>()),
+        );
+        await _expectNothingLocal(b);
 
-      final r = await b.service.restore(newPin: '1357');
-      expect(r.items, 4);
-      expect(b.auth.isUnlocked, isTrue);
-    });
+        final r = await b.service.restore(newPin: '135700');
+        expect(r.items, 4);
+        expect(b.auth.isUnlocked, isTrue);
+      },
+    );
 
     test('ya hay bóveda local: no se restaura encima', () async {
       a = await _phoneA();
       b = await newB();
       await verified(b);
-      await b.auth.createVault('1111');
+      await b.auth.createVault('111111');
       await expectLater(
-        b.service.restore(newPin: '1357'),
+        b.service.restore(newPin: '135700'),
         throwsA(isA<StateError>()),
       );
     });
@@ -490,7 +495,7 @@ void main() {
       a = await _phoneA();
       b = await newB();
       await verified(b);
-      await b.service.restore(newPin: '1357');
+      await b.service.restore(newPin: '135700');
       final keys = await KeyHierarchy.fromDek(a.session.keys.dekBytes());
       expect(b.seenPasswords, [VaultDatabase.passwordFor(keys)]);
     });

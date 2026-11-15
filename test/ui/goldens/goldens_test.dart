@@ -132,7 +132,7 @@ Future<AuthController> _controller({bool createVault = false}) async {
     random: Random(7),
   );
   if (createVault) {
-    await c.createVault('1234');
+    await c.createVault('123456');
     c.lock();
   }
   return c;
@@ -194,8 +194,7 @@ void main() {
         testApp(PinScreen(authController: c, onAuthenticated: () {})),
       );
       await tester.pump();
-      await _digits(tester, '9999');
-      await tester.tap(find.text('Continuar'));
+      await _digits(tester, '999999');
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 300)),
       );
@@ -275,9 +274,8 @@ void main() {
       for (var i = 0; i < 4; i++) {
         await tester.pump(const Duration(milliseconds: 400));
       }
-      for (final pin in ['1357', '1357']) {
+      for (final pin in ['135700', '135700']) {
         await _digits(tester, pin);
-        await tester.tap(find.text('Continuar'));
         await tester.pump(const Duration(seconds: 1));
         await tester.pump(const Duration(seconds: 1));
       }

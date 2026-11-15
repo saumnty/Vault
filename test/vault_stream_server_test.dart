@@ -106,8 +106,7 @@ void main() {
 
   group('parseRangeHeader', () {
     test('formas válidas, recorte, sufijo e ignorables', () {
-      PartialRange p(String h, int t) =>
-          parseRangeHeader(h, t) as PartialRange;
+      PartialRange p(String h, int t) => parseRangeHeader(h, t) as PartialRange;
       expect(parseRangeHeader(null, 10), isA<FullRange>());
       expect(p('bytes=0-0', 10).length, 1);
       expect(p('bytes=2-5', 10).start, 2);
@@ -138,10 +137,14 @@ void main() {
     });
 
     test('videoMimeType y extensión', () {
-      expect(videoMimeType(mimeType: 'video/webm', fileName: 'x.mp4'),
-          'video/webm');
-      expect(videoMimeType(mimeType: 'application/octet-stream',
-          fileName: 'A.MOV'), 'video/quicktime');
+      expect(
+        videoMimeType(mimeType: 'video/webm', fileName: 'x.mp4'),
+        'video/webm',
+      );
+      expect(
+        videoMimeType(mimeType: 'application/octet-stream', fileName: 'A.MOV'),
+        'video/quicktime',
+      );
       expect(videoMimeType(fileName: 'clip.m4v'), 'video/mp4');
       expect(videoMimeType(fileName: 'sin_extension'), 'video/mp4');
       expect(videoExtensionFor('video/quicktime'), '.mov');
@@ -395,18 +398,21 @@ void main() {
       expect(VaultStreamServer.liveCount, 0);
     });
 
-    test('bloquear la bóveda (VaultSession.clear) cierra el servidor', () async {
-      final session = VaultSession.create();
-      session.addOnClear(VaultStreamServer.closeAllNow);
-      final s = await serve(await encrypt(_bytes(5000)));
-      expect((await get(s.uri, range: 'bytes=0-9')).status, 206);
-      session.clear();
-      expect(s.isClosed, isTrue); // síncrono
-      await expectLater(
-        client.getUrl(s.uri).then((r) => r.close()),
-        throwsA(isA<SocketException>()),
-      );
-    });
+    test(
+      'bloquear la bóveda (VaultSession.clear) cierra el servidor',
+      () async {
+        final session = VaultSession.create();
+        session.addOnClear(VaultStreamServer.closeAllNow);
+        final s = await serve(await encrypt(_bytes(5000)));
+        expect((await get(s.uri, range: 'bytes=0-9')).status, 206);
+        session.clear();
+        expect(s.isClosed, isTrue); // síncrono
+        await expectLater(
+          client.getUrl(s.uri).then((r) => r.close()),
+          throwsA(isA<SocketException>()),
+        );
+      },
+    );
 
     test('close es idempotente y cierra el lector', () async {
       final reader = await VaultFileReader.open(
@@ -435,40 +441,40 @@ void main() {
       return f;
     }
 
-    test(
-      'bloque alterado a mitad: se corta la respuesta y no se entrega '
-      'nada del bloque malo; luego 500',
-      () async {
-        final plain = _bytes(bs * 12, 6);
-        VaultCryptoException? failure;
-        final s = await serve(await tampered(plain, 5), onFail: (e) => failure = e);
+    test('bloque alterado a mitad: se corta la respuesta y no se entrega '
+        'nada del bloque malo; luego 500', () async {
+      final plain = _bytes(bs * 12, 6);
+      VaultCryptoException? failure;
+      final s = await serve(
+        await tampered(plain, 5),
+        onFail: (e) => failure = e,
+      );
 
-        final req = await client.getUrl(s.uri);
-        final res = await req.close();
-        expect(res.statusCode, 200);
-        final b = BytesBuilder();
-        Object? error;
-        try {
-          await for (final c in res) {
-            b.add(c);
-          }
-        } on Object catch (e) {
-          error = e;
+      final req = await client.getUrl(s.uri);
+      final res = await req.close();
+      expect(res.statusCode, 200);
+      final b = BytesBuilder();
+      Object? error;
+      try {
+        await for (final c in res) {
+          b.add(c);
         }
-        final got = b.takeBytes();
-        expect(error, isNotNull); // el cliente ve un fallo, no un fin limpio
-        expect(got.length, lessThanOrEqualTo(5 * bs));
-        expect(got, plain.sublist(0, got.length)); // solo datos auténticos
-        expect(failure, isA<VaultAuthException>());
-        expect(s.integrityFailure, isNotNull);
-        expect(s.stats.integrityFailures, 1);
+      } on Object catch (e) {
+        error = e;
+      }
+      final got = b.takeBytes();
+      expect(error, isNotNull); // el cliente ve un fallo, no un fin limpio
+      expect(got.length, lessThanOrEqualTo(5 * bs));
+      expect(got, plain.sublist(0, got.length)); // solo datos auténticos
+      expect(failure, isA<VaultAuthException>());
+      expect(s.integrityFailure, isNotNull);
+      expect(s.stats.integrityFailures, 1);
 
-        // Envenenado: todo responde 500 sin cuerpo, incluso rangos buenos.
-        final again = await get(s.uri, range: 'bytes=0-9');
-        expect(again.status, 500);
-        expect(again.body, isEmpty);
-      },
-    );
+      // Envenenado: todo responde 500 sin cuerpo, incluso rangos buenos.
+      final again = await get(s.uri, range: 'bytes=0-9');
+      expect(again.status, 500);
+      expect(again.body, isEmpty);
+    });
 
     test('rango que empieza en el bloque alterado -> 500 sin cuerpo', () async {
       final plain = _bytes(bs * 8, 7);
@@ -537,38 +543,35 @@ void main() {
       expect(server.stats.activeBodies, 0);
     });
 
-    test(
-      'memoria acotada: con un cliente que no lee no se descifra todo y '
-      'como mucho 2 bloques en claro a la vez',
-      () async {
-        final req = await client.getUrl(server.uri);
-        final res = await req.close();
-        var got = 0;
-        var paused = false;
-        late StreamSubscription<List<int>> sub;
-        final done = Completer<void>();
-        sub = res.listen(
-          (c) {
-            got += c.length;
-            if (!paused && got > bs) {
-              paused = true;
-              sub.pause();
-            }
-          },
-          onDone: done.complete,
-          onError: (Object _) => done.complete(),
-        );
-        await Future<void>.delayed(const Duration(seconds: 1));
-        final decryptedWhilePaused = server.stats.blocksDecrypted;
-        expect(decryptedWhilePaused, lessThan(blocks ~/ 2));
-        expect(server.stats.maxLiveBlocks, lessThanOrEqualTo(2));
-        sub.resume();
-        await done.future;
-        expect(got, plain.length);
-        expect(server.stats.blocksDecrypted, blocks);
-        expect(server.stats.maxLiveBlocks, lessThanOrEqualTo(2));
-      },
-    );
+    test('memoria acotada: con un cliente que no lee no se descifra todo y '
+        'como mucho 2 bloques en claro a la vez', () async {
+      final req = await client.getUrl(server.uri);
+      final res = await req.close();
+      var got = 0;
+      var paused = false;
+      late StreamSubscription<List<int>> sub;
+      final done = Completer<void>();
+      sub = res.listen(
+        (c) {
+          got += c.length;
+          if (!paused && got > bs) {
+            paused = true;
+            sub.pause();
+          }
+        },
+        onDone: done.complete,
+        onError: (Object _) => done.complete(),
+      );
+      await Future<void>.delayed(const Duration(seconds: 1));
+      final decryptedWhilePaused = server.stats.blocksDecrypted;
+      expect(decryptedWhilePaused, lessThan(blocks ~/ 2));
+      expect(server.stats.maxLiveBlocks, lessThanOrEqualTo(2));
+      sub.resume();
+      await done.future;
+      expect(got, plain.length);
+      expect(server.stats.blocksDecrypted, blocks);
+      expect(server.stats.maxLiveBlocks, lessThanOrEqualTo(2));
+    });
 
     test('NINGÚN byte en claro se escribe en disco', () async {
       Map<String, int> snapshot() => {

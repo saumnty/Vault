@@ -170,7 +170,7 @@ void main() {
           // Como lo teclearía un usuario: minúsculas y espacios.
           recoveryCode: result.recoveryCode.toLowerCase().replaceAll('-', ' '),
           recoveryBackupJson: result.recoveryBackupJson,
-          newPin: '4321',
+          newPin: '432100',
         ),
         isTrue,
       );
@@ -178,7 +178,7 @@ void main() {
 
       // El PIN nuevo funciona tras reabrir.
       newPhone.lock();
-      expect(await newPhone.unlockWithPin('4321'), isTrue);
+      expect(await newPhone.unlockWithPin('432100'), isTrue);
       expect(newPhone.session.keys.dekBytes(), dek);
     });
 
@@ -192,7 +192,7 @@ void main() {
         await newPhone.restoreFromRecovery(
           recoveryCode: wrongCode,
           recoveryBackupJson: result.recoveryBackupJson,
-          newPin: '4321',
+          newPin: '432100',
         ),
         isFalse,
       );
@@ -203,7 +203,7 @@ void main() {
         await newPhone.restoreFromRecovery(
           recoveryCode: 'no-es-un-codigo',
           recoveryBackupJson: result.recoveryBackupJson,
-          newPin: '4321',
+          newPin: '432100',
         ),
         isFalse,
       );
@@ -216,7 +216,7 @@ void main() {
         c.restoreFromRecovery(
           recoveryCode: RecoveryCode.generate(),
           recoveryBackupJson: '{"type":"otro"}',
-          newPin: '4321',
+          newPin: '432100',
         ),
         throwsFormatException,
       );
@@ -245,14 +245,14 @@ void main() {
           await c.restoreFromRecovery(
             recoveryCode: result.recoveryCode,
             recoveryBackupJson: local!,
-            newPin: '7777',
+            newPin: '777777',
           ),
           isTrue,
         );
         expect(c.session.keys.dekBytes(), dek);
         c.lock();
         expect(await c.unlockWithPin(pin), isFalse);
-        expect(await c.unlockWithPin('7777'), isTrue);
+        expect(await c.unlockWithPin('777777'), isTrue);
       },
     );
 
@@ -378,7 +378,7 @@ void main() {
         throwsA(isA<PinLockedOutException>()),
       );
       await expectLater(
-        reopened.changePin(oldPin: pin, newPin: '1111'),
+        reopened.changePin(oldPin: pin, newPin: '111111'),
         throwsA(isA<PinLockedOutException>()),
       );
 
@@ -497,7 +497,7 @@ void main() {
       await c.restoreFromRecovery(
         recoveryCode: result.recoveryCode,
         recoveryBackupJson: result.recoveryBackupJson,
-        newPin: '2468',
+        newPin: '246800',
       );
       expect(await c.isBiometricUnlockEnabled(), isFalse);
       expect(biometrics.stored, isNull);

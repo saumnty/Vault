@@ -216,12 +216,17 @@ class _PinScreenState extends State<PinScreen> with WidgetsBindingObserver {
     if (mounted) setState(() => _pin = '');
   }
 
+  /// S-06: un PIN nuevo (crear/confirmar) exige 6 dígitos; desbloquear acepta
+  /// los 4 de bóvedas antiguas.
+  int get _minLength =>
+      _hasVault ? AuthController.minPinLength : AuthController.minNewPinLength;
+
   Future<void> _submit() async {
     final pin = _pin;
     // Guarda síncrona: el auto-envío del último dígito, el botón Continuar y
     // Enter pueden llegar en el mismo frame; solo el primero pasa (_isBusy se
     // pone a true antes de cualquier await).
-    if (pin.length < AuthController.minPinLength || !_inputEnabled) {
+    if (pin.length < _minLength || !_inputEnabled) {
       if (kDebugMode && _isBusy) {
         cryptoDebugLog('pin-ui: envío ignorado, ya hay uno en vuelo');
       }
@@ -406,7 +411,7 @@ class _PinScreenState extends State<PinScreen> with WidgetsBindingObserver {
             if (!_hasVault && _firstPin == null) ...[
               const SizedBox(height: AppSpacing.xs),
               const Text(
-                'Elige de 4 a 6 dígitos',
+                'Elige un PIN de 6 dígitos',
                 style: AppTypography.bodySecondary,
               ),
             ],
@@ -438,9 +443,7 @@ class _PinScreenState extends State<PinScreen> with WidgetsBindingObserver {
                 child: AppFilledButton(
                   label: 'Continuar',
                   busy: _isBusy,
-                  onPressed:
-                      _inputEnabled &&
-                          _pin.length >= AuthController.minPinLength
+                  onPressed: _inputEnabled && _pin.length >= _minLength
                       ? _submit
                       : null,
                 ),

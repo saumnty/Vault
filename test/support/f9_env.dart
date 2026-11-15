@@ -80,7 +80,7 @@ class PhoneA {
       kdfParams: fastKdf,
       session: session,
     );
-    final created = await auth.createVault('1234');
+    final created = await auth.createVault('123456');
     recoveryCode = created.recoveryCode;
     vdb = VaultDatabase.forTesting(
       session: session,
@@ -253,8 +253,9 @@ class PhoneB {
 
   /// Claves del almacén seguro que describen una bóveda (no el contador de
   /// intentos del código de recuperación).
-  List<String> get vaultKeys =>
-      store.data.keys.where((k) => k != AuthController.restoreAttemptsKey).toList();
+  List<String> get vaultKeys => store.data.keys
+      .where((k) => k != AuthController.restoreAttemptsKey)
+      .toList();
 }
 
 typedef Argon2Clock = DateTime Function();

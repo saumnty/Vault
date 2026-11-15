@@ -36,7 +36,8 @@ Future<bool> runChangePinFlow(BuildContext context, AuthController auth) async {
     ok = await showPinPrompt(
       context,
       title: 'PIN nuevo',
-      message: 'Elige de 4 a 6 dígitos.',
+      message: 'Elige un PIN de 6 dígitos.',
+      minLength: AuthController.minNewPinLength,
       onSubmit: (pin) async {
         if (pin == oldPin) return 'El PIN nuevo debe ser distinto del actual';
         newPin = pin;
@@ -47,6 +48,7 @@ Future<bool> runChangePinFlow(BuildContext context, AuthController auth) async {
     ok = await showPinPrompt(
       context,
       title: 'Confirma el PIN nuevo',
+      minLength: AuthController.minNewPinLength,
       message: 'Escríbelo otra vez.',
       onSubmit: (pin) async => pin == newPin ? null : 'Los PIN no coinciden',
     );

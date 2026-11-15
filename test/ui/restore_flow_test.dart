@@ -32,11 +32,9 @@ Future<void> _settle(WidgetTester tester) async {
 /// Elige un PIN y lo confirma en las dos pantallas de PIN.
 Future<void> _pickPin(WidgetTester tester, String pin) async {
   await _digits(tester, pin);
-  await tester.tap(find.text('Continuar'));
   await _settle(tester);
   expect(find.text('Confirma tu PIN'), findsOneWidget);
   await _digits(tester, pin);
-  await tester.tap(find.text('Continuar'));
   await _settle(tester);
 }
 
@@ -96,7 +94,10 @@ void main() {
     test('mensajes en vivo', () {
       expect(recoveryInputHint(''), isNull);
       expect(recoveryInputHint('abcd'), 'Faltan 20 caracteres.');
-      expect(recoveryInputHint('ABCDEFGHJKMNPQRSTUVWXYZ23'), contains('Sobran'));
+      expect(
+        recoveryInputHint('ABCDEFGHJKMNPQRSTUVWXYZ23'),
+        contains('Sobran'),
+      );
       expect(recoveryInputHint('0ABC'), contains('no forman parte'));
       expect(recoveryInputHint(_typed), isNull);
     });
@@ -119,8 +120,9 @@ void main() {
   group('RestoreFlow', () {
     testWidgets('sin respaldo: mensaje claro y dos salidas', (tester) async {
       usePhoneSize(tester);
-      final h = _Harness(ScriptedRestoreService()
-        ..probeResult = RestoreProbeResult.noBackup);
+      final h = _Harness(
+        ScriptedRestoreService()..probeResult = RestoreProbeResult.noBackup,
+      );
       await tester.pumpWidget(h.flow());
       expect(find.text('Restaurar tu bóveda'), findsOneWidget);
       await tester.tap(find.text('Iniciar sesión con Google'));
@@ -136,8 +138,9 @@ void main() {
       expect(h.createNew, 1);
     });
 
-    testWidgets('respaldo incompleto o inválido tienen su propio mensaje',
-        (tester) async {
+    testWidgets('respaldo incompleto o inválido tienen su propio mensaje', (
+      tester,
+    ) async {
       usePhoneSize(tester);
       final svc = ScriptedRestoreService()
         ..probeResult = RestoreProbeResult.incomplete;
@@ -153,8 +156,9 @@ void main() {
       expect(find.text('El respaldo no es válido'), findsOneWidget);
     });
 
-    testWidgets('error de inicio de sesión se muestra; cancelar no es error',
-        (tester) async {
+    testWidgets('error de inicio de sesión se muestra; cancelar no es error', (
+      tester,
+    ) async {
       usePhoneSize(tester);
       final svc = ScriptedRestoreService()
         ..signInError = const CloudSignInFailedException('Falló Google');
@@ -171,8 +175,9 @@ void main() {
       expect(find.text('Restaurar tu bóveda'), findsOneWidget);
     });
 
-    testWidgets('código: formato en vivo y validación; correo visible',
-        (tester) async {
+    testWidgets('código: formato en vivo y validación; correo visible', (
+      tester,
+    ) async {
       usePhoneSize(tester);
       final svc = ScriptedRestoreService();
       final h = _Harness(svc);
@@ -197,6 +202,7 @@ void main() {
       expect(button().onPressed, isNull);
 
       await _type(tester, _typed);
+      await tester.tap(find.widgetWithText(FilledButton, 'Continuar'));
       expect(find.text('ABCD-EFGH-JKMN-PQRS-TUVW-XYZ2'), findsOneWidget);
       expect(button().onPressed, isNotNull);
     });
@@ -220,6 +226,7 @@ void main() {
 
       // Al editar desaparece el error.
       await _type(tester, 'ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZY');
+      await tester.tap(find.widgetWithText(FilledButton, 'Continuar'));
       expect(find.text('Código incorrecto'), findsNothing);
     });
 
@@ -231,10 +238,13 @@ void main() {
       await tester.pumpWidget(h.flow(step: RestoreStep.code));
       await _settle(tester);
       await _type(tester, _typed);
+      await tester.tap(find.widgetWithText(FilledButton, 'Continuar'));
       expect(find.textContaining('Demasiados intentos'), findsOneWidget);
       expect(
         tester
-            .widget<FilledButton>(find.widgetWithText(FilledButton, 'Continuar'))
+            .widget<FilledButton>(
+              find.widgetWithText(FilledButton, 'Continuar'),
+            )
             .onPressed,
         isNull,
       );
@@ -244,8 +254,9 @@ void main() {
       await tester.pump(const Duration(seconds: 31));
     });
 
-    testWidgets('camino feliz: código -> PIN dos veces -> progreso -> listo',
-        (tester) async {
+    testWidgets('camino feliz: código -> PIN dos veces -> progreso -> listo', (
+      tester,
+    ) async {
       usePhoneSize(tester);
       final svc = ScriptedRestoreService()
         ..gate = Completer<void>()
@@ -282,8 +293,9 @@ void main() {
       expect(h.restored?.items, 12);
     });
 
-    testWidgets('PIN que no coincide: error y no se descarga nada',
-        (tester) async {
+    testWidgets('PIN que no coincide: error y no se descarga nada', (
+      tester,
+    ) async {
       usePhoneSize(tester);
       final svc = ScriptedRestoreService();
       await tester.pumpWidget(_Harness(svc).flow(step: RestoreStep.code));
@@ -291,11 +303,9 @@ void main() {
       await _type(tester, _typed);
       await tester.tap(find.widgetWithText(FilledButton, 'Continuar'));
       await _settle(tester);
-      await _digits(tester, '1234');
-      await tester.tap(find.text('Continuar'));
+      await _digits(tester, '123456');
       await _settle(tester);
-      await _digits(tester, '4321');
-      await tester.tap(find.text('Continuar'));
+      await _digits(tester, '432100');
       await _settle(tester);
       expect(find.text('Los PIN no coinciden'), findsOneWidget);
       expect(svc.restoreCalls, 0);
@@ -317,13 +327,14 @@ void main() {
       await _type(tester, _typed);
       await tester.tap(find.widgetWithText(FilledButton, 'Continuar'));
       await _settle(tester);
-      await _pickPin(tester, '1357');
+      await _pickPin(tester, '135700');
       await _settle(tester);
       expect(find.text('3 no se pudieron recuperar'), findsOneWidget);
     });
 
-    testWidgets('fallo de red: Reintentar reanuda con el mismo PIN',
-        (tester) async {
+    testWidgets('fallo de red: Reintentar reanuda con el mismo PIN', (
+      tester,
+    ) async {
       usePhoneSize(tester);
       final svc = ScriptedRestoreService()
         ..restoreError = const CloudNoNetworkException();
@@ -332,19 +343,20 @@ void main() {
       await _type(tester, _typed);
       await tester.tap(find.widgetWithText(FilledButton, 'Continuar'));
       await _settle(tester);
-      await _pickPin(tester, '1357');
+      await _pickPin(tester, '135700');
 
       expect(find.text('No se pudo restaurar'), findsOneWidget);
       expect(find.text('Sin conexión a internet'), findsOneWidget);
       await tester.tap(find.text('Reintentar'));
       await _settle(tester);
       expect(svc.restoreCalls, 2);
-      expect(svc.pinUsed, '1357');
+      expect(svc.pinUsed, '135700');
       expect(find.text('Bóveda restaurada'), findsOneWidget);
     });
 
-    testWidgets('respaldo dañado: mensaje claro, sin reintentar',
-        (tester) async {
+    testWidgets('respaldo dañado: mensaje claro, sin reintentar', (
+      tester,
+    ) async {
       usePhoneSize(tester);
       final svc = ScriptedRestoreService()
         ..restoreError = const RestoreCorruptException();
@@ -353,7 +365,7 @@ void main() {
       await _type(tester, _typed);
       await tester.tap(find.widgetWithText(FilledButton, 'Continuar'));
       await _settle(tester);
-      await _pickPin(tester, '1357');
+      await _pickPin(tester, '135700');
       expect(
         find.text('El respaldo está dañado o no corresponde a este código.'),
         findsOneWidget,
@@ -372,7 +384,7 @@ void main() {
       await _type(tester, _typed);
       await tester.tap(find.widgetWithText(FilledButton, 'Continuar'));
       await _settle(tester);
-      await _pickPin(tester, '1357');
+      await _pickPin(tester, '135700');
       await tester.tap(find.text('Cancelar'));
       svc.gate!.complete();
       await _settle(tester);
@@ -381,8 +393,9 @@ void main() {
   });
 
   group('OnboardingFlow con restauración', () {
-    testWidgets('la bienvenida ofrece restaurar solo si hay servicio',
-        (tester) async {
+    testWidgets('la bienvenida ofrece restaurar solo si hay servicio', (
+      tester,
+    ) async {
       usePhoneSize(tester);
       final auth = await _auth();
       await tester.pumpWidget(
@@ -404,8 +417,9 @@ void main() {
       expect(find.text('Ya tengo una bóveda (restaurar)'), findsOneWidget);
     });
 
-    testWidgets('restaurar -> biometría -> bóveda (sin paso de Drive)',
-        (tester) async {
+    testWidgets('restaurar -> biometría -> bóveda (sin paso de Drive)', (
+      tester,
+    ) async {
       usePhoneSize(tester);
       final auth = await _auth();
       final svc = ScriptedRestoreService();
@@ -431,7 +445,7 @@ void main() {
       await _type(tester, _typed);
       await tester.tap(find.widgetWithText(FilledButton, 'Continuar'));
       await _settle(tester);
-      await _pickPin(tester, '2468');
+      await _pickPin(tester, '246800');
       await _settle(tester);
       expect(find.text('Bóveda restaurada'), findsOneWidget);
       await tester.tap(find.text('Continuar'));
@@ -444,8 +458,9 @@ void main() {
       expect(finished, 1);
     });
 
-    testWidgets('cuenta sin respaldo -> crear una bóveda nueva',
-        (tester) async {
+    testWidgets('cuenta sin respaldo -> crear una bóveda nueva', (
+      tester,
+    ) async {
       usePhoneSize(tester);
       final auth = await _auth();
       final svc = ScriptedRestoreService()

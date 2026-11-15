@@ -37,9 +37,12 @@ class Argon2Params {
   // Límites de cordura al leer parámetros de un JSON externo (p. ej. el
   // respaldo descargado de Drive): evitan que un archivo manipulado nos haga
   // reservar gigabytes de RAM o iterar indefinidamente.
-  static const int _maxMemoryKiB = 1024 * 1024; // 1 GiB
-  static const int _maxIterations = 16;
-  static const int _maxParallelism = 8;
+  // Rangos fijos (S-08): producción es m=19456, t=2, p=1; se deja margen para
+  // endurecerlo, pero nada que pueda colgar o matar por memoria la app.
+  static const int maxMemoryKiB = 256 * 1024; // 256 MiB
+  static const int maxIterations = 10;
+  static const int maxParallelism = 4;
+  static const int minMemoryKiB = 8;
 
   Map<String, dynamic> toJson() => {
     'alg': 'argon2id',
@@ -58,12 +61,16 @@ class Argon2Params {
       throw const FormatException('Parámetros Argon2id inválidos');
     }
     if (p < 1 ||
-        p > _maxParallelism ||
+        p > maxParallelism ||
         t < 1 ||
-        t > _maxIterations ||
-        m < 8 * p ||
-        m > _maxMemoryKiB) {
-      throw const FormatException('Parámetros Argon2id fuera de rango');
+        t > maxIterations ||
+        m < minMemoryKiB * p ||
+        m > maxMemoryKiB) {
+      throw FormatException(
+        'Parámetros Argon2id fuera de rango (m=$m KiB, t=$t, p=$p): '
+        'permitido m ${minMemoryKiB * p}–$maxMemoryKiB KiB, '
+        't 1–$maxIterations, p 1–$maxParallelism. No se deriva nada.',
+      );
     }
     return Argon2Params(memoryKiB: m, iterations: t, parallelism: p);
   }

@@ -189,3 +189,16 @@ Fecha base de las primeras entradas: 2026-11-14/15.
 
 ## D42 — El respaldo de recuperación nunca se reemplaza in situ en Drive (S-04)
 - `files.update` deja el contenido anterior como revisión (≈30 días). Ahora: crear archivo nuevo → verificar tamaño+MD5 → `files.delete` (permanente, con revisiones) de todos los anteriores con ese nombre; si el borrado falla el trabajo se reintenta. La DEK sigue sin rotarse al regenerar el código (S-11, pendiente).
+
+## D43 — PIN nuevo de 6 dígitos y sin llave de hardware adicional (S-06)
+- Cambio: crear, cambiar o restaurar el PIN exige exactamente 6 dígitos (`AuthController.minNewPinLength`; el teclado ya limitaba a 6, así que el PIN nuevo es de 6 fijos y se envía solo al 6.º dígito). Desbloquear sigue aceptando 4–6 (`minPinLength`) para bóvedas creadas antes del cambio. 10^6 combinaciones con Argon2id m=19 MiB elevan 100× el coste del ataque offline frente a 4 dígitos.
+- Evaluado y NO implementado: envolver además la envoltura/DEK local con una llave del Keystore/StrongBox (Android) o Secure Enclave (iOS) propia.
+  - La envoltura del PIN (`vault.v1.pin_envelope`) YA vive en `flutter_secure_storage` (Android: EncryptedSharedPreferences con clave maestra del Android Keystore; iOS: Keychain `WhenUnlockedThisDeviceOnly`). Un volcado de archivos (copia de `/data`, backup, imagen del disco) no contiene la envoltura en claro: requiere además la clave del Keystore, que no sale del dispositivo. El ataque offline "solo con archivos" ya exige el teléfono.
+  - Quien ejecuta código como la app en un teléfono rooteado puede usar la misma llave de Keystore para descifrar cualquier capa nueva (sería otra clave del mismo Keystore): la capa extra no añade protección frente a ese atacante, que es justo el del hallazgo. Solo la ataría a hardware con autenticación del usuario (biometría), que ya existe como camino opcional (`biometric_storage`).
+  - Requeriría código nativo propio (Kotlin/Swift) y no es verificable sin iPhone; riesgo de dejar la bóveda sin PIN si se invalida la llave (aún quedaría el código de recuperación). Coste/beneficio desfavorable.
+- Riesgo residual aceptado: teléfono rooteado con acceso en ejecución + PIN de 6 dígitos ⇒ fuerza bruta limitada solo por Argon2id (≈0,1–1 s por intento en el teléfono). Mitigación futura si se quiere: PIN alfanumérico o frase.
+
+## D44 — Rangos fijos de Argon2id al leer parámetros externos (S-08)
+- `Argon2Params.fromJson` (envolturas locales y `recovery_backup.json` de Drive) acepta solo m ∈ [8·p, 256 MiB], t ∈ [1, 10], p ∈ [1, 4] (producción: 19456 KiB / 2 / 1). Fuera de rango lanza `FormatException` con mensaje claro (valores y rangos, sin datos secretos) ANTES de derivar nada; en `probe()` el respaldo se marca inválido y `restoreFromRecovery` lanza sin tocar la bóveda local.
+- No se exige un mínimo igual a producción: no debilita (parámetros bajos no abren nada sin la DEK) y los tests usan valores reducidos.
+

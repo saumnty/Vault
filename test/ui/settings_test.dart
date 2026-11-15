@@ -243,9 +243,9 @@ void main() {
       expect(find.text('PIN actual'), findsOneWidget);
       await _submitPin(tester, pin); // 6 dígitos: se envía solo
       expect(find.text('PIN nuevo'), findsOneWidget);
-      await _submitPin(tester, '2468');
+      await _submitPin(tester, '246800');
       expect(find.text('Confirma el PIN nuevo'), findsOneWidget);
-      await _submitPin(tester, '2468');
+      await _submitPin(tester, '246800');
       expect(find.text('PIN cambiado'), findsOneWidget);
 
       e.auth.lock();
@@ -257,7 +257,7 @@ void main() {
       );
       final results = await tester.runAsync(
         () async => [
-          await reopened.unlockWithPin('2468'),
+          await reopened.unlockWithPin('246800'),
           await reopened.unlockWithPin(pin),
         ],
       );
@@ -273,8 +273,8 @@ void main() {
       await tester.tap(find.text('Cambiar PIN'));
       await tester.pumpAndSettle();
       await _submitPin(tester, pin);
-      await _submitPin(tester, '2468');
-      await _submitPin(tester, '2469');
+      await _submitPin(tester, '246800');
+      await _submitPin(tester, '246900');
       expect(find.text('Los PIN no coinciden'), findsOneWidget);
       expect(find.text('PIN cambiado'), findsNothing);
       // Atrás cancela todo.
@@ -300,8 +300,8 @@ void main() {
       await tester.tap(find.text('Cambiar PIN'));
       await tester.pumpAndSettle();
       await _submitPin(tester, '654321'); // actual incorrecto
-      await _submitPin(tester, '2468');
-      await _submitPin(tester, '2468');
+      await _submitPin(tester, '246800');
+      await _submitPin(tester, '246800');
       expect(find.textContaining('PIN actual no era correcto'), findsOneWidget);
       expect(find.text('PIN actual'), findsOneWidget);
       // Sigue valiendo el PIN de antes.
@@ -309,8 +309,8 @@ void main() {
       expect(ok, isTrue);
       // Ahora con el correcto sí se cambia.
       await _submitPin(tester, pin);
-      await _submitPin(tester, '2468');
-      await _submitPin(tester, '2468');
+      await _submitPin(tester, '246800');
+      await _submitPin(tester, '246800');
       expect(find.text('PIN cambiado'), findsOneWidget);
     });
 
@@ -331,8 +331,8 @@ void main() {
       await tester.tap(find.text('Cambiar PIN'));
       await tester.pumpAndSettle();
       await _submitPin(tester, pin);
-      await _submitPin(tester, '2468');
-      await _submitPin(tester, '2468');
+      await _submitPin(tester, '246800');
+      await _submitPin(tester, '246800');
       expect(find.textContaining('Demasiados intentos'), findsOneWidget);
     });
   });

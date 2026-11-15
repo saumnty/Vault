@@ -84,9 +84,8 @@ void main() {
       containsAll(['i1.vault', 'i2.vault', 'i1.thumb', 'i2.thumb']),
     );
     // ...y la copia remota lleva los driveFileId de lo recién subido.
-    final remote = jsonDecode(
-      utf8.decode(a.cloud.bytesOf('vault_db.snapshot')!),
-    ) as List;
+    final remote =
+        jsonDecode(utf8.decode(a.cloud.bytesOf('vault_db.snapshot')!)) as List;
     final byId = {for (final r in remote) r['id']: r['drive']};
     expect(byId['i1'], a.cloud.byName('i1.vault')!.id);
     expect(byId['i2'], a.cloud.byName('i2.vault')!.id);
@@ -107,38 +106,40 @@ void main() {
     expect(snapshots, 1);
   });
 
-  test('un cambio sin subidas (renombrar, mover, carpeta) dispara snapshot',
-      () async {
-    final sync = make();
-    VaultDataRepository.onDataChanged = sync.notifyDataChanged;
-    await a.addItem('i1', 'a.jpg');
-    await sync.run(manual: true);
-    expect(snapshots, 1);
+  test(
+    'un cambio sin subidas (renombrar, mover, carpeta) dispara snapshot',
+    () async {
+      final sync = make();
+      VaultDataRepository.onDataChanged = sync.notifyDataChanged;
+      await a.addItem('i1', 'a.jpg');
+      await sync.run(manual: true);
+      expect(snapshots, 1);
 
-    await a.items.renameItem('i1', 'nuevo.jpg');
-    await Future<void>.delayed(Duration.zero);
-    expect(await a.prefs.getDirtyAt(), isNotNull);
-    await sync.run(manual: true);
-    expect(snapshots, 2);
+      await a.items.renameItem('i1', 'nuevo.jpg');
+      await Future<void>.delayed(Duration.zero);
+      expect(await a.prefs.getDirtyAt(), isNotNull);
+      await sync.run(manual: true);
+      expect(snapshots, 2);
 
-    await a.items.moveItem('i1', 'f1');
-    await a.addFolder('f3', 'Otra');
-    await a.items.setItemOffline('i1', true);
-    await sync.run(manual: true);
-    expect(snapshots, 3);
+      await a.items.moveItem('i1', 'f1');
+      await a.addFolder('f3', 'Otra');
+      await a.items.setItemOffline('i1', true);
+      await sync.run(manual: true);
+      expect(snapshots, 3);
 
-    await a.items.deleteItem('i1');
-    await sync.run(manual: true);
-    expect(snapshots, 4);
+      await a.items.deleteItem('i1');
+      await sync.run(manual: true);
+      expect(snapshots, 4);
 
-    // Estado derivado (syncStatus / acceso) NO ensucia el snapshot.
-    await a.addItem('i9', 'z.jpg');
-    await sync.run(manual: true);
-    final n = snapshots;
-    await a.items.touchLastAccessed('i9');
-    await sync.run(manual: true);
-    expect(snapshots, n);
-  });
+      // Estado derivado (syncStatus / acceso) NO ensucia el snapshot.
+      await a.addItem('i9', 'z.jpg');
+      await sync.run(manual: true);
+      final n = snapshots;
+      await a.items.touchLastAccessed('i9');
+      await sync.run(manual: true);
+      expect(snapshots, n);
+    },
+  );
 
   test('la regla de 6 h sigue vigente aunque no haya cambios', () async {
     final sync = make();
@@ -162,24 +163,29 @@ void main() {
     expect(snapshots, 1);
   });
 
-  test('un cambio durante el snapshot lo deja sucio para el siguiente',
-      () async {
-    final sync = make();
-    VaultDataRepository.onDataChanged = sync.notifyDataChanged;
-    await a.addItem('i1', 'a.jpg');
-    await sync.run(manual: true);
-    expect(snapshots, 1);
+  test(
+    'un cambio durante el snapshot lo deja sucio para el siguiente',
+    () async {
+      final sync = make();
+      VaultDataRepository.onDataChanged = sync.notifyDataChanged;
+      await a.addItem('i1', 'a.jpg');
+      await sync.run(manual: true);
+      expect(snapshots, 1);
 
-    await a.items.renameItem('i1', 'x.jpg');
-    await Future<void>.delayed(Duration.zero);
-    // Simula un cambio posterior a la toma de la copia.
-    final dirtyBefore = await a.prefs.getDirtyAt();
-    expect(dirtyBefore, isNotNull);
-    await a.prefs.markSnapshotDone(a.now + 10, takenAtMs: a.now - 1);
-    expect(await a.prefs.getDirtyAt(), isNotNull); // cambio > toma: sigue sucio
-    await a.prefs.markSnapshotDone(a.now + 10, takenAtMs: a.now + 5);
-    expect(await a.prefs.getDirtyAt(), isNull);
-  });
+      await a.items.renameItem('i1', 'x.jpg');
+      await Future<void>.delayed(Duration.zero);
+      // Simula un cambio posterior a la toma de la copia.
+      final dirtyBefore = await a.prefs.getDirtyAt();
+      expect(dirtyBefore, isNotNull);
+      await a.prefs.markSnapshotDone(a.now + 10, takenAtMs: a.now - 1);
+      expect(
+        await a.prefs.getDirtyAt(),
+        isNotNull,
+      ); // cambio > toma: sigue sucio
+      await a.prefs.markSnapshotDone(a.now + 10, takenAtMs: a.now + 5);
+      expect(await a.prefs.getDirtyAt(), isNull);
+    },
+  );
 
   test('debounce: varios cambios seguidos = una sola pasada', () async {
     final sync = make(wake: true, debounce: const Duration(milliseconds: 120));

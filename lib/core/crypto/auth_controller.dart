@@ -110,7 +110,12 @@ class AuthController {
   /// códigos sin conexión (ver D37).
   static const String restoreAttemptsKey = 'vault.v1.restore_attempts';
 
+  /// Mínimo para DESBLOQUEAR (acepta PIN de 4 dígitos de bóvedas creadas antes
+  /// de S-06). Un PIN NUEVO exige [minNewPinLength].
   static const int minPinLength = 4;
+
+  /// S-06: mínimo de dígitos al crear, cambiar o restaurar el PIN.
+  static const int minNewPinLength = 6;
 
   final SecureKeyValueStore _storage;
   final BiometricKeyStore _biometrics;
@@ -385,8 +390,10 @@ class AuthController {
   );
 
   void _checkPin(String pin) {
-    if (pin.length < minPinLength) {
-      throw ArgumentError('El PIN debe tener al menos $minPinLength dígitos');
+    if (pin.length < minNewPinLength) {
+      throw ArgumentError(
+        'El PIN debe tener al menos $minNewPinLength dígitos',
+      );
     }
   }
 

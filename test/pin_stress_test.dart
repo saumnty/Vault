@@ -433,16 +433,16 @@ void main() {
       final dek = c.session.keys.dekBytes();
       final ref = _Stored(storage);
 
-      expect(await c.changePin(oldPin: '000000', newPin: '2468'), isFalse);
+      expect(await c.changePin(oldPin: '000000', newPin: '246800'), isFalse);
       ref.expectSame(_Stored(storage), 'changePin con PIN viejo malo');
 
-      expect(await c.changePin(oldPin: _pin, newPin: '2468'), isTrue);
+      expect(await c.changePin(oldPin: _pin, newPin: '246800'), isTrue);
       final after = _Stored(storage);
       expect(after.pinSalt, isNot(ref.pinSalt));
       expect(after.recovery, ref.recovery);
       expect(after.keyCheck, ref.keyCheck);
       final r = controller();
-      expect(await r.unlockWithPin('2468'), isTrue);
+      expect(await r.unlockWithPin('246800'), isTrue);
       expect(r.session.keys.dekBytes(), dek);
     });
 

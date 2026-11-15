@@ -20,7 +20,7 @@ import '../support/fake_cloud.dart';
 import '../support/fakes.dart';
 import '../support/ui_helpers.dart';
 
-const pin = '2468';
+const pin = '246800';
 const _code = 'ABCD-EFGH-JKMN-PQRS-TUVW-XYZ2';
 
 /// Entorno: almacén compartido (simula cerrar y reabrir la app).
@@ -85,11 +85,9 @@ Future<void> _settle(WidgetTester tester) async {
 /// Crea el PIN y su confirmación en la pantalla de PIN del onboarding.
 Future<void> _createPin(WidgetTester tester) async {
   await _digits(tester, pin);
-  await tester.tap(find.text('Continuar'));
   await tester.pump();
   expect(find.text('Confirma tu PIN'), findsOneWidget);
   await _digits(tester, pin);
-  await tester.tap(find.text('Continuar'));
   await _crypto(tester);
   await _settle(tester);
 }
@@ -305,7 +303,6 @@ void main() {
       expect(find.text('Ingresa tu PIN maestro'), findsOneWidget);
 
       await _digits(tester, pin);
-      await tester.tap(find.text('Continuar'));
       await _crypto(tester);
       await _settle(tester);
 
@@ -332,7 +329,6 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Ingresa tu PIN maestro'), findsOneWidget);
       await _digits(tester, pin);
-      await tester.tap(find.text('Continuar'));
       await _crypto(tester);
       await _settle(tester);
 
@@ -345,13 +341,11 @@ void main() {
 
       // Pide el PIN (primero uno incorrecto).
       expect(find.text('Confirma tu PIN'), findsOneWidget);
-      await _digits(tester, '1357');
-      await tester.tap(find.text('Continuar'));
+      await _digits(tester, '135700');
       await _crypto(tester);
       expect(find.text('PIN incorrecto'), findsOneWidget);
       await tester.pump(const Duration(seconds: 1));
       await _digits(tester, pin);
-      await tester.tap(find.text('Continuar'));
       await _crypto(tester);
       await _settle(tester);
 
@@ -401,7 +395,6 @@ void main() {
       await tester.pumpWidget(env.app(auth));
       await tester.pumpAndSettle();
       await _digits(tester, pin);
-      await tester.tap(find.text('Continuar'));
       await _crypto(tester);
       await _settle(tester);
       expect(find.byType(HomeVaultScreen), findsOneWidget);

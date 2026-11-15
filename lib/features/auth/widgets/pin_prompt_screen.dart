@@ -24,11 +24,16 @@ Future<bool> showPinPrompt(
   required String title,
   String? message,
   required PinSubmit onSubmit,
+  int minLength = AuthController.minPinLength,
 }) async {
   final result = await Navigator.of(context).push<bool>(
     AppPageRoute<bool>(
-      builder: (_) =>
-          PinPromptScreen(title: title, message: message, onSubmit: onSubmit),
+      builder: (_) => PinPromptScreen(
+        title: title,
+        message: message,
+        onSubmit: onSubmit,
+        minLength: minLength,
+      ),
     ),
   );
   return result ?? false;
@@ -43,11 +48,13 @@ class PinPromptScreen extends StatefulWidget {
     required this.title,
     required this.onSubmit,
     this.message,
+    this.minLength = AuthController.minPinLength,
   });
 
   final String title;
   final String? message;
   final PinSubmit onSubmit;
+  final int minLength;
 
   @override
   State<PinPromptScreen> createState() => _PinPromptScreenState();
@@ -77,7 +84,7 @@ class _PinPromptScreenState extends State<PinPromptScreen> {
 
   Future<void> _submit() async {
     final pin = _pin;
-    if (pin.length < AuthController.minPinLength || !_enabled) return;
+    if (pin.length < widget.minLength || !_enabled) return;
     setState(() => _busy = true);
     String? error;
     try {
@@ -177,9 +184,7 @@ class _PinPromptScreenState extends State<PinPromptScreen> {
                         child: AppFilledButton(
                           label: 'Continuar',
                           busy: _busy,
-                          onPressed:
-                              _enabled &&
-                                  _pin.length >= AuthController.minPinLength
+                          onPressed: _enabled && _pin.length >= widget.minLength
                               ? _submit
                               : null,
                         ),

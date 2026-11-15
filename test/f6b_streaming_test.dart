@@ -113,62 +113,59 @@ void main() {
     expect(legacy.videoSource(item), isA<FullDecryptVideoSource>());
   });
 
-  test(
-    'streaming: URL loopback, contenido idéntico, NADA en claro en disco y '
-    'release cierra el servidor',
-    () async {
-      final plain = _bytes(3 * 1024 * 1024 + 4321, 2);
-      final item = await env.addCloudItem(
-        'v',
-        plain: plain,
-        name: 'clip.mov',
-        mime: 'video/quicktime',
-      );
-      final before = suspiciousFiles();
-      final probes = <int>[];
-      platform.onCreate = (ds) async {
-        // Como ExoPlayer: sondeo inicial y luego un rango al final (moov).
-        final uri = Uri.parse(ds.uri!);
-        probes.add((await _fetch(client, uri, range: 'bytes=0-1')).length);
-        probes.add((await _fetch(client, uri, range: 'bytes=-4096')).length);
-      };
-      final progress = <MediaProgress>[];
-      final source = makeOpener().videoSource(item) as StreamingVideoSource;
-      final controller = await source.open(onProgress: progress.add);
+  test('streaming: URL loopback, contenido idéntico, NADA en claro en disco y '
+      'release cierra el servidor', () async {
+    final plain = _bytes(3 * 1024 * 1024 + 4321, 2);
+    final item = await env.addCloudItem(
+      'v',
+      plain: plain,
+      name: 'clip.mov',
+      mime: 'video/quicktime',
+    );
+    final before = suspiciousFiles();
+    final probes = <int>[];
+    platform.onCreate = (ds) async {
+      // Como ExoPlayer: sondeo inicial y luego un rango al final (moov).
+      final uri = Uri.parse(ds.uri!);
+      probes.add((await _fetch(client, uri, range: 'bytes=0-1')).length);
+      probes.add((await _fetch(client, uri, range: 'bytes=-4096')).length);
+    };
+    final progress = <MediaProgress>[];
+    final source = makeOpener().videoSource(item) as StreamingVideoSource;
+    final controller = await source.open(onProgress: progress.add);
 
-      expect(controller.value.isInitialized, isTrue);
-      expect(source.usedFallback, isFalse);
-      expect(probes, [2, 4096]);
-      final uri = Uri.parse(platform.openedUris.single);
-      expect(uri.scheme, 'http');
-      expect(uri.host, '127.0.0.1');
-      expect(uri.path, startsWith('/v/'));
-      expect(uri.path, endsWith('.mov'));
-      expect(source.server!.mimeType, 'video/quicktime');
-      // Sin fase de descifrado: arranque inmediato.
-      expect(progress.where((p) => p.phase == MediaPhase.decrypting), isEmpty);
+    expect(controller.value.isInitialized, isTrue);
+    expect(source.usedFallback, isFalse);
+    expect(probes, [2, 4096]);
+    final uri = Uri.parse(platform.openedUris.single);
+    expect(uri.scheme, 'http');
+    expect(uri.host, '127.0.0.1');
+    expect(uri.path, startsWith('/v/'));
+    expect(uri.path, endsWith('.mov'));
+    expect(source.server!.mimeType, 'video/quicktime');
+    // Sin fase de descifrado: arranque inmediato.
+    expect(progress.where((p) => p.phase == MediaPhase.decrypting), isEmpty);
 
-      // El contenido servido es el original, bit a bit.
-      final all = await _fetch(client, uri);
-      expect(hash.sha256.convert(all), hash.sha256.convert(plain));
-      final mid = await _fetch(client, uri, range: 'bytes=1048570-2097160');
-      expect(mid, plain.sublist(1048570, 2097161));
+    // El contenido servido es el original, bit a bit.
+    final all = await _fetch(client, uri);
+    expect(hash.sha256.convert(all), hash.sha256.convert(plain));
+    final mid = await _fetch(client, uri, range: 'bytes=1048570-2097160');
+    expect(mid, plain.sublist(1048570, 2097161));
 
-      // Ni un byte en claro en disco: tmp_plain vacío y ningún archivo nuevo.
-      expect(plainLeftovers(), isEmpty);
-      expect(suspiciousFiles(), before);
+    // Ni un byte en claro en disco: tmp_plain vacío y ningún archivo nuevo.
+    expect(plainLeftovers(), isEmpty);
+    expect(suspiciousFiles(), before);
 
-      await source.release();
-      expect(source.server, isNull);
-      expect(VaultStreamServer.liveCount, 0);
-      expect(platform.calls, contains('dispose'));
-      await expectLater(
-        client.getUrl(uri).then((r) => r.close()),
-        throwsA(isA<SocketException>()),
-      );
-      await source.release(); // idempotente
-    },
-  );
+    await source.release();
+    expect(source.server, isNull);
+    expect(VaultStreamServer.liveCount, 0);
+    expect(platform.calls, contains('dispose'));
+    await expectLater(
+      client.getUrl(uri).then((r) => r.close()),
+      throwsA(isA<SocketException>()),
+    );
+    await source.release(); // idempotente
+  });
 
   test(
     '.vault purgado: baja de Drive con verificación y LUEGO hace streaming',
@@ -246,91 +243,91 @@ void main() {
     },
   );
 
-  test('bloquear la bóveda corta el servidor con una lectura en curso', () async {
-    env.session.addOnClear(VaultStreamServer.closeAllNow);
-    final plain = _bytes(8 * 1024 * 1024, 4);
-    final item = await env.addCloudItem(
-      'v',
-      plain: plain,
-      name: 'clip.mp4',
-      mime: 'video/mp4',
-    );
-    final source = makeOpener().videoSource(item) as StreamingVideoSource;
-    await source.open();
-    final uri = source.server!.uri;
-    final req = await client.getUrl(uri);
-    final res = await req.close();
-    var got = 0;
-    var paused = false;
-    final done = Completer<void>();
-    late StreamSubscription<List<int>> sub;
-    sub = res.listen(
-      (c) {
-        got += c.length;
-        if (!paused) {
-          paused = true;
-          sub.pause();
-        }
-      },
-      onError: (Object _) {
-        if (!done.isCompleted) done.complete();
-      },
-      onDone: () {
-        if (!done.isCompleted) done.complete();
-      },
-    );
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    env.session.clear(); // bloqueo
-    expect(source.server!.isClosed, isTrue);
-    sub.resume();
-    await done.future.timeout(const Duration(seconds: 5));
-    expect(got, lessThan(plain.length));
-    await expectLater(
-      client.getUrl(uri).then((r) => r.close()),
-      throwsA(isA<SocketException>()),
-    );
-    await source.release();
-    expect(plainLeftovers(), isEmpty);
-  });
+  test(
+    'bloquear la bóveda corta el servidor con una lectura en curso',
+    () async {
+      env.session.addOnClear(VaultStreamServer.closeAllNow);
+      final plain = _bytes(8 * 1024 * 1024, 4);
+      final item = await env.addCloudItem(
+        'v',
+        plain: plain,
+        name: 'clip.mp4',
+        mime: 'video/mp4',
+      );
+      final source = makeOpener().videoSource(item) as StreamingVideoSource;
+      await source.open();
+      final uri = source.server!.uri;
+      final req = await client.getUrl(uri);
+      final res = await req.close();
+      var got = 0;
+      var paused = false;
+      final done = Completer<void>();
+      late StreamSubscription<List<int>> sub;
+      sub = res.listen(
+        (c) {
+          got += c.length;
+          if (!paused) {
+            paused = true;
+            sub.pause();
+          }
+        },
+        onError: (Object _) {
+          if (!done.isCompleted) done.complete();
+        },
+        onDone: () {
+          if (!done.isCompleted) done.complete();
+        },
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      env.session.clear(); // bloqueo
+      expect(source.server!.isClosed, isTrue);
+      sub.resume();
+      await done.future.timeout(const Duration(seconds: 5));
+      expect(got, lessThan(plain.length));
+      await expectLater(
+        client.getUrl(uri).then((r) => r.close()),
+        throwsA(isA<SocketException>()),
+      );
+      await source.release();
+      expect(plainLeftovers(), isEmpty);
+    },
+  );
 
   group('caída a completo-primero', () {
-    test(
-      'si el reproductor no puede usar la URL local (p. ej. cleartext '
-      'bloqueado) cae a completo-primero y libera todo',
-      () async {
-        final plain = _bytes(2 * 1024 * 1024 + 5, 5);
-        final item = await env.addCloudItem(
-          'v',
-          plain: plain,
-          name: 'clip.mp4',
-          mime: 'video/mp4',
-        );
-        platform.onCreate = (ds) async {
-          if (ds.sourceType == DataSourceType.network) {
-            throw PlatformException(
-              code: 'VideoError',
-              message: 'Cleartext HTTP traffic not permitted',
-            );
-          }
-        };
-        final progress = <MediaProgress>[];
-        final source = makeOpener().videoSource(item) as StreamingVideoSource;
-        final controller = await source.open(onProgress: progress.add);
-        expect(controller.value.isInitialized, isTrue);
-        expect(source.usedFallback, isTrue);
-        expect(VaultStreamServer.liveCount, 0); // el servidor ya se cerró
-        expect(platform.openedUris.first, startsWith('http://127.0.0.1:'));
-        expect(platform.openedUris.last, contains(AppPaths.tmpPlainDirName));
-        expect(
-          progress.where((p) => p.phase == MediaPhase.decrypting),
-          isNotEmpty,
-        );
-        expect(await source.fallback!.tempFile!.readAsBytes(), plain);
+    test('si el reproductor no puede usar la URL local (p. ej. cleartext '
+        'bloqueado) cae a completo-primero y libera todo', () async {
+      final plain = _bytes(2 * 1024 * 1024 + 5, 5);
+      final item = await env.addCloudItem(
+        'v',
+        plain: plain,
+        name: 'clip.mp4',
+        mime: 'video/mp4',
+      );
+      platform.onCreate = (ds) async {
+        if (ds.sourceType == DataSourceType.network) {
+          throw PlatformException(
+            code: 'VideoError',
+            message: 'Cleartext HTTP traffic not permitted',
+          );
+        }
+      };
+      final progress = <MediaProgress>[];
+      final source = makeOpener().videoSource(item) as StreamingVideoSource;
+      final controller = await source.open(onProgress: progress.add);
+      expect(controller.value.isInitialized, isTrue);
+      expect(source.usedFallback, isTrue);
+      expect(VaultStreamServer.liveCount, 0); // el servidor ya se cerró
+      expect(platform.openedUris.first, startsWith('http://127.0.0.1:'));
+      expect(platform.openedUris.last, contains(AppPaths.tmpPlainDirName));
+      expect(
+        progress.where((p) => p.phase == MediaPhase.decrypting),
+        isNotEmpty,
+      );
+      expect(await source.fallback!.tempFile!.readAsBytes(), plain);
 
-        await source.release();
-        expect(plainLeftovers(), isEmpty);
-      },
-    );
+      await source.release();
+      expect(plainLeftovers(), isEmpty);
+    });
 
     test('timeout del reproductor -> completo-primero', () async {
       final item = await env.addCloudItem(
@@ -344,9 +341,9 @@ void main() {
         if (ds.sourceType == DataSourceType.network) await never.future;
       };
       final source =
-          makeOpener(timeout: const Duration(milliseconds: 200)).videoSource(
-                item,
-              )
+          makeOpener(
+                timeout: const Duration(milliseconds: 200),
+              ).videoSource(item)
               as StreamingVideoSource;
       final c = await source.open();
       expect(c.value.isInitialized, isTrue);
@@ -414,10 +411,7 @@ void main() {
       final raw = await f.readAsBytes();
       await f.writeAsBytes(raw.sublist(0, raw.length - 1000));
       final source = makeOpener().videoSource(item) as StreamingVideoSource;
-      await expectLater(
-        source.open(),
-        throwsA(isA<VaultCryptoException>()),
-      );
+      await expectLater(source.open(), throwsA(isA<VaultCryptoException>()));
       expect(source.usedFallback, isFalse);
       expect(platform.openedUris, isEmpty); // ni siquiera llegó al reproductor
       expect(plainLeftovers(), isEmpty);

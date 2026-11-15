@@ -137,13 +137,11 @@ void main() {
 
   testWidgets('doble toque en Continuar: un único intento', (tester) async {
     usePhoneSize(tester);
-    final env = await envWithVault('1234');
+    final env = await envWithVault('123456');
     await tester.pumpWidget(env.screen());
     await tester.pump();
 
-    await _type(tester, '1234');
-    await tester.tap(find.text('Continuar'));
-    await tester.tap(find.text('Continuar'), warnIfMissed: false);
+    await _type(tester, '123456');
     await _settleCrypto(tester);
     await tester.pump(const Duration(seconds: 1));
 
@@ -184,7 +182,7 @@ void main() {
 
     await _type(tester, '123456');
     expect(find.text('Verificando…'), findsOneWidget);
-    await _burst(tester, '9876');
+    await _burst(tester, '987600');
     await tester.sendKeyEvent(LogicalKeyboardKey.digit9);
     await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
@@ -233,9 +231,9 @@ void main() {
     await tester.pumpWidget(env.screen());
     await tester.pump();
 
-    // Quería 123456 pero se perdió el "5" y pulsó Continuar.
-    await _type(tester, '12346');
-    await tester.tap(find.text('Continuar'));
+    // Quería 123456 pero se equivocó en un dígito (123476): el 6.º dígito
+    // envía solo y pide confirmar.
+    await _type(tester, '123476');
     await tester.pump();
     expect(find.text('Confirma tu PIN'), findsOneWidget);
     expect(_dots(tester).filled, 0);

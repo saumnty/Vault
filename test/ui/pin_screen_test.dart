@@ -66,34 +66,39 @@ void main() {
     expect(_dots(tester).filled, 2);
   });
 
-  testWidgets('Continuar solo se habilita con 4 dígitos o más', (tester) async {
-    usePhoneSize(tester);
-    final env = _Env();
-    await tester.pumpWidget(env.screen());
-    await tester.pump();
+  testWidgets(
+    'crear: Continuar sigue deshabilitado hasta los 6 dígitos (S-06)',
+    (tester) async {
+      usePhoneSize(tester);
+      final env = _Env();
+      await tester.pumpWidget(env.screen());
+      await tester.pump();
 
-    FilledButton button() =>
-        tester.widget<FilledButton>(find.byType(FilledButton));
-    await _type(tester, '123');
-    expect(button().onPressed, isNull);
-    await _type(tester, '4');
-    expect(button().onPressed, isNotNull);
-  });
+      FilledButton button() =>
+          tester.widget<FilledButton>(find.byType(FilledButton));
+      await _type(tester, '1234');
+      expect(button().onPressed, isNull);
+      await _type(tester, '5');
+      expect(button().onPressed, isNull);
+      // El 6.º dígito envía solo: pasa al paso de confirmación.
+      await _type(tester, '6');
+      expect(find.text('Confirma tu PIN'), findsOneWidget);
+    },
+  );
 
   testWidgets('PIN incorrecto: mensaje, puntos en error y sacudida', (
     tester,
   ) async {
     usePhoneSize(tester);
     final env = _Env();
-    await env.controller.createVault('1234');
+    await env.controller.createVault('123456');
     env.controller.lock();
 
     await tester.pumpWidget(env.screen());
     await tester.pump();
     expect(find.text('Ingresa tu PIN maestro'), findsOneWidget);
 
-    await _type(tester, '9999');
-    await tester.tap(find.text('Continuar'));
+    await _type(tester, '999999');
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 300)),
     );
@@ -131,13 +136,12 @@ void main() {
   ) async {
     usePhoneSize(tester);
     final env = _Env();
-    await env.controller.createVault('1234');
+    await env.controller.createVault('123456');
     env.controller.lock();
 
     await tester.pumpWidget(env.screen());
     await tester.pump();
-    await _type(tester, '1234');
-    await tester.tap(find.text('Continuar'));
+    await _type(tester, '123456');
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 300)),
     );
@@ -153,12 +157,12 @@ void main() {
   ) async {
     usePhoneSize(tester);
     final env = _Env();
-    await env.controller.createVault('1234');
+    await env.controller.createVault('123456');
     env.controller.lock();
     // Fallos hasta activar el retraso.
     for (var i = 0; i < 6; i++) {
       try {
-        await env.controller.unlockWithPin('0000');
+        await env.controller.unlockWithPin('000000');
       } on PinLockedOutException {
         break;
       }
@@ -198,14 +202,12 @@ void main() {
       await tester.pumpWidget(env.screen());
       await tester.pump();
 
-      await _type(tester, '2468');
-      await tester.tap(find.text('Continuar'));
+      await _type(tester, '246800');
       await tester.pump();
       // Paso de confirmación: se pide el mismo PIN otra vez.
       expect(find.text('Confirma tu PIN'), findsOneWidget);
       expect(_dots(tester).filled, 0);
-      await _type(tester, '2468');
-      await tester.tap(find.text('Continuar'));
+      await _type(tester, '246800');
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 500)),
       );
@@ -235,11 +237,9 @@ void main() {
       ),
     );
     await tester.pump();
-    await _type(tester, '2468');
-    await tester.tap(find.text('Continuar'));
+    await _type(tester, '246800');
     await tester.pump();
-    await _type(tester, '2468');
-    await tester.tap(find.text('Continuar'));
+    await _type(tester, '246800');
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 500)),
     );
