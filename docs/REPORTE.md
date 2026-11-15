@@ -1,3 +1,76 @@
+# REPORTE FINAL (rama `dev-claude`, sin push, main intacta)
+
+> Debajo de este bloque están los reportes detallados por fase/ronda (en el orden en que se escribieron).
+> Estado a la fecha: `flutter analyze` sin issues · `flutter test` 563 verdes · APK release firmado y verificado · regresión final en emulador OK.
+
+## 1. Resumen de lo completado y probado
+
+| Fase | Contenido | Estado |
+|---|---|---|
+| F0 | Auditoría | 🧪 |
+| F1 | DEK + KEK_pin + KEK_rec (Argon2id nativo m=19 MiB, t=2, p=1), HKDF, biometría atada al sistema, retraso persistido, confirmar PIN | 🧪 emulador (huella, invalidación por huella nueva, bloqueo persistente) |
+| F2 | Formato `.vault` v2 (AAD con encabezado+índice+final) | 🧪 tests de los 4 ataques y tamaños 0 B…varios MB |
+| F3 | BD SQLCipher v5, rutas relativas, llave cruda | 🧪 emulador |
+| F3.5 | Rediseño UI con sistema de tokens | 🧪 emulador (gestos, pellizco, háptica) |
+| F4 | Importación de galería, miniaturas cifradas, compresión de video, borrado de originales **verificado + confirmado** | 🧪 emulador (video 24,9 MB: 720p → 11,8 MB; 1080p conserva el original) |
+| F5 | Sincronización con Drive (cola persistente, reintentos, solo Wi-Fi, MD5+tamaño, cuota, respaldos) | 🧪 emulador con Google real |
+| F6 | Visor foto/video, caché LRU, sin conexión, borrado remoto, **streaming por bloques** sin texto plano en disco, AES-GCM nativo | 🧪 emulador |
+| F7 | Autobloqueo, FLAG_SECURE, sin respaldo Android; 📝 cobertura multitarea iOS y exclusión de iCloud | 🧪 Android · 📝 iOS |
+| F8 | Onboarding con confirmación del código por posiciones, regenerar código, Ajustes completos | 🧪 emulador |
+| F9 | Restauración completa (Google → código → PIN nuevo → BD + miniaturas), snapshot siempre fresco | 🧪 emulador (incluye código incorrecto) |
+| F10 | APK release ofuscado y firmado (SHA-1 verificada), `codemagic.yaml`, Info.plist | 🧪 APK · 📝 Codemagic/iOS sin probar |
+| Seguridad | Revisión independiente (Opus): 4 altos corregidos con test | ✅ ver §4 |
+
+- **Regresión final con el APK release** (`build/vault-release-signed.apk`, 74 127 300 B, SHA-256 `8aeaed98…45145`): crear bóveda → importar → sincronizar → foto con zoom y video con streaming/seek → sin conexión + corte de red → bloquear/desbloquear (PIN y huella) + autobloqueo → restaurar en instalación limpia: **todo OK**. Tabla en la sección "Regresión final".
+- Capturas útiles en `docs/screens/` y `docs/screens/emu/` (correo y códigos difuminados).
+- **Nada se ha probado en iPhone**: todo lo iOS está escrito y revisado por lectura.
+
+## 2. Bloqueos 🚫
+
+Ninguno abierto. Notas:
+- Emulador que no arrancaba: resuelto (`emulator -avd Pixel_7 -no-snapshot -gpu swiftshader_indirect`).
+- El login de Google con el APK firmado con la llave de **release** falla con `ApiException 10` hasta que registres su SHA-1 (acción tuya, §5.1). Con la llave debug funciona.
+- Límite de uso agotado dos veces (y el semanal de Opus durante la revisión de seguridad): se retomó cada vez al restablecerse; no quedó trabajo a medias.
+
+## 3. Decisiones tomadas (resumen de `docs/DECISIONES.md`)
+
+- **Llaves/cripto:** `biometric_storage` 5.0.1 (D01); Argon2id nativo con `sodium_libs` 3.4.6+4, sin bajar parámetros (D02); SQLCipher con llave cruda `x'hex'` (D03); AES-GCM nativo con `cryptography_flutter` y respaldo a Dart, formato sin cambios (D22–D24).
+- **UX/seguridad:** confirmar el PIN al crear (D04); la huella no se bloquea por intentos de PIN (tu decisión, D05); autobloqueo 1 min por defecto, `FLAG_SECURE` activo por defecto (D25–D30); regenerar código de recuperación y límite de intentos del código en restauración (D31–D39).
+- **Ingeniería:** id `com.saumnty.vault` (D06); `video_compress` tras interfaz (D07); selector de galería propio (D08); `contentHash` del contenido realmente guardado (D09); `video_player` 2.11.1 por compatibilidad de SDK (D13); archivos "sin conexión" no cuentan en el límite de caché (D14, **revisar**); video con servidor loopback + token (D16–D21); solo Wi-Fi por defecto (D12).
+- **Despliegue:** keystore de release fuera del repo (D10); `codemagic.yaml` sin tu correo y sin `flutter test` (goldens generados en Windows) (D11).
+
+## 4. Hallazgos de la revisión de seguridad independiente
+
+Detalle completo en la sección "Revisión de seguridad independiente" (S-01…S-21). **Ninguno crítico.**
+- **Altos, corregidos con test de regresión:** S-01 el autobloqueo podía no armarse nunca si la app pasaba a segundo plano durante un diálogo/sincronización; S-02 copia en claro (con nombre) del archivo elegido en el selector de archivos; S-03 miniaturas/originales en claro en la caché de Glide/photo_manager; S-04 el respaldo de recuperación viejo seguía en las revisiones de Drive tras regenerar el código.
+- **Medios, pendientes (recomendados):** S-05 fotos descifradas siguen en la caché de imágenes de Flutter tras bloquear; S-06 PIN de 4 dígitos probable offline en teléfono rooteado (no ligado a hardware); S-07 la espera tras fallos usa reloj de pared; S-08 tope de parámetros Argon2 leídos de Drive (hasta 1 GiB → cuelgue de la restauración); S-09 un `.vault` se puede intercambiar por otro de la misma bóveda; S-10 build sin `key.properties` cae a llave debug sin avisar; S-11 regenerar el código no cambia la DEK.
+- **Bajos/informativos:** S-12…S-21 (logs en release sin datos sensibles, autocorrección en campos de texto, descargas sin tope, caché de `video_compress`, versiones con `^`, etc.).
+- Verificado correcto: AAD/nonce del `.vault`, servidor de streaming (token, Host, loopback), SQL parametrizado, permisos Android, ausencia de secretos en el repo e historial, `key_check` no permite probar el PIN sin Argon2.
+- No verificable sin iPhone: Keychain, SceneDelegate, ATS, S-02/S-03 en iOS.
+- Recomendación: repetir una pasada de seguridad tras las pruebas en iPhone y corregir S-08 y S-06 antes de distribuir.
+
+## 5. CHECKLIST PARA TI (en este orden exacto)
+
+1. **Registrar la SHA-1 de release en Google Cloud.** https://console.cloud.google.com → proyecto `vault-514801` → "APIs y servicios" → "Credenciales" → "Crear credenciales" → "ID de cliente de OAuth" → tipo **Android** → nombre "Vault Android release" → package `com.saumnty.vault` → SHA-1 `98:41:90:61:8B:DA:8C:ED:11:FA:FA:1B:D5:08:65:89:E9:0D:AD:A6`. Espera unos minutos (la propagación puede tardar). No requiere cambios de código. Prueba después instalando `build\vault-release-signed.apk` e iniciando sesión con Google.
+2. **Respaldar el keystore** (sin él no podrás publicar actualizaciones con la misma firma): copia `%USERPROFILE%\.vault-keys\vault-release.jks` **y** `android\key.properties` (contiene las contraseñas) a un lugar seguro fuera del repo (gestor de contraseñas o USB cifrado). Verifica que existen las dos copias.
+3. **Push de `dev-claude`** (revisa antes el historial con `git log --oneline` y los docs): `git push -u origin dev-claude` (remoto `origin` = https://github.com/saumnty/Vault.git). No toqué `main`: cuando lo revises, abre un Pull Request `dev-claude` → `main` y haz el merge tú.
+4. **Configurar Codemagic:** crea cuenta en https://codemagic.io (inicia con GitHub), "Add application" → repo `saumnty/Vault` → rama `dev-claude` → método de configuración **codemagic.yaml** → ejecuta el workflow `ios-unsigned` (manual). Descarga el artefacto `vault-unsigned.ipa`. Si falla la compilación, envíame el log: los puntos más probables son `ios/Runner/AppDelegate.swift` (`engineBridge.applicationRegistrar.messenger()`), `SceneDelegate.swift` y la descarga del binario de libsodium en `pod install`.
+5. **Instalar con Sideloadly:** instala iTunes e iCloud desde apple.com (no la Microsoft Store) y Sideloadly desde sideloadly.io; conecta el iPhone por cable y confía en el equipo; arrastra el `.ipa`, ingresa tu Apple ID y pulsa Start. En el iPhone: Ajustes → General → VPN y gestión de dispositivos → confía en tu Apple ID; en iOS 16+ activa Ajustes → Privacidad y seguridad → **Modo desarrollador**. Con Apple ID gratuito la app **caduca a los 7 días** (hay que reinstalar).
+6. **Pruebas en el iPhone (en este orden):**
+   1. Onboarding: crear PIN (con confirmación), anotar el código de recuperación, confirmar los 4 caracteres, activar **Face ID** (debe pedir permiso; luego desbloquear con el rostro).
+   2. **Login de Google** (usa el cliente iOS): conectar Drive; verificar la cuota y que subir una foto llega a "En la nube".
+   3. **Fotos de iCloud:** con "Optimizar almacenamiento" activo, importar una foto o video que solo esté en iCloud → debe descargar el original con progreso y cifrarlo.
+   4. **Borrado de originales:** debe estar APAGADO por defecto; actívalo, confirma que solo ofrece archivos verificados en la nube y que pide tu confirmación (diálogo del sistema "Eliminar").
+   5. **Segundo plano y autobloqueo:** ajusta 15 s; sal de la app y vuelve antes y después del umbral (sigue abierta / pide PIN); Face ID y los selectores del sistema no deben bloquear.
+   6. **Multitarea:** abre el selector de apps con la bóveda abierta → la vista previa debe estar cubierta (candado sobre fondo oscuro), no el contenido.
+   7. **Respaldo de iCloud:** Ajustes → [tu nombre] → iCloud → Administrar almacenamiento → Copias de seguridad → este iPhone → Vault no debería ocupar espacio significativo (la carpeta del vault está excluida).
+   8. **Video:** reproducir un video (streaming local por AVPlayer; ATS permite solo localhost) y hacer seek.
+   9. **Restauración:** borra la app, reinstala, "Ya tengo una bóveda", Google, prueba un código incorrecto y luego el correcto, PIN nuevo, y verifica que todo se ve y abre (checklist detallado en la sección F9).
+   10. Cambiar PIN, regenerar el código de recuperación y cerrar sesión de Google desde Ajustes.
+7. **Después:** envíame el resultado de las pruebas del iPhone (y los logs de Codemagic si algo falla) para corregir; y cuando haya cupo conviene una segunda pasada de revisión de seguridad centrada en S-06/S-08.
+
+---
+
 # REPORTE — trabajo autónomo (rama dev-claude, sin push)
 
 ## Completado (todo con `flutter analyze` limpio y `flutter test` en verde; 148 tests al final)
