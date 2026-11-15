@@ -20,6 +20,7 @@ import 'package:vault/core/session/vault_session.dart';
 import 'package:vault/data/models/sync_status.dart';
 import 'package:vault/data/models/vault_item_model.dart';
 import 'package:vault/features/auth/pin_screen.dart';
+import 'package:vault/features/onboarding/onboarding_flow.dart';
 import 'package:vault/features/vault/home_vault_screen.dart';
 import 'package:vault/features/vault/vault_media_viewer_screen.dart';
 import 'package:vault/features/vault/viewer/media_opener.dart';
@@ -29,6 +30,7 @@ import 'package:vault/shared/widgets/privacy_cover.dart';
 
 import '../../support/fake_video_platform.dart';
 import '../../support/fakes.dart';
+import '../../support/settings_support.dart';
 import '../../support/ui_helpers.dart';
 
 Future<void> _settle(WidgetTester tester) async {
@@ -211,28 +213,97 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       await _shot('crear_boveda.png');
     });
+  });
 
-    goldenTest('recuperacion', (tester) async {
+  group('F8: onboarding y ajustes', () {
+    const code = 'ABCD-EFGH-JKMN-PQRS-TUVW-XYZ2';
+
+    Future<void> pumpOnboarding(
+      WidgetTester tester, {
+      bool resume = false,
+    }) async {
       usePhoneSize(tester);
       final c = await _controller();
       await tester.pumpWidget(
-        testApp(PinScreen(authController: c, onAuthenticated: () {})),
+        testApp(
+          OnboardingFlow(
+            auth: c,
+            resume: resume,
+            recoveryCode: resume ? code : null,
+            random: Random(3), // posiciones reproducibles
+            onFinished: () {},
+          ),
+        ),
       );
       await tester.pump();
-      await _digits(tester, '1357');
-      await tester.tap(find.text('Continuar'));
+      await tester.pump(const Duration(seconds: 1));
+    }
+
+    goldenTest('onboarding_bienvenida', (tester) async {
+      await pumpOnboarding(tester);
+      await _shot('onboarding_bienvenida.png');
+    });
+
+    goldenTest('onboarding_codigo', (tester) async {
+      await pumpOnboarding(tester, resume: true);
+      await _shot('onboarding_codigo.png');
+    });
+
+    goldenTest('onboarding_confirmacion', (tester) async {
+      await pumpOnboarding(tester, resume: true);
+      await tester.tap(find.text('Ya lo anoté'));
       await tester.pump();
-      await _digits(tester, '1357'); // confirmación
-      await tester.tap(find.text('Continuar'));
+      await tester.pump(const Duration(seconds: 1));
+      await tester.enterText(
+        find.byKey(const ValueKey('confirm-code-field')),
+        'AB',
+      );
+      await tester.pump();
+      await _shot('onboarding_confirmacion.png');
+    });
+
+    goldenTest('onboarding_confirmacion_error', (tester) async {
+      await pumpOnboarding(tester, resume: true);
+      await tester.tap(find.text('Ya lo anoté'));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await tester.enterText(
+        find.byKey(const ValueKey('confirm-code-field')),
+        'ZZZZ',
+      );
+      await tester.pump();
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmar'));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await _shot('onboarding_confirmacion_error.png');
+    });
+
+    Future<SettingsTestEnv> pumpSettings(
+      WidgetTester tester, {
+      required Size size,
+    }) async {
+      tester.view.devicePixelRatio = 2;
+      tester.view.physicalSize = size * 2;
+      addTearDown(tester.view.reset);
+      final e = SettingsTestEnv();
+      await tester.runAsync(e.init);
+      addTearDown(e.dispose);
+      await tester.pumpWidget(e.screen());
       await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 500)),
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
       );
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 500));
-      expect(find.text('Código de recuperación'), findsOneWidget);
-      await _shot('recuperacion.png');
-      await tester.tap(find.text('Ya lo guardé'));
-      await tester.pump(const Duration(seconds: 2));
+      await tester.pump(const Duration(seconds: 1));
+      return e;
+    }
+
+    goldenTest('ajustes', (tester) async {
+      await pumpSettings(tester, size: const Size(390, 844));
+      await _shot('ajustes.png');
+    });
+
+    goldenTest('ajustes_completo', (tester) async {
+      await pumpSettings(tester, size: const Size(390, 2300));
+      await _shot('ajustes_completo.png');
     });
   });
 

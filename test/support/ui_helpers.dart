@@ -10,6 +10,8 @@ import 'package:vault/data/models/folder_model.dart';
 import 'package:vault/data/models/sync_status.dart';
 import 'package:vault/data/models/vault_item_model.dart';
 import 'package:vault/data/repositories/vault_data_repository.dart';
+import 'package:vault/data/sync/storage_service.dart';
+import 'package:vault/data/sync/sync_service.dart';
 import 'package:vault/features/vault/vault_services.dart';
 import 'package:vault/features/vault/viewer/media_opener.dart';
 
@@ -217,6 +219,8 @@ VaultServices fakeServices(
   ServiceCalls? calls,
   ThumbnailLoader? thumbnails,
   MediaOpener? mediaOpener,
+  SyncService? sync,
+  StorageService? storage,
 }) {
   final c = calls ?? ServiceCalls();
   return VaultServices(
@@ -233,6 +237,8 @@ VaultServices fakeServices(
       c.offline.add(id);
       return true;
     },
+    sync: sync,
+    storage: storage,
   );
 }
 

@@ -33,6 +33,7 @@ class VaultTopBar extends StatelessWidget {
     required this.onDelete,
     this.trailing,
     this.onLock,
+    this.onSettings,
   });
 
   final String title;
@@ -58,6 +59,9 @@ class VaultTopBar extends StatelessWidget {
 
   /// "Bloquear ahora" (icono de candado); `null` lo oculta.
   final VoidCallback? onLock;
+
+  /// Ajustes (icono de engranaje); `null` lo oculta.
+  final VoidCallback? onSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -155,6 +159,13 @@ class VaultTopBar extends StatelessWidget {
                 icon: Icons.lock_outline_rounded,
                 label: 'Bloquear ahora',
                 onPressed: onLock,
+              ),
+            if (onSettings != null)
+              AppIconButton(
+                key: const ValueKey('open-settings'),
+                icon: Icons.settings_outlined,
+                label: 'Ajustes',
+                onPressed: onSettings,
               ),
             AppIconButton(
               icon: Icons.search,

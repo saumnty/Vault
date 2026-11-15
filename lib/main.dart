@@ -13,7 +13,10 @@ import 'core/services/app_paths.dart';
 import 'core/services/plain_temp_manager.dart';
 import 'core/theme/app_motion.dart';
 import 'core/theme/app_theme.dart';
+import 'data/gallery/import_preferences.dart';
 import 'features/auth/pin_screen.dart';
+import 'features/onboarding/onboarding_flow.dart';
+import 'features/settings/settings_environment.dart';
 import 'features/vault/home_vault_screen.dart';
 import 'features/vault/vault_services.dart';
 import 'shared/widgets/privacy_cover.dart';
@@ -127,10 +130,30 @@ class VaultRootNavigator extends StatefulWidget {
   State<VaultRootNavigator> createState() => _VaultRootNavigatorState();
 }
 
+enum _Phase { loading, onboarding, pin, vault }
+
 class _VaultRootNavigatorState extends State<VaultRootNavigator> {
   late final AuthController _authController =
       widget.authController ?? AuthController();
-  bool _isAuthenticated = false;
+  _Phase _phase = _Phase.loading;
+
+  /// Reapertura a mitad del onboarding: la bóveda existe pero falta confirmar
+  /// el código de recuperación.
+  bool _resumeOnboarding = false;
+
+  /// La bóveda ya existe (creada en este proceso o antes): un bloqueo en el
+  /// onboarding vuelve a la pantalla de PIN.
+  bool _vaultExists = false;
+
+  /// Código de recuperación recién creado, SOLO en memoria y solo hasta que
+  /// el usuario lo confirma. Si el proceso muere se pierde (y se ofrece
+  /// generar uno nuevo).
+  String? _pendingCode;
+
+  VaultServices? _realServices;
+
+  VaultServices get _services =>
+      widget.services ?? (_realServices ??= VaultServices.real());
 
   late final AutoLockController _autoLock = AutoLockController(
     onLock: _lock,
@@ -140,6 +163,16 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
     clock: widget.autoLockClock,
     suspension: widget.autoLockSuspension,
     initialDelay: widget.autoLockDelay ?? AutoLockDelay.defaultValue,
+  );
+
+  late final SettingsEnvironment _settings = SettingsEnvironment(
+    auth: _authController,
+    autoLock: _autoLock,
+    screenProtection: ScreenProtection(
+      preferences: ScreenProtectionPreferences(FlutterSecureKeyValueStore()),
+    ),
+    importPreferences: GalleryImportPreferences(FlutterSecureKeyValueStore()),
+    onLock: _autoLock.lockNow,
   );
 
   @override
@@ -157,6 +190,18 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
         }
       });
     }
+    _bootstrap();
+  }
+
+  /// Sin bóveda -> onboarding; con bóveda -> PIN (y, si el onboarding quedó a
+  /// medias, tras el PIN se vuelve al paso del código).
+  Future<void> _bootstrap() async {
+    final hasVault = await _authController.hasVault();
+    if (!mounted) return;
+    setState(() {
+      _vaultExists = hasVault;
+      _phase = hasVault ? _Phase.pin : _Phase.onboarding;
+    });
   }
 
   @override
@@ -171,17 +216,76 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
   /// navegación vacía (visor, hojas y diálogos incluidos).
   void _lock() {
     _authController.lock();
-    if (!_isAuthenticated || !mounted) return;
+    if (!mounted) return;
+    final inVault = _phase == _Phase.vault;
+    // En el onboarding SIN bóveda todavía no hay nada que bloquear.
+    final inOnboardingWithVault = _phase == _Phase.onboarding && _vaultExists;
+    if (!inVault && !inOnboardingWithVault) return;
     Navigator.of(context).popUntil((r) => r.isFirst);
-    setState(() => _isAuthenticated = false);
+    setState(() {
+      _resumeOnboarding = inOnboardingWithVault;
+      _phase = _Phase.pin;
+    });
   }
 
-  void _handleAuthenticationSuccess() {
+  Future<void> _handleAuthenticationSuccess() async {
     // Si se bloqueó durante la animación de desbloqueo, no se abre la bóveda.
     if (!_authController.isUnlocked) return;
+    final pending = await _authController.isOnboardingPending();
+    if (!mounted || !_authController.isUnlocked) return;
     setState(() {
-      _isAuthenticated = true;
+      _resumeOnboarding = pending;
+      _phase = pending ? _Phase.onboarding : _Phase.vault;
     });
+  }
+
+  void _finishOnboarding() {
+    if (!mounted) return;
+    setState(() {
+      _pendingCode = null;
+      _resumeOnboarding = false;
+      _phase = _authController.isUnlocked ? _Phase.vault : _Phase.pin;
+    });
+  }
+
+  Widget _body() {
+    switch (_phase) {
+      case _Phase.loading:
+        return const Scaffold(
+          key: ValueKey('loading'),
+          body: Center(child: CircularProgressIndicator()),
+        );
+      case _Phase.onboarding:
+        return OnboardingFlow(
+          key: ValueKey('onboarding-$_resumeOnboarding'),
+          auth: _authController,
+          resume: _resumeOnboarding,
+          recoveryCode: _pendingCode,
+          syncProvider: () => _services.sync,
+          onVaultCreated: (code) {
+            _vaultExists = true;
+            _pendingCode = code;
+          },
+          onRecoveryConfirmed: () => _pendingCode = null,
+          onFinished: _finishOnboarding,
+        );
+      case _Phase.pin:
+        return PinScreen(
+          key: const ValueKey('pin'),
+          authController: _authController,
+          onAuthenticated: _handleAuthenticationSuccess,
+        );
+      case _Phase.vault:
+        // null indica la raíz de la bóveda
+        return HomeVaultScreen(
+          key: const ValueKey('vault'),
+          currentFolderId: null,
+          currentFolderName: 'Mi Bóveda',
+          services: _services,
+          onLock: _autoLock.lockNow,
+          settings: _settings,
+        );
+    }
   }
 
   @override
@@ -190,20 +294,7 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
     return AnimatedSwitcher(
       duration: AppMotion.medium,
       switchInCurve: AppMotion.standard,
-      child: _isAuthenticated
-          // null indica la raíz de la bóveda
-          ? HomeVaultScreen(
-              key: const ValueKey('vault'),
-              currentFolderId: null,
-              currentFolderName: 'Mi Bóveda',
-              services: widget.services,
-              onLock: _autoLock.lockNow,
-            )
-          : PinScreen(
-              key: const ValueKey('pin'),
-              authController: _authController,
-              onAuthenticated: _handleAuthenticationSuccess,
-            ),
+      child: _body(),
     );
   }
 }

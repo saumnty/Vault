@@ -70,6 +70,13 @@ abstract final class AppSizes {
   static const int pickerThumbPx = 256;
   static const double progressBarHeight = 6;
 
+  /// Indicador de pasos del onboarding: punto normal y punto activo (ancho).
+  static const double stepDot = 8;
+  static const double stepDotActive = 24;
+
+  /// Ancho máximo del contenido de pantallas de ajustes/onboarding.
+  static const double contentMaxWidth = 560;
+
   /// Visor: botón de reproducir grande y ancho máximo de la barra de progreso.
   static const double playButton = 72;
   static const double viewerProgressWidth = 240;

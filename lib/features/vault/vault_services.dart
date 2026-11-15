@@ -23,6 +23,7 @@ import '../../data/sync/network_monitor.dart';
 import '../../data/sync/offline_service.dart';
 import '../../data/sync/sync_preferences.dart';
 import '../../data/sync/sync_queue_repository.dart';
+import '../../data/sync/storage_service.dart';
 import '../../data/sync/sync_service.dart';
 import '../../data/sync/vault_file_fetcher.dart';
 import '../../data/models/vault_item_model.dart';
@@ -102,6 +103,7 @@ class VaultServices {
     this.cache,
     this.gallery,
     this.sync,
+    this.storage,
   });
 
   final VaultDataRepository repository;
@@ -140,6 +142,10 @@ class VaultServices {
 
   /// Sincronización con la nube (`null` = no disponible, p. ej. pruebas).
   final SyncService? sync;
+
+  /// Almacenamiento de Ajustes (límite de caché, liberar espacio). `null` =
+  /// no disponible (pruebas).
+  final StorageService? storage;
 
   /// Servicios reales. Las dependencias pesadas se crean bajo demanda.
   factory VaultServices.real() {
@@ -206,6 +212,11 @@ class VaultServices {
       },
       gallery: _sharedGallery ??= _createGallery(repository, sync),
       sync: sync,
+      storage: StorageService(
+        cache: core.cache,
+        items: repository,
+        offline: core.offline,
+      ),
     );
   }
 

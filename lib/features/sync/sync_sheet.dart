@@ -1,15 +1,14 @@
 import 'package:flutter/material.dart';
 
 import '../../core/theme/app_colors.dart';
-import '../../core/theme/app_radii.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
 import '../../data/cloud/cloud_storage.dart';
 import '../../data/sync/sync_queue_repository.dart';
 import '../../data/sync/sync_service.dart';
-import '../../shared/format.dart';
 import '../../shared/widgets/app_buttons.dart';
 import '../../shared/widgets/blur_sheet.dart';
+import 'quota_bar.dart';
 
 /// Hoja "Sincronización" (mínimo de F5; el ajuste definitivo irá en F8).
 Future<void> showSyncSheet(BuildContext context, SyncService sync) {
@@ -119,7 +118,7 @@ class _SyncSheetContentState extends State<SyncSheetContent> {
             ],
             if (signedIn) ...[
               const SizedBox(height: AppSpacing.lg),
-              _quota(),
+              QuotaBar(quota: _sync.quota.value),
               const SizedBox(height: AppSpacing.lg),
               _counts(s.counts),
             ],
@@ -187,42 +186,6 @@ class _SyncSheetContentState extends State<SyncSheetContent> {
         ),
         AppTextButton(label: 'Cerrar sesión', onPressed: () => _sync.signOut()),
       ],
-    );
-  }
-
-  Widget _quota() {
-    final q = _sync.quota.value;
-    if (q == null) {
-      return const Text(
-        'Espacio de Drive: consultando…',
-        style: AppTypography.bodySecondary,
-      );
-    }
-    final text = q.limitBytes == null
-        ? '${formatBytes(q.usedBytes)} usados en Drive'
-        : '${formatBytes(q.usedBytes)} de ${formatBytes(q.limitBytes!)} usados';
-    return Semantics(
-      label: 'Espacio de Drive: $text',
-      child: ExcludeSemantics(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(text, style: AppTypography.bodySecondary),
-            const SizedBox(height: AppSpacing.sm),
-            ClipRRect(
-              borderRadius: AppRadii.pillAll,
-              child: LinearProgressIndicator(
-                value: q.fraction ?? 0,
-                minHeight: AppSizes.progressBarHeight,
-                color: (q.fraction ?? 0) > 0.9
-                    ? AppColors.danger
-                    : AppColors.accent,
-                backgroundColor: AppColors.surfaceHighest,
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 

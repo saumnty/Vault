@@ -299,6 +299,9 @@ class SyncService {
   Future<void> signOut() async {
     _token?.cancel();
     await cloud.signOut();
+    // Otra cuenta (o la misma, más tarde) debe recibir de nuevo el respaldo de
+    // recuperación: se olvida la marca de "ya subido".
+    await prefs.setRecoveryUploadedSha('');
     quota.value = null;
     summary.value = summary.value.copyWith(
       accountEmail: null,
@@ -321,6 +324,12 @@ class SyncService {
   Future<void> setWifiOnly(bool value) async {
     await prefs.setWifiOnly(value);
     if (!value && !_running && isUnlocked()) unawaited(run());
+    // En caliente: al activar "solo Wi-Fi" con una subida en curso por datos
+    // móviles, se detiene (queda pendiente y se reanuda con Wi-Fi).
+    if (value && _running) {
+      final net = await network.current();
+      if (net == NetworkKind.mobile) _token?.cancel();
+    }
   }
 
   Future<List<SyncJob>> recentErrors({int limit = 5}) async {
@@ -764,7 +773,16 @@ class SyncService {
       replaceFileId: existing?.id,
     );
     _verify(remote, bytes.length, md5OfBytes(bytes));
-    await prefs.setRecoveryUploadedSha(crypto.sha256.convert(bytes).toString());
+    final sha = crypto.sha256.convert(bytes).toString();
+    await prefs.setRecoveryUploadedSha(sha);
+    if (kDebugMode) {
+      // Diagnóstico (solo depuración): confirma la subida sin exponer nada
+      // más que el prefijo del SHA-256 del respaldo (ya cifrado).
+      debugPrint(
+        '[sync] respaldo de recuperación subido: ${bytes.length} B '
+        'sha#=${sha.substring(0, 8)}',
+      );
+    }
     return true;
   }
 

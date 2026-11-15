@@ -6,7 +6,7 @@ import 'package:vault/main.dart';
 import 'support/fakes.dart';
 
 void main() {
-  testWidgets('VaultApp arranca en la pantalla de PIN (sin bóveda)', (
+  testWidgets('VaultApp arranca en la bienvenida del onboarding (sin bóveda)', (
     tester,
   ) async {
     final controller = AuthController(
@@ -19,6 +19,9 @@ void main() {
     await tester.pumpWidget(VaultApp(authController: controller));
     await tester.pumpAndSettle();
 
+    expect(find.text('Bienvenido a Vault'), findsOneWidget);
+    await tester.tap(find.text('Empezar'));
+    await tester.pumpAndSettle();
     expect(find.text('Crea un nuevo PIN'), findsOneWidget);
     // Teclado propio: 10 dígitos + borrar, y el botón Continuar.
     expect(find.text('5'), findsOneWidget);

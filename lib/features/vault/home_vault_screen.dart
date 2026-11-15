@@ -14,6 +14,8 @@ import '../../data/gallery/gallery_import_service.dart';
 import '../gallery/gallery_picker_screen.dart';
 import '../gallery/import_options_sheet.dart';
 import '../gallery/import_progress_sheet.dart';
+import '../settings/settings_environment.dart';
+import '../settings/settings_screen.dart';
 import '../sync/sync_cloud_button.dart';
 import '../sync/sync_sheet.dart';
 import 'models/browser_entry.dart';
@@ -43,6 +45,7 @@ class HomeVaultScreen extends StatefulWidget {
     this.services,
     this.initialColumns = AppGrid.defaultColumns,
     this.onLock,
+    this.settings,
   });
 
   final String? currentFolderId;
@@ -54,6 +57,9 @@ class HomeVaultScreen extends StatefulWidget {
 
   /// "Bloquear ahora" (F7); `null` oculta el botón.
   final VoidCallback? onLock;
+
+  /// Ajustes (F8): solo la raíz muestra el engranaje; `null` lo oculta.
+  final SettingsEnvironment? settings;
 
   @override
   State<HomeVaultScreen> createState() => _HomeVaultScreenState();
@@ -169,6 +175,16 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     _controller.toggleSelection(e);
   }
 
+  void _openSettings() {
+    final env = widget.settings;
+    if (env == null) return;
+    Navigator.of(context).push(
+      AppPageRoute<void>(
+        builder: (_) => SettingsScreen(env: env, services: _services),
+      ),
+    );
+  }
+
   void _onCrumbTap(Crumb crumb) {
     final target = folderRouteName(crumb.id);
     Navigator.of(
@@ -257,11 +273,13 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     if (picked == null || picked.isEmpty || !mounted) return;
     final prefDelete = await gallery.preferences
         .getDeleteOriginalsWhenInCloud();
+    final prefQuality = await gallery.preferences.getVideoQuality();
     if (!mounted) return;
     final choices = await showImportOptionsSheet(
       context,
       assets: picked,
       deleteOriginalsWhenInCloud: prefDelete,
+      initialQuality: prefQuality,
     );
     if (choices == null || !mounted) return;
     await gallery.preferences.setDeleteOriginalsWhenInCloud(
@@ -358,6 +376,11 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                       onOffline: () => _offline(c.selectedEntries),
                       onDelete: () => _delete(c.selectedEntries),
                       onLock: widget.onLock,
+                      onSettings:
+                          widget.currentFolderId == null &&
+                              widget.settings != null
+                          ? _openSettings
+                          : null,
                       trailing: _services.sync == null
                           ? null
                           : SyncCloudButton(

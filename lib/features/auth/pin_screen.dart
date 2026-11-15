@@ -14,14 +14,19 @@ import '../../core/theme/app_typography.dart';
 import '../../shared/haptics.dart';
 import '../../shared/widgets/app_buttons.dart';
 import '../../shared/widgets/shake_widget.dart';
-import 'widgets/auth_sheets.dart';
 import 'widgets/pin_dots.dart';
 import 'widgets/pin_keypad.dart';
 
 /// Pantalla de PIN: crea la bóveda (primera vez) o la desbloquea.
+///
+/// Con [onVaultCreated] (onboarding, F8) la creación NO termina aquí: se
+/// persiste la bandera de onboarding pendiente, se entrega el resultado (con
+/// el código de recuperación) y el flujo sigue en los pasos siguientes. Sin
+/// él, tras crear la bóveda se llama directamente a [onAuthenticated].
 class PinScreen extends StatefulWidget {
   final VoidCallback onAuthenticated;
   final AuthController? authController;
+  final ValueChanged<VaultCreationResult>? onVaultCreated;
 
   /// Longitud máxima del PIN (se envía solo al completarla).
   static const int maxPinLength = 6;
@@ -30,6 +35,7 @@ class PinScreen extends StatefulWidget {
     super.key,
     required this.onAuthenticated,
     this.authController,
+    this.onVaultCreated,
   });
 
   @override
@@ -266,12 +272,17 @@ class _PinScreenState extends State<PinScreen> with WidgetsBindingObserver {
         await _fail('PIN incorrecto');
         if (lockout != null && mounted) _startLockout(lockout);
       } else {
-        final result = await _authController.createVault(pin);
+        final onCreated = widget.onVaultCreated;
+        final result = await _authController.createVault(
+          pin,
+          onboardingPending: onCreated != null,
+        );
         _firstPin = null;
         if (!mounted) return;
-        await showRecoveryCodeSheet(context, result.recoveryCode);
-        if (!mounted) return;
-        await _offerBiometrics();
+        if (onCreated != null) {
+          onCreated(result);
+          return;
+        }
         await _finishUnlock();
         return;
       }
@@ -337,20 +348,6 @@ class _PinScreenState extends State<PinScreen> with WidgetsBindingObserver {
       }
     } finally {
       _biometricInFlight = false;
-    }
-  }
-
-  Future<void> _offerBiometrics() async {
-    if (await _authController.biometricAvailability() !=
-        BiometricAvailability.available) {
-      return;
-    }
-    if (!mounted) return;
-    if (!await showBiometricOfferSheet(context)) return;
-    try {
-      await _authController.enableBiometricUnlock();
-    } catch (_) {
-      // Cancelado o fallido: se puede activar más tarde (F8, ajustes).
     }
   }
 

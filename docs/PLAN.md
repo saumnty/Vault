@@ -15,7 +15,7 @@ Rama de trabajo: `dev-claude` (no se hace push ni se toca main sin petición).
 | F5 | Sincronización con Drive | Sonnet | 🧪 analyze/test OK; emulador: login Google, subida verificada (tamaño+MD5), cuota, reanudación y corte de red OK; iOS sin probar; borrado de copias en Drive hecho en F6a |
 | F6 | Visor y caché | Sonnet/Opus | 🧪 F6a (visor fotos/video completo-primero, caché LRU, sin conexión, borrado remoto) analyze/test/emulador OK; F6b (streaming por bloques con servidor loopback, sin texto plano en disco, respaldo automático a completo-primero) analyze/test/emulador OK (Android); iOS sin probar; rendimiento limitado por AES-GCM en Dart puro (pendiente: AES nativo o isolates) |
 | F7 | Seguridad del sistema | Sonnet/Haiku | 🧪 autobloqueo configurable con suspensión por UI del sistema, lock cancela unlock en vuelo, FLAG_SECURE Android, sin respaldo Android: analyze/test/emulador OK; 📝 iOS (cobertura multitarea, exclusión de iCloud) escrito sin probar en dispositivo |
-| F8 | Onboarding y ajustes | Haiku/Sonnet | ⬜ |
+| F8 | Onboarding y ajustes | Haiku/Sonnet | 🧪 onboarding obligatorio (bienvenida, PIN, código + confirmación por posiciones, biometría, Drive), `regenerateRecoveryCode`, Ajustes completos: analyze/test (485)/emulador Android OK; iOS sin probar; liberar/vaciar caché probado con BD real en tests (emulador con bóveda vacía) |
 | F9 | Restauración | Sonnet | ⬜ |
 | F10 | Despliegue (Codemagic, Sideloadly) | Sonnet/Haiku | ⬜ |
 

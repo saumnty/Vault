@@ -75,6 +75,11 @@ class AuthController {
   static const String keyCheckKey = 'vault.v1.key_check';
   static const String biometricEnabledKey = 'vault.v1.biometric_enabled';
 
+  /// Bandera (F8): la bóveda se creó pero el usuario aún no confirmó su
+  /// código de recuperación. Mientras exista, al abrir la app se vuelve al
+  /// paso del código sin poder saltarse la confirmación.
+  static const String onboardingPendingKey = 'vault.v1.onboarding_pending';
+
   static const int minPinLength = 4;
 
   final SecureKeyValueStore _storage;
@@ -98,14 +103,24 @@ class AuthController {
   /// Crea la bóveda: genera la DEK, la envuelve con el PIN y con un código de
   /// recuperación nuevo, y deja la sesión desbloqueada.
   ///
+  /// Con [onboardingPending] se persiste la bandera [onboardingPendingKey]
+  /// ANTES de la envoltura del PIN (si el proceso muere a medias no hay
+  /// bóveda sin bandera). Se borra con [completeOnboarding].
+  ///
   /// Lanza [StateError] si ya existe una bóveda (la DEK se genera una sola
   /// vez; para reemplazarla usa [restoreFromRecovery]).
-  Future<VaultCreationResult> createVault(String pin) async {
+  Future<VaultCreationResult> createVault(
+    String pin, {
+    bool onboardingPending = false,
+  }) async {
     _checkPin(pin);
-    return _serialized(() => _createVault(pin));
+    return _serialized(() => _createVault(pin, onboardingPending));
   }
 
-  Future<VaultCreationResult> _createVault(String pin) async {
+  Future<VaultCreationResult> _createVault(
+    String pin,
+    bool onboardingPending,
+  ) async {
     if (await hasVault()) {
       throw StateError('Ya existe una bóveda en este dispositivo');
     }
@@ -126,6 +141,11 @@ class AuthController {
       await _storage.delete(biometricEnabledKey);
       await _safeDeleteBiometricKey();
       await _limiter.reset();
+      if (onboardingPending) {
+        await _storage.write(onboardingPendingKey, 'true');
+      } else {
+        await _storage.delete(onboardingPendingKey);
+      }
       await _storage.write(pinEnvelopeKey, pinEnvelope.encode());
 
       _session.open(keys);
@@ -137,6 +157,14 @@ class AuthController {
       dek.fillRange(0, dek.length, 0);
     }
   }
+
+  /// `true` si falta confirmar el código de recuperación (ver
+  /// [onboardingPendingKey]).
+  Future<bool> isOnboardingPending() async =>
+      (await _storage.read(onboardingPendingKey)) == 'true';
+
+  /// El usuario confirmó su código: se acabó el onboarding obligatorio.
+  Future<void> completeOnboarding() => _storage.delete(onboardingPendingKey);
 
   // ---------------------------------------------------------------------
   // PIN
@@ -318,6 +346,31 @@ class AuthController {
   /// Respaldo de recuperación guardado localmente (para que F5 lo suba).
   Future<String?> exportRecoveryBackup() => _storage.read(recoveryBackupKey);
 
+  /// Genera un código de recuperación NUEVO (F8): verifica [pin], vuelve a
+  /// envolver la MISMA DEK con KEK_rec' = Argon2id(código nuevo, salt2
+  /// nuevo) y reemplaza el respaldo local. El código viejo deja de abrir el
+  /// respaldo local; la DEK, los archivos y la envoltura del PIN no cambian.
+  /// El respaldo de Drive se actualiza solo: `SyncService` compara el SHA-256
+  /// del respaldo local con el último subido y re-encola la subida.
+  ///
+  /// Devuelve el código nuevo formateado (grupos de 4) para mostrarlo UNA vez,
+  /// o `null` si el PIN es incorrecto. Lanza [PinLockedOutException] si hay
+  /// que esperar.
+  Future<String?> regenerateRecoveryCode(String pin) {
+    return _serialized(() async {
+      final dek = await _verifyPin(pin, ++_attemptSeq);
+      if (dek == null) return null;
+      try {
+        final code = _recovery.generateRecoveryCode();
+        final backup = await _recovery.createBackup(dek, code);
+        await _storage.write(recoveryBackupKey, backup.toJsonString());
+        return RecoveryCode.format(code);
+      } finally {
+        dek.fillRange(0, dek.length, 0);
+      }
+    });
+  }
+
   /// Restaura la bóveda con el código de recuperación y el respaldo (p. ej.
   /// descargado de Drive) y fija [newPin]. Sirve tanto para "olvidé el PIN"
   /// como para un teléfono nuevo. Reemplaza cualquier bóveda local.
@@ -348,6 +401,7 @@ class AuthController {
       await _storage.write(keyCheckKey, keys.keyCheck);
       // La copia biométrica podría ser de otra DEK: se descarta.
       await _storage.delete(biometricEnabledKey);
+      await _storage.delete(onboardingPendingKey);
       await _safeDeleteBiometricKey();
       await _limiter.reset();
       await _storage.write(pinEnvelopeKey, envelope.encode());

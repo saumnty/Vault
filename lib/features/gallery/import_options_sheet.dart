@@ -30,12 +30,14 @@ Future<ImportChoices?> showImportOptionsSheet(
   BuildContext context, {
   required List<GalleryAsset> assets,
   required bool deleteOriginalsWhenInCloud,
+  VideoQualityOption initialQuality = VideoQualityOption.original,
 }) {
   return showBlurSheet<ImportChoices>(
     context,
     builder: (context) => ImportOptionsContent(
       assets: assets,
       initialDeleteOriginals: deleteOriginalsWhenInCloud,
+      initialQuality: initialQuality,
     ),
   );
 }
@@ -45,17 +47,21 @@ class ImportOptionsContent extends StatefulWidget {
     super.key,
     required this.assets,
     required this.initialDeleteOriginals,
+    this.initialQuality = VideoQualityOption.original,
   });
 
   final List<GalleryAsset> assets;
   final bool initialDeleteOriginals;
+
+  /// Calidad por defecto (Ajustes > Importación).
+  final VideoQualityOption initialQuality;
 
   @override
   State<ImportOptionsContent> createState() => _ImportOptionsContentState();
 }
 
 class _ImportOptionsContentState extends State<ImportOptionsContent> {
-  VideoQualityOption _quality = VideoQualityOption.original;
+  late VideoQualityOption _quality = widget.initialQuality;
   late bool _delete = widget.initialDeleteOriginals;
 
   List<GalleryAsset> get _videos =>

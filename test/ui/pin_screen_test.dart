@@ -190,37 +190,64 @@ void main() {
     expect(find.text('Ingresa tu PIN maestro'), findsOneWidget);
   });
 
-  testWidgets('crear bóveda: muestra el código de recuperación una vez', (
-    tester,
-  ) async {
+  testWidgets(
+    'crear bóveda sin onboarding: entra directo (sin hoja de código)',
+    (tester) async {
+      usePhoneSize(tester);
+      final env = _Env();
+      await tester.pumpWidget(env.screen());
+      await tester.pump();
+
+      await _type(tester, '2468');
+      await tester.tap(find.text('Continuar'));
+      await tester.pump();
+      // Paso de confirmación: se pide el mismo PIN otra vez.
+      expect(find.text('Confirma tu PIN'), findsOneWidget);
+      expect(_dots(tester).filled, 0);
+      await _type(tester, '2468');
+      await tester.tap(find.text('Continuar'));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 500)),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(find.text('Código de recuperación'), findsNothing);
+      expect(env.authenticated, 1);
+      // Sin onboarding no se deja bandera pendiente.
+      expect(await env.controller.isOnboardingPending(), isFalse);
+    },
+  );
+
+  testWidgets('crear bóveda con onVaultCreated: entrega el código y deja la '
+      'bandera de onboarding pendiente', (tester) async {
     usePhoneSize(tester);
     final env = _Env();
-    env.bio.available = BiometricAvailability.unavailable;
-    await tester.pumpWidget(env.screen());
+    VaultCreationResult? created;
+    await tester.pumpWidget(
+      testApp(
+        PinScreen(
+          authController: env.controller,
+          onAuthenticated: () => env.authenticated++,
+          onVaultCreated: (r) => created = r,
+        ),
+      ),
+    );
     await tester.pump();
-
     await _type(tester, '2468');
     await tester.tap(find.text('Continuar'));
     await tester.pump();
-    // Paso de confirmación: se pide el mismo PIN otra vez.
-    expect(find.text('Confirma tu PIN'), findsOneWidget);
-    expect(_dots(tester).filled, 0);
     await _type(tester, '2468');
     await tester.tap(find.text('Continuar'));
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 500)),
     );
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 400));
 
-    expect(find.text('Código de recuperación'), findsOneWidget);
-    expect(find.text('Ya lo guardé'), findsOneWidget);
-    // Sin botón de copiar a propósito.
-    expect(find.textContaining('Copiar'), findsNothing);
-
-    await tester.tap(find.text('Ya lo guardé'));
-    await tester.pump(const Duration(milliseconds: 400));
-    await tester.pump(const Duration(seconds: 1));
-    expect(env.authenticated, 1);
+    expect(created, isNotNull);
+    expect(created!.recoveryCode.split('-'), hasLength(6));
+    expect(env.authenticated, 0); // el onboarding decide cuándo entrar
+    expect(await env.controller.isOnboardingPending(), isTrue);
   });
 }

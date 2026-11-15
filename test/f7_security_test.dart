@@ -565,7 +565,8 @@ void main() {
           autoLockDelay: delay,
         ),
       );
-      await tester.pump();
+      await tester.pump(); // arranque: decide onboarding o PIN
+      await tester.pumpAndSettle(); // monta y carga la pantalla de PIN
       for (final d in '123456'.split('')) {
         await tester.tap(find.bySemanticsLabel('Dígito $d'));
         await tester.pump();

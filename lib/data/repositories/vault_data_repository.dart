@@ -358,6 +358,30 @@ class VaultDataRepository {
     return rows.isNotEmpty && rows.first['eff'] == 1;
   }
 
+  /// "Liberar espacio sin conexión" (F8): quita la marca "sin conexión" de
+  /// los items con copia VERIFICADA en la nube y de todas las carpetas (la
+  /// marca solo es una promesa de conservar la copia local; no borra nada).
+  /// NO toca items `pendiente`, `subiendo` ni `error`: conservan su marca
+  /// propia (su copia local sigue siendo la única). Devuelve cuántos items
+  /// cambiaron de marca.
+  Future<int> clearOfflineFlagsForVerified() async {
+    final db = await _dbProvider();
+    final changed = await db.update(
+      'vault_items',
+      {'isOffline': 0},
+      where:
+          'isOffline = 1 AND driveFileId IS NOT NULL AND cloudMd5 IS NOT NULL '
+          'AND cloudSize IS NOT NULL AND syncStatus IN (?, ?, ?)',
+      whereArgs: [
+        SyncStatus.enNube.dbValue,
+        SyncStatus.enCache.dbValue,
+        SyncStatus.sinConexion.dbValue,
+      ],
+    );
+    await db.update('folders', {'isOffline': 0}, where: 'isOffline = 1');
+    return changed;
+  }
+
   /// Ids de todos los items offline efectivos (propios o por carpeta ancestra).
   Future<Set<String>> getEffectiveOfflineItemIds() async {
     final db = await _dbProvider();

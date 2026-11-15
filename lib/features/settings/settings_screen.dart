@@ -1,0 +1,661 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+
+import '../../core/crypto/auth_controller.dart';
+import '../../core/security/security_preferences.dart';
+import '../../core/services/cache_manager.dart';
+import '../../core/theme/app_colors.dart';
+import '../../core/theme/app_spacing.dart';
+import '../../core/theme/app_typography.dart';
+import '../../data/cloud/cloud_storage.dart';
+import '../../data/gallery/video_compressor.dart';
+import '../../data/sync/storage_service.dart';
+import '../../data/sync/sync_service.dart';
+import '../../shared/format.dart';
+import '../../shared/widgets/app_buttons.dart';
+import '../../shared/widgets/choice_sheet.dart';
+import '../sync/quota_bar.dart';
+import '../vault/vault_services.dart';
+import 'pin_flows.dart';
+import 'settings_environment.dart';
+import 'widgets/settings_widgets.dart';
+
+/// Presets del límite de caché (500 MB es el valor por defecto).
+const List<int> cacheLimitPresets = [
+  250 * 1024 * 1024,
+  500 * 1024 * 1024,
+  1024 * 1024 * 1024,
+  2 * 1024 * 1024 * 1024,
+  5 * 1024 * 1024 * 1024,
+];
+
+String _limitLabel(int bytes) {
+  for (final p in cacheLimitPresets) {
+    if (p == bytes) {
+      return p >= 1024 * 1024 * 1024
+          ? '${p ~/ (1024 * 1024 * 1024)} GB'
+          : '${p ~/ (1024 * 1024)} MB';
+    }
+  }
+  return formatBytes(bytes);
+}
+
+/// Pantalla de Ajustes (F8): Seguridad, Importación, Almacenamiento,
+/// Sincronización y cuenta, Acerca de. Cada control aplica EN CALIENTE y se
+/// persiste en las preferencias que ya existen (no hay claves nuevas aparte
+/// de la calidad de video por defecto).
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key, required this.env, required this.services});
+
+  final SettingsEnvironment env;
+  final VaultServices services;
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  SettingsEnvironment get _env => widget.env;
+  AuthController get _auth => _env.auth;
+  SyncService? get _sync => widget.services.sync;
+  StorageService? get _storage => widget.services.storage;
+
+  bool _loaded = false;
+  BiometricAvailability _bioAvailability = BiometricAvailability.unavailable;
+  bool _bioEnabled = false;
+  bool _protectScreen = true;
+  VideoQualityOption _quality = VideoQualityOption.original;
+  bool _deleteOriginals = false;
+  CacheStats? _stats;
+  bool _wifiOnly = true;
+  String _version = '';
+  bool _busyStorage = false;
+  bool _signingIn = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+    final sync = _sync;
+    if (sync != null && sync.summary.value.accountEmail != null) {
+      unawaited(sync.refreshQuota());
+    }
+  }
+
+  Future<void> _load() async {
+    final bioAvailability = await _auth.biometricAvailability();
+    final bioEnabled = await _auth.isBiometricUnlockEnabled();
+    final protect = await _env.screenProtection.isPreferenceEnabled();
+    final quality = await _env.importPreferences.getVideoQuality();
+    final delete = await _env.importPreferences.getDeleteOriginalsWhenInCloud();
+    final wifi = await _sync?.getWifiOnly() ?? true;
+    final stats = await _safeStats();
+    String version = '';
+    try {
+      version = (await _env.versionLoader()).toString();
+    } on Object {
+      version = 'desconocida';
+    }
+    if (!mounted) return;
+    setState(() {
+      _bioAvailability = bioAvailability;
+      _bioEnabled = bioEnabled;
+      _protectScreen = protect;
+      _quality = quality;
+      _deleteOriginals = delete;
+      _wifiOnly = wifi;
+      _stats = stats;
+      _version = version;
+      _loaded = true;
+    });
+  }
+
+  Future<CacheStats?> _safeStats() async {
+    try {
+      return await _storage?.stats();
+    } on Object {
+      return null; // bóveda bloqueada
+    }
+  }
+
+  Future<void> _refreshStats() async {
+    final stats = await _safeStats();
+    if (mounted) setState(() => _stats = stats);
+  }
+
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  // ------------------------------------------------------------- seguridad
+
+  Future<void> _changePin() async {
+    final changed = await runChangePinFlow(context, _auth);
+    if (changed) _snack('PIN cambiado');
+  }
+
+  Future<void> _toggleBiometric(bool value) async {
+    try {
+      if (value) {
+        await _auth.enableBiometricUnlock();
+      } else {
+        await _auth.disableBiometricUnlock();
+      }
+    } on BiometricCancelledException {
+      _snack('Se canceló la activación de la biometría');
+    } on Object {
+      _snack('No se pudo cambiar el desbloqueo biométrico');
+    }
+    final enabled = await _auth.isBiometricUnlockEnabled();
+    if (mounted) setState(() => _bioEnabled = enabled);
+  }
+
+  Future<void> _pickAutoLock() async {
+    final picked = await showChoiceSheet<AutoLockDelay>(
+      context,
+      title: 'Autobloqueo',
+      message: 'Tiempo en segundo plano tras el cual se pide el PIN.',
+      options: [
+        for (final d in AutoLockDelay.values)
+          ChoiceOption(value: d, label: d.label),
+      ],
+      selected: _env.autoLock.delay,
+    );
+    if (picked == null) return;
+    await _env.autoLock.setDelay(picked);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _toggleProtectScreen(bool value) async {
+    if (!value) {
+      final ok = await showConfirmSheet(
+        context,
+        title: '¿Permitir capturas de pantalla?',
+        message:
+            'Sin esta protección, otras apps o el propio sistema podrán '
+            'capturar y grabar tu bóveda, y el contenido se verá en la lista '
+            'de apps recientes.',
+        confirmLabel: 'Desactivar protección',
+        destructive: true,
+      );
+      if (!ok) return;
+    }
+    await _env.screenProtection.setEnabled(value);
+    final now = await _env.screenProtection.isPreferenceEnabled();
+    if (mounted) setState(() => _protectScreen = now);
+  }
+
+  Future<void> _regenerateCode() async {
+    final done = await runRegenerateCodeFlow(context, _auth);
+    if (!done) return;
+    // El SyncService detecta el respaldo nuevo (SHA-256) y lo sube.
+    unawaited(_sync?.run(manual: true));
+    _snack(
+      _sync?.summary.value.accountEmail == null
+          ? 'Código nuevo confirmado. Se actualizará en la nube cuando '
+                'conectes Google Drive.'
+          : 'Código nuevo confirmado. Se está actualizando el respaldo en '
+                'tu Drive.',
+    );
+  }
+
+  // ------------------------------------------------------------ importación
+
+  Future<void> _pickQuality() async {
+    final picked = await showChoiceSheet<VideoQualityOption>(
+      context,
+      title: 'Calidad de video por defecto',
+      message:
+          'Se usará al importar desde la galería (puedes cambiarla en '
+          'cada importación).',
+      options: [
+        for (final q in VideoQualityOption.values)
+          ChoiceOption(value: q, label: q.label),
+      ],
+      selected: _quality,
+    );
+    if (picked == null) return;
+    await _env.importPreferences.setVideoQuality(picked);
+    if (mounted) setState(() => _quality = picked);
+  }
+
+  Future<void> _toggleDeleteOriginals(bool value) async {
+    if (value) {
+      final ok = await showConfirmSheet(
+        context,
+        title: '¿Borrar originales de la galería?',
+        message:
+            'Solo se borrará un original cuando su copia cifrada esté '
+            'verificada en tu Google Drive, y siempre te pediremos '
+            'confirmación antes de borrar. Esta acción no se puede deshacer.',
+        confirmLabel: 'Activar',
+      );
+      if (!ok) return;
+    }
+    await _env.importPreferences.setDeleteOriginalsWhenInCloud(value);
+    final now = await _env.importPreferences.getDeleteOriginalsWhenInCloud();
+    if (mounted) setState(() => _deleteOriginals = now);
+  }
+
+  // ----------------------------------------------------------- almacenamiento
+
+  Future<void> _pickCacheLimit() async {
+    final storage = _storage;
+    if (storage == null) return;
+    final current = _stats?.limitBytes ?? CachePreferences.defaultLimitBytes;
+    final picked = await showChoiceSheet<int>(
+      context,
+      title: 'Límite de caché',
+      message:
+          'Espacio máximo para archivos ya respaldados en la nube. Al '
+          'superarlo se liberan los menos usados (siguen en la nube).',
+      options: [
+        for (final p in cacheLimitPresets)
+          ChoiceOption(
+            value: p,
+            label: _limitLabel(p),
+            detail: p == CachePreferences.defaultLimitBytes
+                ? 'Predeterminado'
+                : null,
+          ),
+      ],
+      selected: current,
+    );
+    if (picked == null) return;
+    setState(() => _busyStorage = true);
+    try {
+      final freed = await storage.setLimitBytes(picked);
+      if (freed.files > 0) {
+        _snack(
+          'Límite ${_limitLabel(picked)}: se liberaron '
+          '${formatBytes(freed.bytes)}',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busyStorage = false);
+    }
+    await _refreshStats();
+  }
+
+  Future<void> _clearCache() async {
+    final storage = _storage;
+    if (storage == null) return;
+    final ok = await showConfirmSheet(
+      context,
+      title: '¿Vaciar la caché?',
+      message:
+          'Se borrarán las copias locales de lo que ya está en tu Google '
+          'Drive y no está marcado "sin conexión". Se volverán a descargar '
+          'al abrirlas.',
+      confirmLabel: 'Vaciar caché',
+      icon: Icons.cleaning_services_outlined,
+    );
+    if (!ok || !mounted) return;
+    setState(() => _busyStorage = true);
+    try {
+      final freed = await storage.clearCache();
+      _snack(
+        freed.files == 0
+            ? 'No había nada que liberar'
+            : 'Caché vaciada: ${freed.files} archivo(s), '
+                  '${formatBytes(freed.bytes)} liberados',
+      );
+    } on Object {
+      _snack('No se pudo vaciar la caché');
+    } finally {
+      if (mounted) setState(() => _busyStorage = false);
+    }
+    await _refreshStats();
+  }
+
+  Future<void> _freeOffline() async {
+    final storage = _storage;
+    if (storage == null) return;
+    final stats = _stats;
+    final detail = stats == null
+        ? ''
+        : ' (${stats.offlineCount} archivo(s), '
+              '${formatBytes(stats.offlineBytes)})';
+    final ok = await showConfirmSheet(
+      context,
+      title: '¿Liberar espacio sin conexión?',
+      message:
+          'Se quitará la marca "sin conexión" de todo lo que ya está en tu '
+          'Google Drive$detail y se borrará su copia local. Nada se '
+          'elimina de la nube y lo pendiente de subir no se toca.',
+      confirmLabel: 'Liberar espacio',
+      icon: Icons.offline_pin_outlined,
+    );
+    if (!ok || !mounted) return;
+    setState(() => _busyStorage = true);
+    try {
+      final freed = await storage.freeOfflineSpace();
+      _snack(
+        freed.files == 0
+            ? 'No había nada que liberar'
+            : 'Se liberaron ${formatBytes(freed.bytes)} '
+                  '(${freed.files} archivo(s))',
+      );
+    } on Object {
+      _snack('No se pudo liberar el espacio');
+    } finally {
+      if (mounted) setState(() => _busyStorage = false);
+    }
+    await _refreshStats();
+  }
+
+  // ---------------------------------------------------------- sincronización
+
+  Future<void> _toggleWifi(bool value) async {
+    setState(() => _wifiOnly = value);
+    await _sync?.setWifiOnly(value);
+  }
+
+  Future<void> _signIn() async {
+    final sync = _sync;
+    if (sync == null) return;
+    setState(() => _signingIn = true);
+    try {
+      await sync.signIn();
+    } on CloudException {
+      // El mensaje queda en summary.lastMessage (se muestra abajo).
+    } finally {
+      if (mounted) setState(() => _signingIn = false);
+    }
+  }
+
+  Future<void> _signOut() async {
+    final sync = _sync;
+    if (sync == null) return;
+    final ok = await showConfirmSheet(
+      context,
+      title: '¿Cerrar sesión de Google?',
+      message:
+          'Vault dejará de sincronizar con tu Drive. Tus archivos en el '
+          'teléfono se conservan y lo que ya está en tu Drive no se borra. '
+          'Puedes volver a iniciar sesión cuando quieras.',
+      confirmLabel: 'Cerrar sesión',
+      destructive: true,
+    );
+    if (!ok || !mounted) return;
+    try {
+      await sync.signOut();
+      _snack('Sesión cerrada');
+    } on Object {
+      _snack('No se pudo cerrar la sesión');
+    }
+  }
+
+  // -------------------------------------------------------------------- UI
+
+  List<Widget> _security() {
+    final bioAvailable = _bioAvailability == BiometricAvailability.available;
+    final bioSubtitle = switch (_bioAvailability) {
+      BiometricAvailability.available => 'Huella o rostro en lugar del PIN',
+      BiometricAvailability.notEnrolled =>
+        'No disponible: registra una huella o rostro en los ajustes del '
+            'teléfono',
+      BiometricAvailability.unavailable => 'No disponible en este dispositivo',
+    };
+    return [
+      SettingsTile(
+        icon: Icons.pin_outlined,
+        title: 'Cambiar PIN',
+        subtitle: 'Tus archivos no se vuelven a cifrar',
+        onTap: _changePin,
+      ),
+      SettingsSwitchTile(
+        icon: Icons.fingerprint,
+        title: 'Desbloqueo biométrico',
+        subtitle: bioSubtitle,
+        value: _bioEnabled && bioAvailable,
+        onChanged: bioAvailable || _bioEnabled ? _toggleBiometric : null,
+      ),
+      SettingsTile(
+        icon: Icons.timer_outlined,
+        title: 'Autobloqueo',
+        trailing: _env.autoLock.delay.label,
+        onTap: _pickAutoLock,
+      ),
+      SettingsSwitchTile(
+        icon: Icons.screen_lock_portrait_outlined,
+        title: 'Proteger pantalla',
+        subtitle: _env.screenProtection.overriddenOff
+            ? 'Compilación de depuración: capturas permitidas'
+            : 'Bloquea capturas, grabación y vista previa en apps recientes',
+        value: _protectScreen,
+        onChanged: _toggleProtectScreen,
+      ),
+      SettingsTile(
+        icon: Icons.key_outlined,
+        title: 'Generar nuevo código de recuperación',
+        subtitle: 'El código actual dejará de servir',
+        onTap: _regenerateCode,
+      ),
+      SettingsTile(
+        icon: Icons.lock_outline_rounded,
+        title: 'Bloquear ahora',
+        onTap: _env.onLock,
+      ),
+    ];
+  }
+
+  List<Widget> _import() => [
+    SettingsTile(
+      icon: Icons.videocam_outlined,
+      title: 'Calidad de video por defecto',
+      trailing: _quality.label,
+      onTap: _pickQuality,
+    ),
+    SettingsSwitchTile(
+      icon: Icons.delete_sweep_outlined,
+      title: 'Borrar originales cuando estén en la nube',
+      subtitle:
+          'Apagado por defecto. Solo se borra un original con su copia '
+          'verificada en Drive y siempre se pide confirmación.',
+      value: _deleteOriginals,
+      onChanged: _toggleDeleteOriginals,
+    ),
+  ];
+
+  List<Widget> _storageTiles() {
+    final s = _stats;
+    final usage = s == null
+        ? 'Calculando…'
+        : 'Caché: ${formatBytes(s.cachedBytes)} (${s.cachedCount} archivos)'
+              ' · Sin conexión: ${formatBytes(s.offlineBytes)} '
+              '(${s.offlineCount} archivos)';
+    return [
+      SettingsTile(
+        icon: Icons.storage_outlined,
+        title: 'Límite de caché',
+        trailing: _limitLabel(
+          s?.limitBytes ?? CachePreferences.defaultLimitBytes,
+        ),
+        subtitle: usage,
+        onTap: _busyStorage ? null : _pickCacheLimit,
+      ),
+      SettingsTile(
+        icon: Icons.offline_pin_outlined,
+        title: 'Liberar espacio sin conexión',
+        subtitle: 'Quita la marca de lo que ya está en la nube',
+        onTap: _busyStorage ? null : _freeOffline,
+      ),
+      SettingsTile(
+        icon: Icons.cleaning_services_outlined,
+        title: 'Vaciar caché ahora',
+        onTap: _busyStorage ? null : _clearCache,
+      ),
+    ];
+  }
+
+  Widget _syncSection(SyncService sync) {
+    return ListenableBuilder(
+      listenable: Listenable.merge([sync.summary, sync.quota]),
+      builder: (context, _) {
+        final s = sync.summary.value;
+        final email = s.accountEmail;
+        final signedIn = email != null;
+        return SettingsSection(
+          title: 'Sincronización y cuenta',
+          children: [
+            SettingsSwitchTile(
+              icon: Icons.wifi,
+              title: 'Solo Wi-Fi',
+              subtitle: 'No usar datos móviles para subir ni descargar',
+              value: _wifiOnly,
+              onChanged: _toggleWifi,
+            ),
+            if (signedIn) ...[
+              SettingsTile(
+                icon: Icons.account_circle_outlined,
+                title: 'Cuenta de Google',
+                subtitle: email,
+              ),
+              Padding(
+                padding: AppSpacing.page,
+                child: QuotaBar(quota: sync.quota.value),
+              ),
+              SettingsTile(
+                icon: Icons.sync,
+                title: 'Sincronizar ahora',
+                subtitle: s.phase == SyncPhase.running
+                    ? 'Sincronizando…'
+                    : null,
+                onTap: s.phase == SyncPhase.running
+                    ? null
+                    : () => unawaited(sync.run(manual: true)),
+              ),
+              SettingsTile(
+                icon: Icons.logout,
+                title: 'Cerrar sesión de Google',
+                destructive: true,
+                onTap: _signOut,
+              ),
+            ] else
+              Padding(
+                padding: AppSpacing.page,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text(
+                      'Sin cuenta conectada. Tu bóveda no se está '
+                      'respaldando en la nube.',
+                      style: AppTypography.bodySecondary,
+                    ),
+                    if (s.lastMessage != null) ...[
+                      const SizedBox(height: AppSpacing.sm),
+                      Semantics(
+                        liveRegion: true,
+                        child: Text(
+                          s.lastMessage!,
+                          style: AppTypography.bodySecondary.copyWith(
+                            color: AppColors.danger,
+                          ),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: AppSpacing.md),
+                    AppFilledButton(
+                      label: 'Iniciar sesión con Google',
+                      icon: Icons.login,
+                      busy: _signingIn,
+                      onPressed: _signIn,
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          children: [
+            SizedBox(
+              height: AppSizes.toolbar,
+              child: Row(
+                children: [
+                  AppIconButton(
+                    icon: Icons.arrow_back,
+                    label: 'Volver',
+                    onPressed: () => Navigator.of(context).maybePop(),
+                  ),
+                  Expanded(
+                    child: Semantics(
+                      header: true,
+                      child: const Text('Ajustes', style: AppTypography.title),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: !_loaded
+                  ? const Center(child: CircularProgressIndicator())
+                  : Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(
+                          maxWidth: AppSizes.contentMaxWidth,
+                        ),
+                        child: ListView(
+                          padding: AppSpacing.page,
+                          children: [
+                            SettingsSection(
+                              title: 'Seguridad',
+                              children: _security(),
+                            ),
+                            SettingsSection(
+                              title: 'Importación',
+                              children: _import(),
+                            ),
+                            if (_storage != null)
+                              SettingsSection(
+                                title: 'Almacenamiento',
+                                children: _storageTiles(),
+                              ),
+                            if (_sync != null) _syncSection(_sync!),
+                            SettingsSection(
+                              title: 'Acerca de',
+                              children: [
+                                SettingsTile(
+                                  icon: Icons.info_outline,
+                                  title: 'Versión',
+                                  trailing: _version,
+                                ),
+                                const SettingsTile(
+                                  icon: Icons.privacy_tip_outlined,
+                                  title: 'Privacidad',
+                                  subtitle:
+                                      'Tus archivos se cifran en este teléfono '
+                                      'antes de guardarse o de subirse a un '
+                                      'espacio privado de tu Google Drive. El '
+                                      'PIN y las llaves nunca salen del '
+                                      'dispositivo: solo viaja un respaldo '
+                                      'cifrado con tu código de recuperación. '
+                                      'Vault no tiene servidores, ni '
+                                      'analíticas, ni comparte datos con '
+                                      'terceros.',
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

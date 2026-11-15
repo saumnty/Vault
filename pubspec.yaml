@@ -57,6 +57,8 @@ dependencies:
   connectivity_plus: 7.3.2
   # Oficial (ExoPlayer/AVPlayer). 2.12+ exige Flutter >=3.44; 2.11.1 es la última compatible con 3.41.6.
   video_player: 2.11.1
+  # Versión de la app en Ajustes > Acerca de (F8). Fijada; 9.0.1 verificada con flutter pub add.
+  package_info_plus: 9.0.1
 
 dev_dependencies:
   flutter_test:

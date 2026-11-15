@@ -102,6 +102,9 @@ class ScreenProtection {
   /// builds que no son release: en release el define se ignora.
   bool get overriddenOff => !_release && _allowDefine;
 
+  /// Lo que el usuario eligió en Ajustes (ignora el define de depuración).
+  Future<bool> isPreferenceEnabled() => _prefs.getProtect();
+
   Future<bool> isEnabled() async {
     if (overriddenOff) return false;
     return _prefs.getProtect();
