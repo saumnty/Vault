@@ -345,7 +345,7 @@ void main() {
       expect(passwords, isEmpty);
     });
 
-    test('contrasena = hex de la subllave sqlcipher; lock cierra', () async {
+    test('llave cruda de la subllave sqlcipher; lock cierra', () async {
       final keys = await _keys(1);
       final expected = keys.sqlcipher.bytes
           .map((b) => b.toRadixString(16).padLeft(2, '0'))
@@ -353,8 +353,8 @@ void main() {
       session.open(keys);
       final db = await vdb.database;
       expect(db.isOpen, isTrue);
-      expect(passwords.single, expected);
-      expect(passwords.single!.length, 64);
+      expect(passwords.single, "x'$expected'");
+      expect(passwords.single!.length, 67);
       expect(identical(await vdb.database, db), isTrue);
       expect(passwords.length, 1);
 

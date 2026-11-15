@@ -161,7 +161,10 @@ class VaultDatabase {
   String get _dbPath =>
       _dbPathOverride ?? p.join(AppPaths.dbDir.path, VaultSchema.dbFileName);
 
-  /// Contraseña SQLCipher derivada de la sesión: hex de 32 bytes.
+  /// Llave SQLCipher derivada de la sesión, en formato de llave CRUDA
+  /// `x'<64 hex>'`: SQLCipher la usa tal cual y se salta su PBKDF2 interno
+  /// (256 000 iteraciones), que es innecesario porque la subllave HKDF ya es
+  /// de 256 bits de alta entropía.
   String _passwordFromSession() {
     final keys = _session.keysOrNull;
     if (keys == null || keys.isDestroyed) {
@@ -172,7 +175,7 @@ class VaultDatabase {
     for (final b in bytes) {
       sb.write(b.toRadixString(16).padLeft(2, '0'));
     }
-    return sb.toString();
+    return "x'${sb.toString()}'";
   }
 
   /// Conexión abierta; la abre (o reabre si cambió la llave). Lanza

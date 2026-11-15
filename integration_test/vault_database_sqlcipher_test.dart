@@ -69,7 +69,7 @@ void main() {
         .join();
     Object? error;
     try {
-      final bad = await openDatabase(dbFile.path, password: wrongPw);
+      final bad = await openDatabase(dbFile.path, password: "x'$wrongPw'");
       await bad.query('vault_items');
       await bad.close();
     } catch (e) {
