@@ -2,11 +2,10 @@ import 'dart:io';
 import 'package:cryptography/cryptography.dart';
 import '../../../core/crypto/crypto_service.dart';
 import '../../../core/services/cache_manager.dart';
-import '../../../data/services/google_drive_service.dart';
+import '../../../data/cloud/cloud_provider.dart';
 
 class VaultViewerService {
   final CacheManager _cacheManager = CacheManager.instance;
-  final GoogleDriveService _driveService = GoogleDriveService();
   final CryptoService _cryptoService = CryptoService();
 
   /// Obtiene el archivo listo para mostrarse (en texto plano temporal) bajo demanda.
@@ -31,11 +30,7 @@ class VaultViewerService {
       // 2. Si no está en caché, descargarlo cifrado desde Google Drive (appDataFolder)
       final tempEncryptedFile = File('${cacheDir.path}/enc_$fileName');
       try {
-        final downloaded = await _driveService.downloadEncryptedFile(
-          cloudId,
-          tempEncryptedFile,
-        );
-        if (!downloaded) return null;
+        await CloudProvider.instance.download(cloudId, tempEncryptedFile);
 
         // 3. Descifrar el .vault v2 en streaming. Si falla la autenticación,
         // decryptFile borra el archivo plano parcial y lanza excepción.

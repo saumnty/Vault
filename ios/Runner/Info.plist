@@ -2,6 +2,21 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- iOS: Google Sign-In. GIDClientID = cliente OAuth iOS (publico) y el
+	     esquema de URL es su REVERSED_CLIENT_ID. -->
+	<key>GIDClientID</key>
+	<string>1084069117024-8fbi173vdos9ocupmg93rap3o0g5kafm.apps.googleusercontent.com</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.1084069117024-8fbi173vdos9ocupmg93rap3o0g5kafm</string>
+			</array>
+		</dict>
+	</array>
 	<!-- iOS: permisos de fototeca para importar desde la galería (F4) -->
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Vault necesita acceso a tus fotos y videos para importarlos a la bóveda cifrada.</string>

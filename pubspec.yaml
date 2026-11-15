@@ -36,6 +36,9 @@ dependencies:
   # Biometría ligada a almacenamiento seguro del SO (ver lib/core/crypto/biometric_key_store.dart)
   biometric_storage: 5.0.1
   path: 1.9.1
+  # MD5 (md5Checksum de Drive) en streaming; ya era dependencia transitiva.
+  crypto: ^3.0.7
+  http: ^1.6.0
   file_picker: ^8.0.0
   uuid: ^4.2.1
   path_provider: ^2.1.2
@@ -49,6 +52,7 @@ dependencies:
   # (la 4.x compila libsodium con build hooks y exige make/bash en Windows).
   sodium_libs: 3.4.6+4
   sodium: 3.4.6
+  connectivity_plus: 7.3.2
 
 dev_dependencies:
   flutter_test:

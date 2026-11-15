@@ -192,6 +192,17 @@ class VaultDataRepository {
     return rows.map(VaultItemModel.fromMap).toList();
   }
 
+  /// Items con miniatura cifrada que aún no está verificada en la nube.
+  Future<List<VaultItemModel>> getItemsNeedingThumbUpload() async {
+    final db = await _dbProvider();
+    final rows = await db.query(
+      'vault_items',
+      where: 'thumbPath IS NOT NULL AND thumbDriveFileId IS NULL',
+      orderBy: 'createdAt ASC',
+    );
+    return rows.map(VaultItemModel.fromMap).toList();
+  }
+
   /// Items con copia local recuperable (estado `en_cache`), el menos usado
   /// recientemente primero (los nunca abiertos van antes).
   Future<List<VaultItemModel>> getCachedItemsLru() async {
@@ -225,6 +236,23 @@ class VaultDataRepository {
     'syncStatus': status.dbValue,
     'driveFileId': ?driveFileId,
   });
+
+  /// Marca el item como `en_nube` SOLO tras verificar tamaño y MD5 de la
+  /// copia remota (F5). Guarda id, MD5 y tamaño verificados.
+  Future<void> markCloudVerified(
+    String id, {
+    required String driveFileId,
+    required String md5,
+    required int size,
+  }) => _updateItem(id, {
+    'syncStatus': SyncStatus.enNube.dbValue,
+    'driveFileId': driveFileId,
+    'cloudMd5': md5,
+    'cloudSize': size,
+  });
+
+  Future<void> setThumbDriveFileId(String id, String? thumbDriveFileId) =>
+      _updateItem(id, {'thumbDriveFileId': thumbDriveFileId});
 
   Future<void> setDriveFileId(String id, String? driveFileId) =>
       _updateItem(id, {'driveFileId': driveFileId});

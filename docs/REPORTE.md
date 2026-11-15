@@ -77,3 +77,15 @@ F5 (sincronización) necesita: proyecto en Google Cloud, Drive API, pantalla de 
 
 ### Comando del emulador que funciona
 `emulator -avd Pixel_7 -no-snapshot -gpu swiftshader_indirect` (PATH: `%LOCALAPPDATA%\Android\Sdk\platform-tools` y `\emulator`). Si aparece "System UI isn't responding", pulsa Wait.
+
+---
+## F5 — Sincronización con Google Drive (🧪 probada en emulador)
+- **Resultado:** analyze limpio, 207 tests verdes, build debug OK.
+- **Arquitectura:** `lib/core/config/google_config.dart` (IDs OAuth en un solo lugar, sobreescribibles con `--dart-define`); `lib/data/cloud/` (`CloudStorage` con errores tipados + `GoogleDriveCloudStorage`, subida resumible 2 MiB, idempotente); `lib/data/sync/` (`SyncService` con un solo worker, backoff exponencial+jitter 10 s–15 min, 5 intentos; cola persistente `sync_queue` en la BD cifrada, esquema v4 sin migración; solo Wi-Fi activo por defecto; `connectivity_plus`); hoja "Sincronización" (cuenta, cuota, conteos, solo Wi-Fi, sincronizar ahora, errores).
+- **Verificación:** tamaño + MD5 local (en streaming) vs Drive antes de `en_nube`; `cloudVerifier` conectado al borrado de originales (la bandera sigue apagada; no se borra nada solo).
+- **Respaldos en appDataFolder:** `recovery_backup.json` (DEK envuelta con KEK_rec, validado: nunca la envoltura del PIN) y `vault_db.snapshot` (≥20 subidas o ≥6 h).
+- **Probado en emulador:** inicio de sesión Google real (con serverClientId Web, sin DEVELOPER_ERROR; el primer intento falló con ApiException 10 antes de aplicar los IDs, luego OK), subida real con tamaño+MD5 verificados, cuota visible ("25,98 MB de 15,00 GB", crece al subir), reanudación tras `force-stop` (7 → 4 pendientes), corte de wifi/datos ("Sin conexión. Se reanudará al volver la red.") y reanudación automática al restaurar → "Todo está al día".
+- **No probado:** listar archivos de appDataFolder directamente (la subida se respalda con MD5 y cuota); videos grandes; iOS (Info.plist con GIDClientID y URL scheme puestos pero sin compilar).
+- **Pendiente/limitaciones:** al borrar un item no se borra su copia en Drive (`TODO(F6)`); un desbloqueo falló una vez con "PIN incorrecto" (atribuido a taps del emulador/bóveda previa; vigilar).
+- **Privacidad:** el subagente borró las capturas del emulador que mostraban el correo del usuario.
+- **Acciones tuyas:** mantener tu correo como tester; la 1.ª vez aparece "Google hasn't verified this app" → Continue y marcar el permiso de Drive. Para release con llave propia, registrar su SHA-1 en el cliente Android. Antes de F10, comprobar login iOS en Codemagic.

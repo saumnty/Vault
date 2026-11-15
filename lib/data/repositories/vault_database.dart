@@ -13,11 +13,13 @@ import '../../core/session/vault_session.dart';
 ///
 /// Historial: v2 = esquema anterior (rutas absolutas); v3 = F3 (rutas
 /// relativas, syncStatus, driveFileId, thumbPath, lastAccessedAt,
-/// contentHash, sourceAssetId, durationMs, folders.isOffline, índices).
+/// contentHash, sourceAssetId, durationMs, folders.isOffline, índices);
+/// v4 = F5 (tabla `sync_queue`; vault_items.cloudMd5/cloudSize/
+/// thumbDriveFileId). Sin migración: al subir de versión se recrea todo.
 class VaultSchema {
   VaultSchema._();
 
-  static const int version = 3;
+  static const int version = 4;
   static const String dbFileName = 'vault_secure.db';
 
   static const List<String> indexNames = [
@@ -26,6 +28,7 @@ class VaultSchema {
     'idx_items_lastAccessed',
     'idx_items_drive',
     'idx_folders_parent',
+    'idx_sync_queue_due',
   ];
 
   static Future<void> create(DatabaseExecutor db) async {
@@ -55,9 +58,31 @@ class VaultSchema {
         lastAccessedAt INTEGER,
         contentHash TEXT,
         sourceAssetId TEXT,
-        durationMs INTEGER
+        durationMs INTEGER,
+        cloudMd5 TEXT,
+        cloudSize INTEGER,
+        thumbDriveFileId TEXT
       )
     ''');
+    // Cola de sincronización persistente (F5). Una fila por (itemId, kind);
+    // para respaldos sin item itemId = '_'. Se borra al completarse.
+    // state: pendiente | subiendo | error.
+    await db.execute('''
+      CREATE TABLE sync_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        itemId TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pendiente',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        nextAttemptAt INTEGER NOT NULL DEFAULT 0,
+        lastError TEXT,
+        createdAt INTEGER NOT NULL,
+        UNIQUE (itemId, kind)
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX idx_sync_queue_due ON sync_queue(state, nextAttemptAt)',
+    );
     await db.execute('CREATE INDEX idx_items_folder ON vault_items(folderId)');
     await db.execute('CREATE INDEX idx_items_sync ON vault_items(syncStatus)');
     await db.execute(
@@ -71,6 +96,7 @@ class VaultSchema {
 
   /// Borra todo y recrea (sustituye a una migración).
   static Future<void> recreate(Database db) async {
+    await db.execute('DROP TABLE IF EXISTS sync_queue');
     await db.execute('DROP TABLE IF EXISTS vault_items');
     await db.execute('DROP TABLE IF EXISTS folders');
     await create(db);
@@ -241,8 +267,7 @@ class VaultDatabase {
   /// SQLCipher) para respaldarlo. Devuelve la copia; el llamador la borra
   /// tras usarla. La conexión se reabre sola en el siguiente acceso.
   ///
-  /// TODO(F5): subir este archivo al appDataFolder de Drive periódicamente
-  /// (no implementado en F3).
+  /// F5: `SyncService` lo sube a appDataFolder como `vault_db.snapshot`.
   Future<File> exportEncryptedSnapshot() async {
     final db = await database; // exige sesión desbloqueada
     try {

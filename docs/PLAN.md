@@ -12,7 +12,7 @@ Rama de trabajo: `dev-claude` (no se hace push ni se toca main sin petición).
 | F3 | Base de datos (esquema, rutas relativas) | Sonnet | 🧪 analyze/test OK; SQLCipher real probado en emulador (llave cruda x'hex') |
 | F3.5 | Rediseño UI | Sonnet | 🧪 analyze/test OK; capturas en emulador (docs/screens/emu); gestos finos/háptica sin probar |
 | F4 | Importación desde la galería | Sonnet | 🧪 parcial: importación real en emulador OK (permiso, selector, compresión, miniaturas cifradas); iCloud y video real grande sin probar |
-| F5 | Sincronización con Drive | Sonnet | ⬜ ← siguiente (requiere configuración Google Cloud del usuario) |
+| F5 | Sincronización con Drive | Sonnet | 🧪 analyze/test OK; emulador: login Google, subida verificada (tamaño+MD5), cuota, reanudación y corte de red OK; iOS sin probar; borrado de copias en Drive pendiente (F6) |
 | F6 | Visor y caché (streaming aparte) | Sonnet/Opus | ⬜ |
 | F7 | Seguridad del sistema | Sonnet/Haiku | ⬜ |
 | F8 | Onboarding y ajustes | Haiku/Sonnet | ⬜ |

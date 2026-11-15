@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/painting.dart';
 import 'package:path/path.dart' as p;
 
+import '../../core/crypto/auth_controller.dart';
 import '../../core/crypto/secure_kv_store.dart';
 import '../../core/services/app_paths.dart';
 import '../../core/session/vault_session.dart';
@@ -10,9 +12,14 @@ import '../../data/gallery/gallery_import_service.dart';
 import '../../data/gallery/import_preferences.dart';
 import '../../data/gallery/photo_manager_gallery_source.dart';
 import '../../data/gallery/video_compress_plugin.dart';
+import '../../data/cloud/cloud_provider.dart';
+import '../../data/repositories/vault_database.dart';
+import '../../data/sync/network_monitor.dart';
+import '../../data/sync/sync_preferences.dart';
+import '../../data/sync/sync_queue_repository.dart';
+import '../../data/sync/sync_service.dart';
 import '../../data/models/vault_item_model.dart';
 import '../../data/repositories/vault_data_repository.dart';
-import '../../data/services/sync_queue_service.dart';
 import '../../data/services/vault_import_service.dart';
 import '../gallery/gallery_deps.dart';
 import 'services/thumbnail_loader.dart';
@@ -50,6 +57,7 @@ class VaultServices {
     required this.fileCleaner,
     required this.offlineToggler,
     this.gallery,
+    this.sync,
   });
 
   final VaultDataRepository repository;
@@ -65,13 +73,16 @@ class VaultServices {
   /// Importación desde galería (`null` = no disponible).
   final GalleryDeps? gallery;
 
+  /// Sincronización con la nube (`null` = no disponible, p. ej. pruebas).
+  final SyncService? sync;
+
   /// Servicios reales. Las dependencias pesadas se crean bajo demanda.
   factory VaultServices.real() {
     _sharedThumbs ??= _createThumbs();
     final thumbs = _sharedThumbs!;
     final repository = VaultDataRepository();
     final importer = VaultImportService();
-    final sync = SyncQueueService();
+    final sync = _sharedSync ??= _createSync(repository);
     return VaultServices(
       repository: repository,
       importFile: ({required folderId, required deleteOriginal}) =>
@@ -79,7 +90,7 @@ class VaultServices {
             targetFolderId: folderId,
             deleteOriginal: deleteOriginal,
           ),
-      syncRunner: sync.processSyncQueue,
+      syncRunner: () => sync.run(manual: true),
       // Miniaturas: descifra thumbs/<id>.thumb con la subllave "thumbs" (LRU).
       thumbnailLoader: thumbs.call,
       // TODO(F6): lectura por rangos y caché cifrada.
@@ -104,16 +115,44 @@ class VaultServices {
               final file = AppPaths.resolve(rel);
               if (await file.exists()) await file.delete();
             } on FileSystemException {
-              // Se reintentará en la limpieza de huérfanos (F5).
+              // Se reintentará en la limpieza de huérfanos.
             }
           }
+          try {
+            await sync.queue.removeForItem(id);
+          } on StateError {
+            // bloqueada
+          }
         }
-        // TODO(F5): borrar también la copia en Drive.
+        // TODO(F6): borrar también la copia en Drive (hoy queda huérfana en
+        // appDataFolder hasta que exista la sincronización de borrados).
       },
       offlineToggler: (id, makeOffline) =>
           VaultPreferenceService().toggleOfflineMode(id, makeOffline),
-      gallery: _sharedGallery ??= _createGallery(repository),
+      gallery: _sharedGallery ??= _createGallery(repository, sync),
+      sync: sync,
     );
+  }
+
+  static SyncService? _sharedSync;
+
+  static SyncService _createSync(VaultDataRepository repository) {
+    final session = VaultSession();
+    final sync = SyncService(
+      cloud: CloudProvider.instance,
+      queue: SyncQueueRepository(),
+      items: repository,
+      network: ConnectivityPlusMonitor(),
+      prefs: SyncPreferences(FlutterSecureKeyValueStore()),
+      isUnlocked: () => session.isUnlocked,
+      resolvePath: AppPaths.resolve,
+      recoveryBackupProvider: () => AuthController().exportRecoveryBackup(),
+      snapshotProvider: () => VaultDatabase.instance.exportEncryptedSnapshot(),
+    );
+    // Al bloquear: cancela la subida en curso y los reintentos programados.
+    session.addOnClear(sync.cancel);
+    unawaited(sync.start());
+    return sync;
   }
 
   static EncryptedThumbnailLoader? _sharedThumbs;
@@ -129,7 +168,10 @@ class VaultServices {
     return loader;
   }
 
-  static GalleryDeps _createGallery(VaultDataRepository repository) {
+  static GalleryDeps _createGallery(
+    VaultDataRepository repository,
+    SyncService sync,
+  ) {
     final session = VaultSession();
     final source = PhotoManagerGallerySource();
     final service = GalleryImportService(
@@ -140,8 +182,11 @@ class VaultServices {
       thumbsKey: () => session.keysOrNull?.thumbs,
       tempDirProvider: () =>
           Directory(p.join(AppPaths.cacheDir.path, 'import_tmp')),
-      // Borrado de originales apagado hasta que F5 verifique la copia en la
-      // nube (cloudVerifier). Ver GalleryImportService.
+      // F5: verificador real (en_nube + driveFileId + MD5/tamaño). La bandera
+      // maestra sigue APAGADA: el borrado de originales exige además la
+      // confirmación explícita del usuario y activar la bandera. No se borra
+      // nada automáticamente.
+      cloudVerifier: sync.cloudVerifier,
     );
     return GalleryDeps(
       source: source,

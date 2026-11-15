@@ -12,6 +12,8 @@ import '../../data/gallery/gallery_import_service.dart';
 import '../gallery/gallery_picker_screen.dart';
 import '../gallery/import_options_sheet.dart';
 import '../gallery/import_progress_sheet.dart';
+import '../sync/sync_cloud_button.dart';
+import '../sync/sync_sheet.dart';
 import 'models/browser_entry.dart';
 import 'vault_browser_controller.dart';
 import 'vault_media_viewer_screen.dart';
@@ -27,6 +29,8 @@ import 'widgets/vault_top_bar.dart';
 /// ella con `popUntil`). La raíz es la ruta `/`.
 String folderRouteName(String? folderId) =>
     folderId == null ? '/' : 'folder/$folderId';
+
+final ValueNotifier<Map<String, double>> _noProgress = ValueNotifier(const {});
 
 /// Explorador de una carpeta de la bóveda (null = raíz).
 class HomeVaultScreen extends StatefulWidget {
@@ -56,6 +60,18 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     folderId: widget.currentFolderId,
     columns: widget.initialColumns,
   )..load();
+
+  @override
+  void initState() {
+    super.initState();
+    // Reanudación: al abrir/desbloquear la bóveda se procesa la cola.
+    if (widget.currentFolderId == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _services.sync?.run();
+      });
+    }
+  }
+
   final TextEditingController _search = TextEditingController();
   bool _searching = false;
   bool _pinching = false;
@@ -192,6 +208,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     final deleteOriginal = await showImportConfirmSheet(context);
     if (deleteOriginal == null || !mounted) return;
     final ok = await _controller.importFile(deleteOriginal: deleteOriginal);
+    if (ok) _services.sync?.run();
     _snack(
       ok
           ? (deleteOriginal
@@ -236,6 +253,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
       ),
     );
     await _controller.load();
+    _services.sync?.run(); // sube lo recién importado
     if (result == null) return;
     AppHaptics.success();
     _snack(
@@ -313,24 +331,36 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                       onMove: () => _move(c.selectedEntries),
                       onOffline: () => _offline(c.selectedEntries),
                       onDelete: () => _delete(c.selectedEntries),
+                      trailing: _services.sync == null
+                          ? null
+                          : SyncCloudButton(
+                              sync: _services.sync!,
+                              onTap: () =>
+                                  showSyncSheet(context, _services.sync!),
+                            ),
                     ),
                     Expanded(
                       child: PinchDetector(
                         onStep: _onPinch,
                         onPinchingChanged: (v) => setState(() => _pinching = v),
-                        child: VaultGrid(
-                          entries: c.entries,
-                          columns: c.columns,
-                          isLoading: c.isLoading,
-                          thumbnailLoader: _services.thumbnailLoader,
-                          isSelected: c.isSelected,
-                          selectionMode: c.isSelecting,
-                          onTap: _onTap,
-                          onLongPress: _onLongPress,
-                          onRefresh: c.refresh,
-                          scrollLocked: _pinching,
-                          swipeActionsFor: _swipeActions,
-                          empty: _emptyState(c),
+                        child: ValueListenableBuilder<Map<String, double>>(
+                          valueListenable:
+                              _services.sync?.progress ?? _noProgress,
+                          builder: (context, progress, _) => VaultGrid(
+                            uploadProgress: progress,
+                            entries: c.entries,
+                            columns: c.columns,
+                            isLoading: c.isLoading,
+                            thumbnailLoader: _services.thumbnailLoader,
+                            isSelected: c.isSelected,
+                            selectionMode: c.isSelecting,
+                            onTap: _onTap,
+                            onLongPress: _onLongPress,
+                            onRefresh: c.refresh,
+                            scrollLocked: _pinching,
+                            swipeActionsFor: _swipeActions,
+                            empty: _emptyState(c),
+                          ),
                         ),
                       ),
                     ),

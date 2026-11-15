@@ -1,10 +1,9 @@
 import '../../../core/services/app_paths.dart';
 import '../../../data/models/sync_status.dart';
 import '../../../data/repositories/vault_data_repository.dart';
-import '../../../data/services/google_drive_service.dart';
+import '../../../data/cloud/cloud_provider.dart';
 
 class VaultPreferenceService {
-  final GoogleDriveService _driveService = GoogleDriveService();
   final VaultDataRepository _repo = VaultDataRepository();
 
   /// Alternar estado de Favorito
@@ -24,11 +23,7 @@ class VaultPreferenceService {
         if (!await target.exists()) {
           final driveId = item.driveFileId;
           if (driveId == null) return false;
-          final downloaded = await _driveService.downloadEncryptedFile(
-            driveId,
-            target,
-          );
-          if (!downloaded) return false;
+          await CloudProvider.instance.download(driveId, target);
         }
         await _repo.updateSyncStatus(itemId, SyncStatus.sinConexion);
       } else if (item.syncStatus == SyncStatus.sinConexion) {

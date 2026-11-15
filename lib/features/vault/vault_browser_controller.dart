@@ -3,6 +3,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/theme/app_spacing.dart';
 import '../../data/models/folder_model.dart';
+import '../../data/sync/sync_service.dart';
 import 'models/browser_entry.dart';
 import 'vault_services.dart';
 
@@ -12,7 +13,28 @@ class VaultBrowserController extends ChangeNotifier {
     required this.services,
     required this.folderId,
     int columns = AppGrid.defaultColumns,
-  }) : _columns = columns.clamp(AppGrid.minColumns, AppGrid.maxColumns);
+  }) : _columns = columns.clamp(AppGrid.minColumns, AppGrid.maxColumns) {
+    // F5: cuando cambia la cola (un item pasa a en_nube/error...) se recarga
+    // en silencio para que los íconos de estado se actualicen solos.
+    final sync = services.sync;
+    if (sync != null) {
+      _lastSync = sync.summary.value;
+      sync.summary.addListener(_onSyncChanged);
+    }
+  }
+
+  SyncSummary? _lastSync;
+
+  void _onSyncChanged() {
+    final now = services.sync?.summary.value;
+    final before = _lastSync;
+    _lastSync = now;
+    if (_disposed || now == null || before == null) return;
+    if (now.counts != before.counts ||
+        (before.phase == SyncPhase.running && now.phase != SyncPhase.running)) {
+      load(silent: true);
+    }
+  }
 
   final VaultServices services;
   final String? folderId;
@@ -67,15 +89,18 @@ class VaultBrowserController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    services.sync?.summary.removeListener(_onSyncChanged);
     super.dispose();
   }
 
   // ------------------------------------------------------------------ carga
 
-  Future<void> load() async {
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
+  Future<void> load({bool silent = false}) async {
+    if (!silent) {
+      _isLoading = true;
+      _error = null;
+      notifyListeners();
+    }
     try {
       final repo = services.repository;
       final folders = await repo.getFoldersByParent(folderId);
@@ -89,7 +114,7 @@ class VaultBrowserController extends ChangeNotifier {
       // Descarta de la selección lo que ya no existe.
       _selection.removeWhere((k) => _byKey(k) == null);
     } catch (e) {
-      _error = e;
+      if (!silent) _error = e;
     }
     _isLoading = false;
     notifyListeners();

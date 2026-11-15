@@ -31,6 +31,7 @@ class VaultTopBar extends StatelessWidget {
     required this.onMove,
     required this.onOffline,
     required this.onDelete,
+    this.trailing,
   });
 
   final String title;
@@ -50,6 +51,9 @@ class VaultTopBar extends StatelessWidget {
   final VoidCallback onMove;
   final VoidCallback onOffline;
   final VoidCallback onDelete;
+
+  /// Acción extra antes de buscar (icono de sincronización).
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -140,6 +144,7 @@ class VaultTopBar extends StatelessWidget {
             ),
           ),
           if (!searching) ...[
+            ?trailing,
             AppIconButton(
               icon: Icons.search,
               label: 'Buscar',

@@ -36,6 +36,14 @@ class VaultItemModel {
   /// Duración en ms (videos).
   final int? durationMs;
 
+  /// MD5 hex y tamaño del `.vault` cifrado, tal como los reportó Drive y
+  /// coincidieron con la copia local al verificar la subida (F5).
+  final String? cloudMd5;
+  final int? cloudSize;
+
+  /// Id en Drive de la miniatura cifrada (`.thumb`), una vez verificada.
+  final String? thumbDriveFileId;
+
   const VaultItemModel({
     required this.id,
     required this.name,
@@ -53,6 +61,9 @@ class VaultItemModel {
     this.contentHash,
     this.sourceAssetId,
     this.durationMs,
+    this.cloudMd5,
+    this.cloudSize,
+    this.thumbDriveFileId,
   });
 
   /// Lanza [ArgumentError] si alguna ruta es absoluta.
@@ -75,6 +86,9 @@ class VaultItemModel {
     'contentHash': contentHash,
     'sourceAssetId': sourceAssetId,
     'durationMs': durationMs,
+    'cloudMd5': cloudMd5,
+    'cloudSize': cloudSize,
+    'thumbDriveFileId': thumbDriveFileId,
   };
 
   factory VaultItemModel.fromMap(Map<String, dynamic> map) => VaultItemModel(
@@ -94,5 +108,8 @@ class VaultItemModel {
     contentHash: map['contentHash'] as String?,
     sourceAssetId: map['sourceAssetId'] as String?,
     durationMs: map['durationMs'] as int?,
+    cloudMd5: map['cloudMd5'] as String?,
+    cloudSize: map['cloudSize'] as int?,
+    thumbDriveFileId: map['thumbDriveFileId'] as String?,
   );
 }
