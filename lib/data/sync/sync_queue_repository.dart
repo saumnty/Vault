@@ -7,7 +7,11 @@ enum SyncJobKind {
   file('file'),
   thumb('thumb'),
   dbSnapshot('db_snapshot'),
-  recoveryBackup('recovery_backup');
+  recoveryBackup('recovery_backup'),
+
+  /// F6a: borrar de Drive la copia de un item eliminado. El `payload` guarda
+  /// los ids remotos (la fila del item ya no existe en la BD).
+  deleteRemote('delete_remote');
 
   const SyncJobKind(this.dbValue);
   final String dbValue;
@@ -19,9 +23,10 @@ enum SyncJobKind {
   /// perder la bóveda), el snapshot al final.
   int get priority => switch (this) {
     recoveryBackup => 0,
-    file => 1,
-    thumb => 2,
-    dbSnapshot => 3,
+    deleteRemote => 1,
+    file => 2,
+    thumb => 3,
+    dbSnapshot => 4,
   };
 }
 
@@ -48,6 +53,7 @@ class SyncJob {
     required this.nextAttemptAt,
     required this.createdAt,
     this.lastError,
+    this.payload,
   });
 
   final int id;
@@ -63,6 +69,9 @@ class SyncJob {
   final String? lastError;
   final int createdAt;
 
+  /// Datos propios del trabajo (JSON); hoy solo `delete_remote`.
+  final String? payload;
+
   factory SyncJob.fromMap(Map<String, Object?> m) => SyncJob(
     id: m['id'] as int,
     itemId: m['itemId'] as String,
@@ -72,6 +81,7 @@ class SyncJob {
     nextAttemptAt: m['nextAttemptAt'] as int,
     lastError: m['lastError'] as String?,
     createdAt: m['createdAt'] as int,
+    payload: m['payload'] as String?,
   );
 }
 
@@ -110,9 +120,11 @@ class SyncQueueRepository {
     String itemId,
     SyncJobKind kind, {
     required int now,
+    String? payload,
   }) async {
     final db = await _dbProvider();
     final id = await db.insert('sync_queue', {
+      'payload': payload,
       'itemId': itemId,
       'kind': kind.dbValue,
       'state': SyncJobState.pendiente.dbValue,
@@ -227,7 +239,12 @@ class SyncQueueRepository {
 
   Future<void> removeForItem(String itemId) async {
     final db = await _dbProvider();
-    await db.delete('sync_queue', where: 'itemId = ?', whereArgs: [itemId]);
+    // Los borrados remotos NO se quitan: son justo lo que sigue al borrar.
+    await db.delete(
+      'sync_queue',
+      where: 'itemId = ? AND kind != ?',
+      whereArgs: [itemId, SyncJobKind.deleteRemote.dbValue],
+    );
   }
 
   /// Reanudación tras cierre/bloqueo: lo que quedó `subiendo` vuelve a

@@ -75,6 +75,16 @@ class FakeCloudStorage implements CloudStorage {
     b.md5 = 'deadbeef';
   }
 
+  /// Cambia un byte conservando el tamaño (solo el MD5 lo delata).
+  void corruptContent(String id) {
+    final b = _blobs[id]!;
+    final copy = Uint8List.fromList(b.bytes);
+    copy[0] = copy[0] ^ 0xff;
+    b
+      ..bytes = copy
+      ..md5 = md5OfBytes(copy);
+  }
+
   void remove(String id) => _blobs.remove(id);
 
   CloudFile _meta(_Blob b) => CloudFile(

@@ -36,6 +36,7 @@ String _kindLabel(SyncJobKind k) => switch (k) {
   SyncJobKind.thumb => 'Miniatura',
   SyncJobKind.dbSnapshot => 'Respaldo de la base de datos',
   SyncJobKind.recoveryBackup => 'Respaldo de recuperación',
+  SyncJobKind.deleteRemote => 'Eliminar de la nube',
 };
 
 class SyncSheetContent extends StatefulWidget {

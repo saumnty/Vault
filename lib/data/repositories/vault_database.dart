@@ -15,11 +15,11 @@ import '../../core/session/vault_session.dart';
 /// relativas, syncStatus, driveFileId, thumbPath, lastAccessedAt,
 /// contentHash, sourceAssetId, durationMs, folders.isOffline, índices);
 /// v4 = F5 (tabla `sync_queue`; vault_items.cloudMd5/cloudSize/
-/// thumbDriveFileId). Sin migración: al subir de versión se recrea todo.
+/// thumbDriveFileId); v5 = F6a (sync_queue.payload para borrados remotos). Sin migración: al subir de versión se recrea todo.
 class VaultSchema {
   VaultSchema._();
 
-  static const int version = 4;
+  static const int version = 5;
   static const String dbFileName = 'vault_secure.db';
 
   static const List<String> indexNames = [
@@ -77,6 +77,7 @@ class VaultSchema {
         nextAttemptAt INTEGER NOT NULL DEFAULT 0,
         lastError TEXT,
         createdAt INTEGER NOT NULL,
+        payload TEXT,
         UNIQUE (itemId, kind)
       )
     ''');

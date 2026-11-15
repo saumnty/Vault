@@ -3,6 +3,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/theme/app_spacing.dart';
 import '../../data/models/folder_model.dart';
+import '../../data/models/vault_item_model.dart';
 import '../../data/sync/sync_service.dart';
 import 'models/browser_entry.dart';
 import 'vault_services.dart';
@@ -194,20 +195,36 @@ class VaultBrowserController extends ChangeNotifier {
     return ok;
   }
 
-  /// Elimina las entradas (carpetas en cascada) y sus archivos locales.
+  /// Elimina las entradas (carpetas en cascada): fila de BD, archivos locales
+  /// y, si hay nube, encola el borrado de la copia en Drive con los ids
+  /// leídos ANTES de borrar la fila (ver `SyncJobKind.deleteRemote`).
   Future<void> delete(Iterable<BrowserEntry> targets) async {
     final repo = services.repository;
     final itemIds = <String>[];
+    final remote = <RemoteDeleteTarget>[];
+    RemoteDeleteTarget targetOf(VaultItemModel i) => RemoteDeleteTarget(
+      i.id,
+      driveFileId: i.driveFileId,
+      thumbDriveFileId: i.thumbDriveFileId,
+    );
     for (final e in targets) {
       switch (e) {
         case FileEntry():
+          // Fila más reciente: la subida pudo terminar tras cargar la vista.
+          final fresh = await repo.getItem(e.item.id) ?? e.item;
+          remote.add(targetOf(fresh));
           await repo.deleteItem(e.item.id);
           itemIds.add(e.item.id);
         case FolderEntry():
+          remote.addAll(
+            (await repo.getItemsInFolderTree(e.folder.id)).map(targetOf),
+          );
           itemIds.addAll(await repo.deleteFolderRecursive(e.folder.id));
       }
     }
     await services.fileCleaner(itemIds);
+    // Después de limpiar la cola local (que quita subidas del item).
+    await services.remoteDeleter?.call(remote);
     _selection.clear();
     await load();
   }
@@ -230,7 +247,14 @@ class VaultBrowserController extends ChangeNotifier {
     await load();
   }
 
-  /// Marca como disponible sin conexión. Devuelve cuántas fallaron.
+  /// `true` si la entrada está marcada sin conexión (el item, o la carpeta).
+  bool isOffline(BrowserEntry e) => switch (e) {
+    FileEntry() => e.item.isOffline,
+    FolderEntry() => e.folder.isOffline,
+  };
+
+  /// Marca/desmarca "disponible sin conexión". Devuelve cuántas fallaron.
+  /// Quitarlo no borra nada: solo vuelve purgable la copia local.
   Future<int> setOffline(Iterable<BrowserEntry> targets, bool value) async {
     var failures = 0;
     for (final e in targets) {
@@ -238,7 +262,16 @@ class VaultBrowserController extends ChangeNotifier {
         case FileEntry():
           if (!await services.offlineToggler(e.item.id, value)) failures++;
         case FolderEntry():
-          await services.repository.setFolderOffline(e.folder.id, value);
+          try {
+            final t = services.folderOfflineToggler;
+            if (t != null) {
+              await t(e.folder.id, value);
+            } else {
+              await services.repository.setFolderOffline(e.folder.id, value);
+            }
+          } on Object {
+            failures++;
+          }
       }
     }
     _selection.clear();

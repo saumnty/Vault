@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/theme/app_colors.dart';
@@ -68,6 +70,9 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     if (widget.currentFolderId == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _services.sync?.run();
+        // F6a: barre temporales descifrados, reconcilia "sin conexión" y
+        // aplica el límite de la caché.
+        unawaited(_services.onUnlocked?.call());
       });
     }
   }
@@ -135,15 +140,22 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
           ),
         );
       case FileEntry():
-        Navigator.of(context).push(
-          AppPageRoute<void>(
-            builder: (_) => VaultMediaViewerScreen(
-              item: e.item,
-              heroTag: e.heroTag,
-              mediaLoader: _services.mediaLoader,
-            ),
-          ),
-        );
+        final files = [
+          for (final x in _controller.entries)
+            if (x is FileEntry) x.item,
+        ];
+        Navigator.of(context)
+            .push(
+              AppPageRoute<void>(
+                builder: (_) => VaultMediaViewerScreen(
+                  items: files,
+                  initialIndex: files.indexWhere((i) => i.id == e.item.id),
+                  mediaOpener: _services.mediaOpener,
+                  thumbnailLoader: _services.thumbnailLoader,
+                ),
+              ),
+            )
+            .then((_) => _controller.load(silent: true));
     }
   }
 
@@ -194,13 +206,18 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     }
   }
 
+  /// Alterna "disponible sin conexión": si todo lo seleccionado ya lo está,
+  /// lo quita (no borra nada: solo vuelve purgable la copia local).
   Future<void> _offline(List<BrowserEntry> targets) async {
     if (targets.isEmpty) return;
-    final failures = await _controller.setOffline(targets, true);
+    final remove = targets.every(_controller.isOffline);
+    final failures = await _controller.setOffline(targets, !remove);
     _snack(
-      failures == 0
-          ? 'Disponible sin conexión'
-          : 'No se pudo guardar $failures elemento(s) sin conexión',
+      failures > 0
+          ? 'No se pudo cambiar $failures elemento(s)'
+          : remove
+          ? 'Ya no se mantiene sin conexión'
+          : 'Disponible sin conexión (se descargará lo que falte)',
     );
   }
 
@@ -208,7 +225,10 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     final deleteOriginal = await showImportConfirmSheet(context);
     if (deleteOriginal == null || !mounted) return;
     final ok = await _controller.importFile(deleteOriginal: deleteOriginal);
-    if (ok) _services.sync?.run();
+    if (ok) {
+      _services.sync?.run();
+      unawaited(_services.afterOpen?.call());
+    }
     _snack(
       ok
           ? (deleteOriginal
@@ -254,6 +274,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     );
     await _controller.load();
     _services.sync?.run(); // sube lo recién importado
+    unawaited(_services.afterOpen?.call());
     if (result == null) return;
     AppHaptics.success();
     _snack(
@@ -278,7 +299,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     ),
     SwipeAction(
       icon: Icons.offline_pin_outlined,
-      label: 'Sin conexión',
+      label: _controller.isOffline(e) ? 'Quitar sin conexión' : 'Sin conexión',
       color: AppColors.surfaceHighest,
       onTap: () => _offline([e]),
     ),
@@ -343,11 +364,17 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                       child: PinchDetector(
                         onStep: _onPinch,
                         onPinchingChanged: (v) => setState(() => _pinching = v),
-                        child: ValueListenableBuilder<Map<String, double>>(
-                          valueListenable:
-                              _services.sync?.progress ?? _noProgress,
-                          builder: (context, progress, _) => VaultGrid(
-                            uploadProgress: progress,
+                        child: ListenableBuilder(
+                          listenable: Listenable.merge([
+                            _services.sync?.progress ?? _noProgress,
+                            _services.downloadProgress ?? _noProgress,
+                          ]),
+                          builder: (context, _) => VaultGrid(
+                            uploadProgress:
+                                (_services.sync?.progress ?? _noProgress).value,
+                            downloadProgress:
+                                (_services.downloadProgress ?? _noProgress)
+                                    .value,
                             entries: c.entries,
                             columns: c.columns,
                             isLoading: c.isLoading,

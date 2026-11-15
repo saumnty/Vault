@@ -35,18 +35,29 @@ Color syncStatusColor(SyncStatus status) => switch (status) {
 /// Insignia de estado de sincronización. `subiendo` muestra un anillo de
 /// progreso (determinado si se pasa [progress] 0..1, indeterminado si no).
 class SyncStatusIcon extends StatelessWidget {
-  const SyncStatusIcon({super.key, required this.status, this.progress});
+  const SyncStatusIcon({
+    super.key,
+    required this.status,
+    this.progress,
+    this.downloading = false,
+  });
 
   final SyncStatus status;
   final double? progress;
 
+  /// Descarga "sin conexión" en curso: anillo con flecha hacia abajo.
+  final bool downloading;
+
   @override
   Widget build(BuildContext context) {
-    final color = syncStatusColor(status);
-    final uploading = status == SyncStatus.subiendo;
-    final label = uploading && progress != null
-        ? '${syncStatusLabel(status)}, ${(progress! * 100).round()} por ciento'
+    final color = downloading ? AppColors.success : syncStatusColor(status);
+    final uploading = status == SyncStatus.subiendo || downloading;
+    final base = downloading
+        ? 'Descargando para uso sin conexión'
         : syncStatusLabel(status);
+    final label = uploading && progress != null
+        ? '$base, ${(progress! * 100).round()} por ciento'
+        : base;
     return Semantics(
       label: label,
       image: true,
@@ -73,7 +84,7 @@ class SyncStatusIcon extends StatelessWidget {
                   ),
                 ),
               Icon(
-                syncStatusIcon(status),
+                downloading ? Icons.arrow_downward : syncStatusIcon(status),
                 size: uploading
                     ? AppSizes.iconSm - AppSpacing.xs
                     : AppSizes.iconSm,

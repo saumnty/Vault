@@ -126,9 +126,11 @@ Future<bool> showConfirmDeleteSheet(
               ? '¿Eliminar 1 elemento?'
               : '¿Eliminar $count elementos?',
           message: includesFolders
-              ? 'Las carpetas se eliminan con todo su contenido. '
-                    'Esta acción no se puede deshacer.'
-              : 'Esta acción no se puede deshacer.',
+              ? 'Las carpetas se eliminan con todo su contenido. También se '
+                    'eliminará de la nube (Google Drive). Esta acción no se '
+                    'puede deshacer.'
+              : 'También se eliminará de la nube (Google Drive). Esta '
+                    'acción no se puede deshacer.',
         ),
         AppFilledButton(
           label: 'Eliminar',

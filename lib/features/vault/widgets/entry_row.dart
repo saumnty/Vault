@@ -23,6 +23,7 @@ class EntryRow extends StatelessWidget {
     required this.onTap,
     required this.onLongPress,
     this.progress,
+    this.downloading = false,
   });
 
   final BrowserEntry entry;
@@ -32,13 +33,14 @@ class EntryRow extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onLongPress;
   final double? progress;
+  final bool downloading;
 
   @override
   Widget build(BuildContext context) {
     final (String subtitle, String semantic) = switch (entry) {
       FolderEntry(:final folder) => (
         'Carpeta · ${formatIsoDate(folder.createdAt)}',
-        'Carpeta ${folder.name}',
+        'Carpeta ${folder.name}${folder.isOffline ? ', disponible sin conexión' : ''}',
       ),
       FileEntry(:final item) => (
         '${formatBytes(item.fileSize)} · ${formatIsoDate(item.createdAt)}',
@@ -127,10 +129,19 @@ class EntryRow extends StatelessWidget {
       FileEntry(:final item) => SyncStatusIcon(
         status: item.syncStatus,
         progress: progress,
+        downloading: downloading,
       ),
-      FolderEntry() => const Icon(
-        Icons.chevron_right,
-        color: AppColors.textSecondary,
+      FolderEntry(:final folder) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (folder.isOffline)
+            const Icon(
+              Icons.offline_pin_outlined,
+              size: AppSizes.iconMd,
+              color: AppColors.success,
+            ),
+          const Icon(Icons.chevron_right, color: AppColors.textSecondary),
+        ],
       ),
     };
   }

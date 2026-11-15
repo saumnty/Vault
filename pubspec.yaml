@@ -53,6 +53,8 @@ dependencies:
   sodium_libs: 3.4.6+4
   sodium: 3.4.6
   connectivity_plus: 7.3.2
+  # Oficial (ExoPlayer/AVPlayer). 2.12+ exige Flutter >=3.44; 2.11.1 es la última compatible con 3.41.6.
+  video_player: 2.11.1
 
 dev_dependencies:
   flutter_test:

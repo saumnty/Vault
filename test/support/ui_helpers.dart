@@ -5,11 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/core/theme/app_theme.dart';
+import 'package:vault/data/cloud/cloud_storage.dart';
 import 'package:vault/data/models/folder_model.dart';
 import 'package:vault/data/models/sync_status.dart';
 import 'package:vault/data/models/vault_item_model.dart';
 import 'package:vault/data/repositories/vault_data_repository.dart';
 import 'package:vault/features/vault/vault_services.dart';
+import 'package:vault/features/vault/viewer/media_opener.dart';
 
 /// Envuelve [child] con el tema real de la app.
 Widget testApp(Widget child, {NavigatorObserver? observer}) => MaterialApp(
@@ -149,7 +151,57 @@ class FakeVaultRepository extends Fake implements VaultDataRepository {
   }
 
   @override
+  Future<VaultItemModel?> getItem(String id) async =>
+      items.where((i) => i.id == id).firstOrNull;
+
+  @override
+  Future<List<VaultItemModel>> getItemsInFolderTree(String folderId) async {
+    final ids = <String>{folderId};
+    var grew = true;
+    while (grew) {
+      grew = false;
+      for (final f in folders) {
+        if (f.parentId != null && ids.contains(f.parentId) && ids.add(f.id)) {
+          grew = true;
+        }
+      }
+    }
+    return items.where((i) => ids.contains(i.folderId)).toList();
+  }
+
+  @override
   Future<void> setFolderOffline(String id, bool isOffline) async {}
+}
+
+/// Abre medios con bytes/orígenes prefabricados (visor sin cifrado real).
+class FakeMediaOpener implements MediaOpener {
+  FakeMediaOpener({this.images = const {}, this.videoFactory});
+
+  /// Bytes (PNG) por id de item. Si falta el id, `loadImage` falla con
+  /// [imageError].
+  final Map<String, Uint8List> images;
+  Object imageError = const CloudNoNetworkException();
+  VideoSource Function(VaultItemModel item)? videoFactory;
+  final List<String> loaded = [];
+  int failuresBeforeSuccess = 0;
+
+  @override
+  Future<Uint8List> loadImage(
+    VaultItemModel item, {
+    MediaProgressCallback? onProgress,
+  }) async {
+    loaded.add(item.id);
+    if (failuresBeforeSuccess > 0) {
+      failuresBeforeSuccess--;
+      throw imageError;
+    }
+    final b = images[item.id];
+    if (b == null) throw imageError;
+    return b;
+  }
+
+  @override
+  VideoSource videoSource(VaultItemModel item) => videoFactory!(item);
 }
 
 /// Registro de llamadas de los servicios falsos.
@@ -164,6 +216,7 @@ VaultServices fakeServices(
   FakeVaultRepository repo, {
   ServiceCalls? calls,
   ThumbnailLoader? thumbnails,
+  MediaOpener? mediaOpener,
 }) {
   final c = calls ?? ServiceCalls();
   return VaultServices(
@@ -174,7 +227,7 @@ VaultServices fakeServices(
     },
     syncRunner: () async => c.syncs++,
     thumbnailLoader: thumbnails ?? (item) async => null,
-    mediaLoader: (item) async => null,
+    mediaOpener: mediaOpener ?? const UnavailableMediaOpener(),
     fileCleaner: (ids) async => c.cleaned.add(ids.toList()),
     offlineToggler: (id, value) async {
       c.offline.add(id);

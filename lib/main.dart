@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'core/crypto/auth_controller.dart';
+import 'core/services/app_paths.dart';
+import 'core/services/plain_temp_manager.dart';
 import 'core/theme/app_motion.dart';
 import 'core/theme/app_theme.dart';
 import 'features/auth/pin_screen.dart';
@@ -10,6 +12,15 @@ import 'features/vault/vault_services.dart';
 void main() async {
   // Asegurar la inicialización de los bindings de Flutter
   WidgetsFlutterBinding.ensureInitialized();
+
+  // F6a: por si la app se cerró de forma abrupta con un video descifrado en
+  // disco, se barre la carpeta de temporales en claro al arrancar.
+  try {
+    await AppPaths.init();
+    await PlainTempManager.instance.sweep();
+  } on Object catch (e) {
+    debugPrint('No se pudo barrer tmp_plain: $e');
+  }
 
   // Forzar orientación vertical para mantener la estética y seguridad de la app
   await SystemChrome.setPreferredOrientations([

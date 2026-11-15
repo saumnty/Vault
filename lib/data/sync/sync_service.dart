@@ -176,6 +176,7 @@ class SyncService {
     this.snapshotEveryUploads = 20,
     this.snapshotMaxAge = const Duration(hours: 6),
     this.scheduleWakeups = true,
+    this.afterRun,
   }) : _now = nowMs ?? (() => DateTime.now().millisecondsSinceEpoch),
        _random = random ?? Random();
 
@@ -202,6 +203,10 @@ class SyncService {
   final int snapshotEveryUploads;
   final Duration snapshotMaxAge;
   final bool scheduleWakeups;
+
+  /// Se invoca al terminar cada pasada del worker (aunque no haya red). La app
+  /// lo usa para aplicar el límite de la caché tras subir (F6a).
+  final Future<void> Function()? afterRun;
 
   final int Function() _now;
   final Random _random;
@@ -382,6 +387,14 @@ class SyncService {
     } finally {
       _running = false;
       progress.value = const {};
+      final hook = afterRun;
+      if (hook != null && !_disposed && isUnlocked()) {
+        try {
+          await hook();
+        } on Object catch (e) {
+          debugPrint('afterRun falló: $e');
+        }
+      }
     }
   }
 
@@ -605,6 +618,8 @@ class SyncService {
         return _uploadRecoveryBackup();
       case SyncJobKind.dbSnapshot:
         return _uploadSnapshot(token);
+      case SyncJobKind.deleteRemote:
+        return _deleteRemote(job);
     }
   }
 
@@ -676,6 +691,63 @@ class SyncService {
     } on StateError catch (e) {
       // Borrado mientras se subía: nada que marcar. (La bloqueada se propaga.)
       if (e.message.contains('bloqueada')) rethrow;
+    }
+    return true;
+  }
+
+  // ------------------------------------------------------------ borrado remoto
+
+  /// Encola el borrado en Drive de lo que subió un item eliminado. Los ids
+  /// viajan en la fila de la cola (el item ya no existe en la BD). Aunque no
+  /// haya ids (p. ej. la subida terminó justo después), el trabajo busca
+  /// también por nombre (`<id>.vault`, `<id>.thumb`).
+  Future<void> enqueueRemoteDelete(
+    String itemId, {
+    String? driveFileId,
+    String? thumbDriveFileId,
+  }) async {
+    await queue.enqueue(
+      itemId,
+      SyncJobKind.deleteRemote,
+      now: _now(),
+      payload: jsonEncode({'file': driveFileId, 'thumb': thumbDriveFileId}),
+    );
+    await _publish();
+  }
+
+  /// Borra de Drive los ids del payload y, por si quedó algo sin registrar,
+  /// lo que tenga el nombre del item. Un 404 cuenta como éxito.
+  Future<bool> _deleteRemote(SyncJob job) async {
+    final ids = <String>{};
+    final raw = job.payload;
+    if (raw != null) {
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      for (final k in ['file', 'thumb']) {
+        final v = map[k];
+        if (v is String && v.isNotEmpty) ids.add(v);
+      }
+    }
+    for (final name in [
+      CloudNames.file(job.itemId),
+      CloudNames.thumb(job.itemId),
+    ]) {
+      final found = await cloud.findByName(name);
+      if (found != null) ids.add(found.id);
+    }
+    for (final id in ids) {
+      try {
+        await cloud.delete(id);
+      } on CloudNotFoundException {
+        // ya no existe: objetivo cumplido
+      }
+    }
+    if (kDebugMode) {
+      // Diagnóstico (solo depuración, sin ids ni tokens): confirma el borrado.
+      final left = await cloud.list();
+      debugPrint(
+        '[sync] borrado remoto: ${ids.length} id(s) borrados; '
+        'quedan ${left.length} archivos en appDataFolder',
+      );
     }
     return true;
   }

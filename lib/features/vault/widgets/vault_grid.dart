@@ -28,6 +28,7 @@ class VaultGrid extends StatefulWidget {
     required this.empty,
     this.swipeActionsFor,
     this.uploadProgress = const {},
+    this.downloadProgress = const {},
     this.scrollLocked = false,
   });
 
@@ -47,6 +48,9 @@ class VaultGrid extends StatefulWidget {
 
   /// Progreso de subida por id de item (0..1).
   final Map<String, double> uploadProgress;
+
+  /// Progreso de descarga ("sin conexión") por id de item (0..1).
+  final Map<String, double> downloadProgress;
 
   /// Bloquea el scroll (mientras dura un pellizco).
   final bool scrollLocked;
@@ -145,7 +149,12 @@ class _VaultGridState extends State<VaultGrid> {
       thumbnailLoader: widget.thumbnailLoader,
       selected: widget.isSelected(e),
       selectionMode: widget.selectionMode,
-      progress: widget.uploadProgress[e.item.id],
+      progress:
+          widget.uploadProgress[e.item.id] ??
+          widget.downloadProgress[e.item.id],
+      downloading:
+          widget.uploadProgress[e.item.id] == null &&
+          widget.downloadProgress[e.item.id] != null,
       onTap: () => widget.onTap(e),
       onLongPress: () => widget.onLongPress(e),
     ),
@@ -157,7 +166,14 @@ class _VaultGridState extends State<VaultGrid> {
       thumbnailLoader: widget.thumbnailLoader,
       selected: widget.isSelected(e),
       selectionMode: widget.selectionMode,
-      progress: e is FileEntry ? widget.uploadProgress[e.item.id] : null,
+      progress: e is FileEntry
+          ? (widget.uploadProgress[e.item.id] ??
+                widget.downloadProgress[e.item.id])
+          : null,
+      downloading:
+          e is FileEntry &&
+          widget.uploadProgress[e.item.id] == null &&
+          widget.downloadProgress[e.item.id] != null,
       onTap: () => widget.onTap(e),
       onLongPress: () => widget.onLongPress(e),
     );

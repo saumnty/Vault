@@ -216,6 +216,39 @@ class VaultDataRepository {
     return rows.map(VaultItemModel.fromMap).toList();
   }
 
+  /// Items con copia verificada en la nube (driveFileId + MD5 + tamaño) en
+  /// estado `en_nube`, `en_cache` o `sin_conexion`: los únicos que se pueden
+  /// descargar de nuevo sin perder datos. (Tras subir, un item queda `en_nube`
+  /// CON copia local; tras purgar, `en_nube` SIN ella.)
+  Future<List<VaultItemModel>> getCloudVerifiedItems() async {
+    final db = await _dbProvider();
+    final rows = await db.query(
+      'vault_items',
+      where:
+          'driveFileId IS NOT NULL AND cloudMd5 IS NOT NULL AND '
+          'cloudSize IS NOT NULL AND syncStatus IN (?, ?, ?)',
+      whereArgs: [
+        SyncStatus.enNube.dbValue,
+        SyncStatus.enCache.dbValue,
+        SyncStatus.sinConexion.dbValue,
+      ],
+    );
+    return rows.map(VaultItemModel.fromMap).toList();
+  }
+
+  /// Todos los items de [folderId] y de sus subcarpetas (para encolar el
+  /// borrado remoto ANTES de eliminar la carpeta).
+  Future<List<VaultItemModel>> getItemsInFolderTree(String folderId) async {
+    final db = await _dbProvider();
+    final folderIds = [folderId, ...await _descendantFolderIds(db, folderId)];
+    final marks = List.filled(folderIds.length, '?').join(',');
+    final rows = await db.rawQuery(
+      'SELECT * FROM vault_items WHERE folderId IN ($marks)',
+      folderIds,
+    );
+    return rows.map(VaultItemModel.fromMap).toList();
+  }
+
   Future<void> renameItem(String id, String name) =>
       _updateItem(id, {'name': name});
 

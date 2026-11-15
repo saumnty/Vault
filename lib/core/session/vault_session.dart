@@ -20,6 +20,8 @@ class VaultSession {
   /// para cerrar la conexión SQLCipher.
   void addOnClear(void Function() listener) => _onClear.add(listener);
 
+  void removeOnClear(void Function() listener) => _onClear.remove(listener);
+
   bool get isUnlocked => _keys != null;
 
   /// Llaves de la sesión. Lanza [StateError] si la bóveda está bloqueada.

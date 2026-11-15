@@ -17,6 +17,10 @@ class AppPaths {
   static const String cacheDirName = 'vault_cache';
   static const String dbDirName = 'db';
 
+  /// Temporales DESCIFRADOS (video completo-primero) dentro de la caché. Se
+  /// borran al cerrar el visor, al bloquear y se barren al arrancar/desbloquear.
+  static const String tmpPlainDirName = 'tmp_plain';
+
   static Directory? _base;
 
   /// Inicializa con el directorio de documentos de la app, o con [baseDir]
@@ -52,6 +56,8 @@ class AppPaths {
       Directory(p.join(baseDir.path, thumbsDirName));
   static Directory get cacheDir =>
       Directory(p.join(baseDir.path, cacheDirName));
+  static Directory get tmpPlainDir =>
+      Directory(p.join(cacheDir.path, tmpPlainDirName));
   static Directory get dbDir => Directory(p.join(baseDir.path, dbDirName));
 
   /// Ruta relativa del archivo cifrado de un item: `vault/<id>.vault`.

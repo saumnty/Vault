@@ -1,3 +1,4 @@
+// ignore_for_file: depend_on_referenced_packages
 // Capturas (goldens) de las pantallas principales. Se regeneran con:
 //   flutter test --update-goldens test/ui/goldens
 // y los PNG se copian a docs/screens/.
@@ -7,10 +8,13 @@
 // de la plataforma de renderizado: se generaron en Windows.
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:video_player/video_player.dart';
+import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 import 'package:vault/core/crypto/auth_controller.dart';
 import 'package:vault/core/session/vault_session.dart';
 import 'package:vault/data/models/sync_status.dart';
@@ -18,10 +22,11 @@ import 'package:vault/data/models/vault_item_model.dart';
 import 'package:vault/features/auth/pin_screen.dart';
 import 'package:vault/features/vault/home_vault_screen.dart';
 import 'package:vault/features/vault/vault_media_viewer_screen.dart';
-import 'package:vault/features/vault/models/browser_entry.dart';
+import 'package:vault/features/vault/viewer/media_opener.dart';
 import 'package:vault/features/vault/widgets/vault_sheets.dart';
 import 'package:vault/shared/widgets/blur_sheet.dart';
 
+import '../../support/fake_video_platform.dart';
 import '../../support/fakes.dart';
 import '../../support/ui_helpers.dart';
 
@@ -393,36 +398,140 @@ void main() {
     goldenTest('visor', (tester) async {
       usePhoneSize(tester);
       final item = fakeItem('1', name: 'Atardecer.jpg');
-      final file = File(
-        'no-se-lee.png',
-      ); // el proveedor devuelve la imagen en memoria
-      late MemoryImage image;
+      late Uint8List png;
       await tester.runAsync(() async {
-        image = MemoryImage(
-          await makeThumbPng(
-            const Color(0xFF7C3AED),
-            const Color(0xFFFBBF24),
-            size: 800,
-          ),
+        png = await makeThumbPng(
+          const Color(0xFF7C3AED),
+          const Color(0xFFFBBF24),
+          size: 800,
         );
       });
       await tester.pumpWidget(
         testApp(
           VaultMediaViewerScreen(
-            item: item,
-            heroTag: FileEntry.heroTagFor(item.id),
-            mediaLoader: (_) async => file,
-            imageProviderFor: (_) => image,
+            items: [item, fakeItem('2'), fakeItem('3')],
+            initialIndex: 0,
+            mediaOpener: FakeMediaOpener(images: {'1': png}),
+            session: VaultSession.create(),
           ),
         ),
       );
       await tester.pump();
       final context = tester.element(find.byType(Scaffold));
-      await tester.runAsync(() => precacheImage(image, context));
+      await tester.runAsync(() => precacheImage(MemoryImage(png), context));
       await tester.pump(const Duration(seconds: 1));
       await tester.pump(const Duration(seconds: 1));
       expect(find.byType(Image), findsOneWidget);
       await _shot('visor.png');
     });
+
+    goldenTest('confirmar_eliminar', (tester) async {
+      await tester.pumpWidget(
+        testApp(
+          Builder(
+            builder: (context) => Scaffold(
+              body: Center(
+                child: TextButton(
+                  onPressed: () => showConfirmDeleteSheet(
+                    context,
+                    count: 1,
+                    includesFolders: false,
+                  ),
+                  child: const Text('eliminar'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('eliminar'));
+      await _settle(tester);
+      expect(
+        find.textContaining('También se eliminará de la nube'),
+        findsOneWidget,
+      );
+      await _shot('confirmar_eliminar.png');
+    });
+
+    Future<void> pumpVideoViewer(
+      WidgetTester tester, {
+      required VideoSource Function(VaultItemModel) factory,
+    }) async {
+      final video = fakeItem('7', name: 'Cumpleaños.mp4', mime: 'video/mp4');
+      final thumbs = _Thumbs();
+      await thumbs.build(tester, [video]);
+      await tester.pumpWidget(
+        testApp(
+          VaultMediaViewerScreen(
+            items: [video],
+            initialIndex: 0,
+            mediaOpener: FakeMediaOpener()..videoFactory = factory,
+            thumbnailLoader: thumbs.load,
+            session: VaultSession.create(),
+          ),
+        ),
+      );
+      await tester.pump();
+      await thumbs.precache(tester);
+      await _settle(tester);
+    }
+
+    goldenTest('visor_video_inicio', (tester) async {
+      await pumpVideoViewer(tester, factory: (_) => _GoldenSource(null));
+      expect(find.byKey(const ValueKey('video-play')), findsOneWidget);
+      await _shot('visor_video_inicio.png');
+    });
+
+    goldenTest('visor_video_descarga', (tester) async {
+      final gate = Completer<void>();
+      await pumpVideoViewer(
+        tester,
+        factory: (_) => _GoldenSource((p) async {
+          p?.call(const MediaProgress(MediaPhase.downloading, 0.42));
+          await gate.future;
+        }),
+      );
+      await tester.tap(find.byKey(const ValueKey('video-play')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.textContaining('Descargando de Drive'), findsOneWidget);
+      await _shot('visor_video_descarga.png');
+      gate.complete();
+      await tester.pump();
+    });
+
+    goldenTest('visor_video_controles', (tester) async {
+      VideoPlayerPlatform.instance = FakeVideoPlayerPlatform();
+      await pumpVideoViewer(
+        tester,
+        factory: (_) => _GoldenSource((_) async {}),
+      );
+      await tester.tap(find.byKey(const ValueKey('video-play')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('video-seek')), findsOneWidget);
+      await _shot('visor_video_controles.png');
+    });
   });
+}
+
+/// Origen de video para las capturas: [onOpen] simula progreso/espera y, si
+/// no es nulo, devuelve un controlador inicializado con la plataforma falsa.
+class _GoldenSource implements VideoSource {
+  _GoldenSource(this.onOpen);
+  final Future<void> Function(MediaProgressCallback? p)? onOpen;
+  VideoPlayerController? _c;
+
+  @override
+  Future<VideoPlayerController> open({
+    MediaProgressCallback? onProgress,
+  }) async {
+    await onOpen?.call(onProgress);
+    final c = VideoPlayerController.file(File('clip.mp4'));
+    await c.initialize();
+    return _c = c;
+  }
+
+  @override
+  Future<void> release() async => _c?.dispose();
 }

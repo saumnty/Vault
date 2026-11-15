@@ -22,6 +22,7 @@ class FileTile extends StatelessWidget {
     required this.onTap,
     required this.onLongPress,
     this.progress,
+    this.downloading = false,
   });
 
   final FileEntry entry;
@@ -33,6 +34,9 @@ class FileTile extends StatelessWidget {
 
   /// Progreso de subida 0..1 (solo si está `subiendo`).
   final double? progress;
+
+  /// El progreso es de una descarga ("sin conexión"), no de una subida.
+  final bool downloading;
 
   @override
   Widget build(BuildContext context) {
@@ -71,6 +75,7 @@ class FileTile extends StatelessWidget {
                 child: SyncStatusIcon(
                   status: item.syncStatus,
                   progress: progress,
+                  downloading: downloading,
                 ),
               ),
             ],

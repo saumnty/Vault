@@ -14,8 +14,10 @@ abstract final class AppSpacing {
   static const EdgeInsets page = EdgeInsets.all(lg);
   static const EdgeInsets pageHorizontal = EdgeInsets.symmetric(horizontal: lg);
   static const EdgeInsets card = EdgeInsets.all(md);
-  static const EdgeInsets recoveryGroup =
-      EdgeInsets.symmetric(horizontal: sm, vertical: xs);
+  static const EdgeInsets recoveryGroup = EdgeInsets.symmetric(
+    horizontal: sm,
+    vertical: xs,
+  );
   static const EdgeInsets sheet = EdgeInsets.fromLTRB(lg, sm, lg, lg);
   static const EdgeInsets gridPage = EdgeInsets.fromLTRB(
     lg,
@@ -67,6 +69,10 @@ abstract final class AppSizes {
   static const double pickerTileExtent = 110;
   static const int pickerThumbPx = 256;
   static const double progressBarHeight = 6;
+
+  /// Visor: botón de reproducir grande y ancho máximo de la barra de progreso.
+  static const double playButton = 72;
+  static const double viewerProgressWidth = 240;
 }
 
 /// Rejilla de archivos.
