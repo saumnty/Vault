@@ -84,6 +84,22 @@ Fecha base de las primeras entradas: 2026-11-14/15.
 ## D20 — La caché LRU no purga lo que se está reproduciendo
 - `CacheManager.markInUse/releaseInUse` (contador por id). Detectado en emulador: tras subir el video, `afterRun → enforce` borró el .vault mientras se reproducía (en Android el fd abierto siguió leyendo; en otra plataforma habría fallado).
 
-## D21 — Pendiente de decidir: AES-GCM nativo o en isolates
+## D21 — AES-GCM nativo o en isolates (resuelta en D22)
 - Medido en emulador (debug y profile): el descifrado AES-GCM del paquete `cryptography` en Dart puro va a ≈1–1,3 MB/s, del orden del bitrate de un 1080p (≈8 Mbit/s). El streaming arranca cuando hay ~2,5 s de búfer; con videos de bitrate alto o "cargados al principio" el arranque no es inmediato y puede haber rebuffering.
 - Opciones: (a) `cryptography_flutter` (AES-GCM nativo de Android/iOS; mismo formato, el AES-GCM es estándar); (b) pool de isolates descifrando bloques en paralelo con prelectura; (c) ambas. Requiere tu visto bueno (cambia el backend criptográfico usado también al importar).
+
+## D22 — AES-GCM nativo: `cryptography_flutter` 2.3.4 con respaldo Dart
+- Contexto: D21. AES-GCM en Dart puro ≈3 MiB/s por bloque de 1 MiB en el emulador (profile) y bloquea el isolate de UI todo el tiempo (sus `await` no ceden).
+- Opciones: (a) `cryptography_flutter` (Android `javax.crypto` "AES/GCM/NoPadding" = Conscrypt/BoringSSL; iOS CryptoKit `AES.GCM`, iOS 13+); (b) pool de isolates con Dart (≈3 MiB/s por núcleo, 4 núcleos en el emulador ⇒ techo ≈12 MiB/s); (c) plugin propio.
+- Elegida: (a), versión fija 2.3.4 (la última; exige cryptography ^2.8.1 —el lock ya tenía 2.9.0— y Dart ≥3.3; no cambia ninguna otra dependencia). Interfaz `AesGcmBackend` (`lib/core/crypto/aes_gcm_backend.dart`): `FallbackAesGcmBackend(NativeAesGcmBackend → DartAesGcmBackend)` en Android/iOS; Dart en escritorio, `flutter test`, isolates secundarios y con `--dart-define=VAULT_AES_BACKEND=dart`. Se resuelve en cada operación (no en campos estáticos).
+- Mismo algoritmo estándar ⇒ formato .vault v2, AAD y nonce sin cambios. Verificado bit a bit: vector GCM Test Case 16 en ambos; nativo↔Dart con 14 tamaños de 0 B a 3 MiB+1; archivo .vault idéntico con el mismo Random; en la app, bóveda y video cifrados con Dart se abren con el nativo.
+- Semántica de errores: tag inválido ⇒ `SecretBoxAuthenticationError` en ambos (el plugin traduce INCORRECT_MAC) ⇒ `VaultAuthException`/`null` como antes; no se reintenta con Dart. Llave destruida y longitudes inválidas se validan antes del nativo y no lo desactivan. Cualquier otro error del canal (PlatformException, MissingPlugin, salida de longitud incorrecta) ⇒ se repite con Dart y el nativo queda apagado el resto de la sesión (repetir un cifrado con el mismo nonce produce los mismos bytes: no hay reuso de nonce con otro texto).
+- Los datos de menos de 1 KiB (envolturas de la DEK, textos cortos) siguen en Dart: el viaje por el canal cuesta más.
+- Por qué no (b): menos de la mitad de rendimiento que (a) y más copias de memoria entre isolates; queda como alternativa si el canal falla en algún dispositivo (el respaldo actual es Dart en el mismo isolate).
+
+## D23 — `Cryptography.instance` se restaura a la de `package:cryptography`
+- El plugin se registra solo (dartPluginClass) y cambia `Cryptography.instance`, lo que llevaría HMAC/HKDF al canal sin avisar. `configureCryptography()` (en `main`, antes de cualquier uso) restaura la instancia original: el ÚNICO cambio de backend es AES-GCM y es explícito. `FlutterCryptography.enable()` está obsoleto en 2.3.x (y congelaría la instancia del plugin); no se usa.
+
+## D24 — El descifrado del servidor de streaming sigue en el isolate de UI
+- Con el nativo, el servidor entrega los 24,9 MB en 3,3 s (antes 12,0 s) y el primer MiB a los 99 ms; durante la reproducción el hilo principal estuvo al 17–38 % de CPU. El arranque del video en el emulador (≈18–25 s) lo domina ExoPlayer con el decodificador H.264 emulado, no el cifrado ⇒ no se mueve trabajo a otro isolate (no hay ganancia medible).
+- Coste aceptado: en Flutter 3.41 el hilo de plataforma y el de UI están fusionados; cada bloque de 1 MiB ocupa el hilo ≈40–50 ms (mediana; picos de 100–250 ms en el emulador). Antes, con Dart, eran ≈300–470 ms por bloque sin ceder. Revisar en dispositivo real (allí el canal y AES son mucho más rápidos).

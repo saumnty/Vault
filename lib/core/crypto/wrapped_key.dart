@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import 'aes_gcm_backend.dart';
 import 'kdf.dart';
 
 /// Propósito de una envoltura de la DEK. Se autentica como AAD, de modo que
@@ -33,7 +34,9 @@ class WrappedKey {
   static const int macLength = 16;
   static const int keyLength = 32;
 
-  static final AesGcm _aes = AesGcm.with256bits();
+  // Se resuelve en cada uso (D22). Con 32 bytes siempre va por Dart: queda
+  // por debajo de FallbackAesGcmBackend.minNativeLength.
+  static AesGcmBackend get _aes => AesGcmBackend.current;
 
   final WrapPurpose purpose;
   final Argon2Params kdf;

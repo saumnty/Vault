@@ -3,7 +3,9 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 
+import 'aes_gcm_backend.dart';
 import 'vault_file_format.dart';
+import 'wrapped_key.dart' show randomBytes;
 
 export 'vault_file_format.dart'
     show
@@ -28,13 +30,21 @@ typedef StringMap = Map<String, String>;
 /// incorrecta, alteración, reordenado, truncado, bloque ajeno) →
 /// [VaultAuthException].
 class CryptoService {
-  final AesGcm _aes = AesGcm.with256bits();
-  final VaultFileFormat _format = VaultFileFormat();
+  /// [backend] fija la implementación AES-GCM (pruebas); por defecto
+  /// [AesGcmBackend.current] en cada operación (D22).
+  CryptoService({AesGcmBackend? backend})
+    : _backend = backend,
+      _format = VaultFileFormat(backend: backend);
+
+  final AesGcmBackend? _backend;
+  final VaultFileFormat _format;
+
+  AesGcmBackend get _aes => _backend ?? AesGcmBackend.current;
 
   /// Cifra un texto corto (AES-256-GCM). Usado por VaultRepository.
   Future<StringMap> encryptData(String plainText, SecretKey secretKey) async {
     final plainBytes = utf8.encode(plainText);
-    final nonce = _aes.newNonce();
+    final nonce = randomBytes(AesGcmBackend.nonceLength);
     final secretBox = await _aes.encrypt(
       plainBytes,
       secretKey: secretKey,
@@ -96,7 +106,12 @@ class CryptoService {
     File encryptedFile,
     SecretKey filesKey, {
     bool verifyFinal = true,
-  }) => VaultFileReader.open(encryptedFile, filesKey, verifyFinal: verifyFinal);
+  }) => VaultFileReader.open(
+    encryptedFile,
+    filesKey,
+    verifyFinal: verifyFinal,
+    backend: _backend,
+  );
 
   /// Lee [length] bytes en claro desde [offset] (recortado al final).
   Future<Uint8List> readRange(

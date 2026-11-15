@@ -364,12 +364,22 @@ class GalleryImportService {
       // (c) SHA-256 en streaming del contenido que se guarda (el original si
       // no se comprimió; el comprimido en caso contrario).
       emit(ImportStage.hashing);
+      final stageWatch = Stopwatch()..start();
       final contentHash = await sha256OfFile(content);
+      final hashMs = stageWatch.elapsedMilliseconds;
       check();
 
       // (d) Cifrar con la subllave "files".
       emit(ImportStage.encrypting);
+      stageWatch.reset();
       await _crypto.encryptFile(content, AppPaths.resolve(vaultRel), fKey);
+      if (!kReleaseMode) {
+        // Solo tamaños y duraciones (sin nombres ni rutas).
+        debugPrint(
+          '[vault-import] $storedBytes B: sha256 $hashMs ms, '
+          'cifrado ${stageWatch.elapsedMilliseconds} ms',
+        );
+      }
       check();
 
       // (e) Miniatura cifrada con la subllave "thumbs". Su fallo no aborta.

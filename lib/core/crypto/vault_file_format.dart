@@ -5,6 +5,8 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import 'aes_gcm_backend.dart';
+
 // =============================================================================
 // FORMATO .vault VERSIÓN 2
 // =============================================================================
@@ -283,10 +285,17 @@ class VaultLayout {
 // -----------------------------------------------------------------------------
 
 class VaultBlockCipher {
-  VaultBlockCipher({Random? random}) : _random = random ?? Random.secure();
+  /// [backend] fija la implementación AES-GCM (pruebas); por defecto se usa
+  /// [AesGcmBackend.current] en cada operación (nativo con respaldo Dart en
+  /// Android/iOS, D22). Todos los backends producen los mismos bytes.
+  VaultBlockCipher({Random? random, AesGcmBackend? backend})
+    : _random = random ?? Random.secure(),
+      _backend = backend;
 
-  static final AesGcm _aes = AesGcm.with256bits();
   final Random _random;
+  final AesGcmBackend? _backend;
+
+  AesGcmBackend get _aes => _backend ?? AesGcmBackend.current;
 
   /// AAD = encabezado ‖ índice (uint64 LE) ‖ isFinal (1 byte).
   static Uint8List aad(VaultHeader header, int index, bool isFinal) {
@@ -371,9 +380,12 @@ class VaultBlockCipher {
 // -----------------------------------------------------------------------------
 
 class VaultFileFormat {
-  VaultFileFormat({Random? random})
+  VaultFileFormat({Random? random, AesGcmBackend? backend})
     : _random = random ?? Random.secure(),
-      _cipher = VaultBlockCipher(random: random);
+      _backend = backend,
+      _cipher = VaultBlockCipher(random: random, backend: backend);
+
+  final AesGcmBackend? _backend;
 
   final Random _random;
   final VaultBlockCipher _cipher;
@@ -421,7 +433,12 @@ class VaultFileFormat {
   /// Descifra [source] completo hacia [dest] en streaming. Si cualquier
   /// bloque falla, [dest] se borra y se relanza la excepción.
   Future<void> decryptFile(File source, File dest, SecretKey key) async {
-    final reader = await VaultFileReader.open(source, key, verifyFinal: false);
+    final reader = await VaultFileReader.open(
+      source,
+      key,
+      verifyFinal: false,
+      backend: _backend,
+    );
     RandomAccessFile? output;
     var ok = false;
     try {
@@ -440,7 +457,12 @@ class VaultFileFormat {
 
   /// Descifra solo el bloque [index] (abre y cierra el archivo).
   Future<Uint8List> decryptBlock(File source, int index, SecretKey key) async {
-    final reader = await VaultFileReader.open(source, key, verifyFinal: false);
+    final reader = await VaultFileReader.open(
+      source,
+      key,
+      verifyFinal: false,
+      backend: _backend,
+    );
     try {
       return await reader.decryptBlock(index);
     } finally {
@@ -514,13 +536,19 @@ class VaultFileFormat {
 /// Las operaciones se serializan internamente (RandomAccessFile no admite
 /// operaciones concurrentes). Llamar a [close] al terminar.
 class VaultFileReader {
-  VaultFileReader._(this._raf, this.header, this.layout, this._key);
+  VaultFileReader._(
+    this._raf,
+    this.header,
+    this.layout,
+    this._key,
+    AesGcmBackend? backend,
+  ) : _cipher = VaultBlockCipher(backend: backend);
 
   final RandomAccessFile _raf;
   final VaultHeader header;
   final VaultLayout layout;
   final SecretKey _key;
-  final VaultBlockCipher _cipher = VaultBlockCipher();
+  final VaultBlockCipher _cipher;
   Future<void> _tail = Future<void>.value();
   bool _closed = false;
 
@@ -539,6 +567,7 @@ class VaultFileReader {
     File file,
     SecretKey key, {
     bool verifyFinal = true,
+    AesGcmBackend? backend,
   }) async {
     final raf = await file.open(mode: FileMode.read);
     try {
@@ -547,7 +576,7 @@ class VaultFileReader {
         await _readFully(raf, VaultHeader.length),
       );
       final layout = VaultLayout.fromEncryptedLength(length, header.blockSize);
-      final reader = VaultFileReader._(raf, header, layout, key);
+      final reader = VaultFileReader._(raf, header, layout, key, backend);
       if (verifyFinal) await reader.decryptBlock(layout.blockCount - 1);
       return reader;
     } catch (_) {

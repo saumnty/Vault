@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'core/crypto/aes_gcm_backend.dart';
 import 'core/crypto/auth_controller.dart';
 import 'core/services/app_paths.dart';
 import 'core/services/plain_temp_manager.dart';
@@ -12,6 +13,10 @@ import 'features/vault/vault_services.dart';
 void main() async {
   // Asegurar la inicialización de los bindings de Flutter
   WidgetsFlutterBinding.ensureInitialized();
+
+  // D22: AES-GCM nativo (cryptography_flutter) con respaldo Dart; el resto de
+  // primitivas siguen en Dart. Antes de cualquier operación criptográfica.
+  configureCryptography();
 
   // F6a: por si la app se cerró de forma abrupta con un video descifrado en
   // disco, se barre la carpeta de temporales en claro al arrancar.

@@ -32,6 +32,8 @@ dependencies:
     sdk: flutter
   sqflite_sqlcipher: ^3.4.1
   cryptography: ^2.7.0
+  # AES-GCM nativo (javax.crypto en Android, CryptoKit en iOS) con fallback a Dart. Ver D22.
+  cryptography_flutter: 2.3.4
   flutter_secure_storage: ^9.0.0
   # Biometría ligada a almacenamiento seguro del SO (ver lib/core/crypto/biometric_key_store.dart)
   biometric_storage: 5.0.1
