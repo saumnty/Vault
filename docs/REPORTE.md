@@ -26,3 +26,21 @@ Solo con analyze, tests unitarios/widget/golden y `build apk --debug`. **Nada se
 
 ## Siguiente
 F5 (sincronización) necesita: proyecto en Google Cloud, Drive API, pantalla de consentimiento, cliente OAuth Android (SHA-1 debug/release) e iOS. Dime cuando quieras que te dé los pasos exactos.
+
+---
+## Actualización: emulador arreglado y Fase 1 ejecutada
+
+### Diagnóstico del emulador
+- `emulator -accel-check`: **WHPX instalado y usable**; virtualización activa en firmware (`VirtualizationFirmwareEnabled=True`, `HypervisorPresent=True`). **No falta aceleración**, no hay que tocar la BIOS (en una HP Victus la opción se llamaría "Virtualization Technology (VTx)" en Configuración avanzada del sistema, pero ya está activa).
+- Causa real: arranque lento/colgado con GPU `auto` y snapshot. Con `-no-snapshot -gpu swiftshader_indirect` arranca (boot ≈ 95 s). Avisos: `opengl32sw` no carga (cae a OpenGL del sistema), y el AVD tiene 2 GB de RAM con imagen Android 17 (API 37) → "System UI isn't responding" al inicio (pulsar "Wait"). RAM del PC: 15.7 GB (el emulador sugiere 16).
+- Comando que funciona:
+  `emulator -avd Pixel_7 -no-snapshot -gpu swiftshader_indirect`
+  (adb está en `%LOCALAPPDATA%\Android\Sdk\platform-tools`, no está en el PATH).
+- Recomendación: en Android Studio → Device Manager, editar Pixel_7: Graphics = Software, RAM 3-4 GB; o crear un AVD con imagen API 34/35 (más ligera).
+
+### Fase 1 en el emulador (capturas en docs/screens/emu/)
+- ✅ Crear bóveda con PIN 123456: pantalla "Creando bóveda…" (≈40 s en emulador por Argon2id en Dart + CPU emulada), luego **código de recuperación** (24 chars, `QSB5-PNMD-6RR3-QTGV-R7JT-FDPJ`) y "Ya lo guardé".
+- ✅ Bóveda abre con estado vacío → **la BD SQLCipher abrió con la llave derivada** (sin errores en el log de `flutter run`).
+- ✅ Cerrar la app (force-stop) y reabrir → pantalla de PIN; PIN correcto → bóveda desbloqueada (tras ≈40 s).
+- No ejecutado: PIN incorrecto ×5 (bloqueo 30 s), biometría (el emulador no tiene huella enrolada), cambio de huella.
+- Observaciones: (1) el desbloqueo/creación tarda ~40 s en el emulador (Argon2id m=19456 en Dart puro sobre CPU emulada); en teléfono real debería ser mucho menor, pero hay que medirlo — si pasa de ~2 s, reducir parámetros o usar `cryptography_flutter`. (2) El código de recuperación se parte en 2 líneas ("FDPJ" huérfano): ajuste cosmético pendiente. (3) Sin indicador de progreso claro durante la derivación aparte del spinner del botón.
