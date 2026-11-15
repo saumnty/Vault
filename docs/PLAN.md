@@ -9,10 +9,10 @@ Rama de trabajo: `dev-claude` (no se hace push ni se toca main sin petición).
 | F0 | Auditoría | Sonnet | 🧪 hecha |
 | F1 | Llaves (DEK, KEK_pin, KEK_rec, biometría, HKDF, retraso) | Opus | 🧪 analyze/test/build apk OK; biometría real sin probar |
 | F2 | Formato .vault v2 | Opus | 🧪 analyze/test OK (56 tests) |
-| F3 | Base de datos (esquema, rutas relativas) | Sonnet | 🧪 analyze/test OK (71); SQLCipher en emulador NO probado (test de integración escrito) |
-| F3.5 | Rediseño UI | Sonnet | 🧪 analyze/test OK (131); capturas golden en docs/screens; gestos/háptica no probados en dispositivo |
-| F4 | Importación desde la galería | Sonnet | 🧪 parcial: analyze/test OK; permisos, selector, compresión e iCloud reales sin probar |
-| F5 | Sincronización con Drive | Sonnet | ⬜ |
+| F3 | Base de datos (esquema, rutas relativas) | Sonnet | 🧪 analyze/test OK; SQLCipher real probado en emulador (llave cruda x'hex') |
+| F3.5 | Rediseño UI | Sonnet | 🧪 analyze/test OK; capturas en emulador (docs/screens/emu); gestos finos/háptica sin probar |
+| F4 | Importación desde la galería | Sonnet | 🧪 parcial: importación real en emulador OK (permiso, selector, compresión, miniaturas cifradas); iCloud y video real grande sin probar |
+| F5 | Sincronización con Drive | Sonnet | ⬜ ← siguiente (requiere configuración Google Cloud del usuario) |
 | F6 | Visor y caché (streaming aparte) | Sonnet/Opus | ⬜ |
 | F7 | Seguridad del sistema | Sonnet/Haiku | ⬜ |
 | F8 | Onboarding y ajustes | Haiku/Sonnet | ⬜ |
@@ -25,4 +25,7 @@ Rama de trabajo: `dev-claude` (no se hace push ni se toca main sin petición).
 - Emulador Pixel_7 disponible; no se lanzó la app porque no compila.
 
 ## Bloqueos
-- Emulador Android Pixel_7: no arranca en esta máquina (qemu levanta pero adb nunca lo ve; probado con/sin ventana, swiftshader). Efecto: SQLCipher real (F3), biometría real (F1) y toda la UI en dispositivo quedan sin probar. Verificación sustituta: tests de widgets y goldens (docs/screens).
+- (RESUELTO) Emulador Android Pixel_7: arranca con `-no-snapshot -gpu swiftshader_indirect`. Antes: no arrancaba en esta máquina (qemu levanta pero adb nunca lo ve; probado con/sin ventana, swiftshader). Efecto: SQLCipher real (F3), biometría real (F1) y toda la UI en dispositivo quedan sin probar. Verificación sustituta: tests de widgets y goldens (docs/screens).
+
+## Ronda 2
+- Argon2id nativo (sodium_libs 3.4.6+4) en isolate ✅🧪; SQLCipher llave cruda ✅🧪; Fase 1 en emulador ✅🧪 (PIN, bloqueo persistente, huella); recuperación en grupos ✅🧪; F4 en emulador ✅🧪.

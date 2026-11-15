@@ -53,3 +53,27 @@ F5 (sincronización) necesita: proyecto en Google Cloud, Drive API, pantalla de 
 - Parámetros SIN cambios: m=19456 KiB, t=2, p=1. Resultado idéntico: vector phc-winner-argon2 (test/argon2_backend_test.dart) y libsodium == Dart en el emulador (integration_test/argon2_native_test.dart).
 - Tiempos en emulador (Pixel_7, x86_64), por derivación: Dart en hilo UI (antes) release 0,5–1,2 s / debug 1,5–3,4 s (primera hasta 6–7 s en debug); libsodium (ahora) release 70–140 ms / debug 0,3–1,1 s. El flujo completo crear/desbloquear sigue en ~4,5–6 s release: el resto se va fuera de Argon2id (probablemente SQLCipher: la llave se pasa como texto hex → PBKDF2-SHA512 256 000 iteraciones al abrir; usar llave cruda `x'…'` lo evitaría — pendiente, fuera de este cambio).
 - Android descarga el zip de libsodium (verificado por SHA-512) en la primera compilación; iOS lo hace en `pod install` (prepare_command). iOS sin probar.
+
+---
+## Ronda 2 (autónoma)
+
+### 1. Argon2id: ver sección del subagente más arriba (sodium_libs/libsodium, isolate, m=19456 KiB t=2 p=1 sin bajar). Derivación en emulador release 0,5–1,2 s → 70–140 ms (debug 1,5–3,4 s → 0,3–1,1 s). La espera total de crear/desbloquear bajó a ~4,5–6 s (release); el resto era SQLCipher: pasarle la llave en formato crudo `x'<hex>'` evita su PBKDF2 de 256 000 iteraciones (commit aparte). Test de integración SQLCipher **verde en emulador** (abre con la llave derivada, rechaza otra, cierra al bloquear).
+
+### 2. Fase 1 completada en emulador (capturas en docs/screens/emu/10-15)
+- ✅ Crear bóveda (release) y código de recuperación en grupos de 4 sin partirse.
+- ✅ Huella registrada con `adb emu finger touch 1` (tras `locksettings set-pin 1234` + BIOMETRIC_ENROLL). Oferta "Activar" → activada.
+- ✅ Arranque en frío + huella → bóveda desbloqueada sin PIN.
+- ✅ 5 PIN incorrectos → "Demasiados intentos. Espera N s" (30 s). Un fallo más → nivel 60 s. Cerrar y reabrir la app → el bloqueo **persiste** ("Espera 25 s").
+- Observación de diseño: el bloqueo por PIN no impide el prompt biométrico (la biometría sigue disponible durante el bloqueo). Es habitual, pero confírmalo si quieres que el bloqueo aplique también a la huella.
+- Pendiente: cambio de huella (invalidación de llave) no probado.
+
+### 3. ✅ Código de recuperación: grupos de 4 indivisibles, 3 por fila (golden y emulador).
+
+### 4. F4 en emulador (capturas 20-27)
+- ✅ FAB expandible, permiso de fotos (Android 13+ "Allow all"), selector real con `photo_manager` (video con duración 0:05), selección múltiple, hoja de calidad (Original / 1080p ≈2,98 MB / 720p ≈1,49 MB con estimaciones), progreso "Comprimiendo video · Original 66,8 KB", "Importación completa – 3 importados".
+- ✅ Cuadrícula con 3 archivos con **miniaturas descifradas** desde `thumbs/*.thumb` (cifradas con la subllave "thumbs") y estado "pendiente".
+- Limitaciones: (a) el video de prueba (screenrecord de 6 s, 68 KB) es demasiado pequeño para mostrar reducción real; el servicio solo usa el comprimido si pesa menos. Prueba con un video real de varios MB. (b) No pude listar `vault/` y `thumbs/` en disco (APK release no depurable → `run-as` falla); el cifrado de archivos/miniaturas está cubierto por tests unitarios. (c) iCloud (iOS) sin probar. (d) El visor de video/foto (F6) aún no existe.
+- Media de prueba: `/sdcard/DCIM/Camera/prueba_*.png|mp4` en el emulador. En Git Bash usa `MSYS_NO_PATHCONV=1` con adb.
+
+### Comando del emulador que funciona
+`emulator -avd Pixel_7 -no-snapshot -gpu swiftshader_indirect` (PATH: `%LOCALAPPDATA%\Android\Sdk\platform-tools` y `\emulator`). Si aparece "System UI isn't responding", pulsa Wait.
