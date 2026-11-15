@@ -25,6 +25,7 @@ class FakeSource implements GalleryAssetSource {
   final Set<String> noThumb = {};
   final List<String> deleted = [];
   final List<String> originRequests = [];
+  int cacheClears = 0;
   bool temporary = true;
   void Function(String id)? onOrigin;
 
@@ -75,6 +76,9 @@ class FakeSource implements GalleryAssetSource {
       noThumb.contains(id)
       ? null
       : Uint8List.fromList([0xFF, 0xD8, 1, 2, 3, 0xFF, 0xD9]);
+
+  @override
+  Future<void> clearPlainCaches() async => cacheClears++;
 
   @override
   Future<List<String>> deleteAssets(List<String> ids) async {
@@ -438,6 +442,38 @@ void main() {
       );
       expect(source.deleted, ['a']);
       expect(deleted.length, 1);
+    });
+
+    test(
+      'S-03: tras borrar originales se limpian las cachés del plugin',
+      () async {
+        await seed();
+        final before = source.cacheClears;
+        final all = await repo.getItemsByFolder(null);
+        await build(
+          enabled: true,
+          verifier: (_) async => true,
+        ).deleteOriginalsConfirmedInCloud(candidates: all, userConfirmed: true);
+        expect(source.cacheClears, before + 1);
+      },
+    );
+  });
+
+  group('S-03 cachés en claro del plugin de la galería', () {
+    test('cada lote (éxito, error o cancelación) limpia las cachés', () async {
+      final a = source.add('p1', GalleryAssetType.image, 100);
+      final b = source.add('p2', GalleryAssetType.image, 100);
+      source.throwOn.add('p2');
+      await build().importAssets([a, b], const ImportOptions());
+      expect(source.cacheClears, 1, reason: 'antes del arreglo: 0');
+
+      final token = ImportCancelToken()..cancel();
+      await build().importAssets(
+        [a],
+        const ImportOptions(),
+        cancelToken: token,
+      );
+      expect(source.cacheClears, 2);
     });
   });
 

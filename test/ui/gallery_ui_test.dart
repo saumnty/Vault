@@ -47,6 +47,8 @@ class _Source implements GalleryAssetSource {
   Future<Uint8List?> thumbnail(String id, {int size = 256}) async => null;
   @override
   Future<List<String>> deleteAssets(List<String> ids) async => const [];
+  @override
+  Future<void> clearPlainCaches() async {}
 }
 
 void main() {

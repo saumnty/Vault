@@ -165,7 +165,8 @@ void main() {
         final gate = Completer<void>();
         final f = h.suspension.run(() async {
           h.background(); // el prompt/permiso/selector pasa la app a segundo plano
-          h.clocks.advance(const Duration(minutes: 20));
+          // Dentro del tope de suspensión (S-01: 5 min).
+          h.clocks.advance(const Duration(minutes: 2));
           await gate.future;
           h.foreground();
         });
@@ -175,7 +176,11 @@ void main() {
         expect(h.suspension.isSuspended, isFalse);
         expect(h.locks, 0, reason: 'ni al reanudar ni por temporizador');
         expect(h.controller.isArmed, isFalse);
-        expect(h.timerCb, isNull);
+        expect(
+          h.timerDuration,
+          AutoLockController.maxSuspendedBackground,
+          reason: 'solo el temporizador del tope, no el de 15 s',
+        );
 
         // Pasado el diálogo, un segundo plano normal sí cuenta desde cero.
         h.background();
@@ -674,14 +679,31 @@ void main() {
       final gate = Completer<void>();
       final f = suspension.run(() => gate.future);
       bg(tester);
-      clocks.advance(const Duration(minutes: 30));
-      await tester.pump(const Duration(minutes: 30));
+      clocks.advance(const Duration(minutes: 2));
+      await tester.pump(const Duration(minutes: 2));
       fg(tester);
       gate.complete();
       await f;
       await tester.pumpAndSettle();
       expect(session.isUnlocked, isTrue);
       expect(find.byType(HomeVaultScreen), findsOneWidget);
+    });
+
+    testWidgets('S-01: diálogo abierto más allá del tope sí bloquea', (
+      tester,
+    ) async {
+      await openApp(tester, AutoLockDelay.immediate);
+      final gate = Completer<void>();
+      final f = suspension.run(() => gate.future);
+      bg(tester);
+      clocks.advance(const Duration(minutes: 30));
+      await tester.pump(const Duration(minutes: 30));
+      fg(tester);
+      gate.complete();
+      await f;
+      await tester.pumpAndSettle();
+      expect(session.isUnlocked, isFalse);
+      expect(find.byType(PinScreen), findsOneWidget);
     });
 
     testWidgets('Bloquear ahora cierra sesión y vuelve al PIN', (tester) async {

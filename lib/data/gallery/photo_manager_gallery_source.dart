@@ -106,4 +106,22 @@ class PhotoManagerGallerySource implements GalleryAssetSource {
   @override
   Future<List<String>> deleteAssets(List<String> assetIds) =>
       PhotoManager.editor.deleteWithIds(assetIds);
+
+  /// S-03: `PhotoManager.clearFileCache()` (photo_manager 3.12.0, verificado
+  /// en la fuente): Android -> `Glide.clearMemory()` + `Glide.clearDiskCache()`
+  /// (`cache/image_manager_disk_cache/`, PNG/JPEG en claro de las miniaturas)
+  /// y los `cache/pm_*` (copias completas del original en Android 10);
+  /// iOS -> su caché de archivos exportados. Sin probar en iOS.
+  @override
+  Future<void> clearPlainCaches() => clearPhotoManagerCaches();
+
+  /// Igual que [clearPlainCaches], sin instancia (arranque de la app).
+  static Future<void> clearPhotoManagerCaches() async {
+    try {
+      await PhotoManager.clearFileCache();
+    } on Object {
+      // Plugin no disponible (pruebas/escritorio) o fallo puntual: se
+      // reintenta en el próximo lote / arranque.
+    }
+  }
 }

@@ -665,6 +665,57 @@ void main() {
       },
     );
 
+    test('S-04: al regenerar el código, el respaldo viejo no queda en Drive '
+        '(ni como revisión del archivo)', () async {
+      await env.sync.run();
+      final svc = KeyRecoveryService(kdfParams: fastKdf);
+      final newCode = svc.generateRecoveryCode();
+      env.recoveryJson = (await svc.createBackup(dek, newCode)).toJsonString();
+      await env.sync.run();
+
+      final versions = env.cloud
+          .allVersionsOf('recovery_backup.json')
+          .map(utf8.decode)
+          .toList();
+      expect(
+        versions,
+        [env.recoveryJson],
+        reason:
+            'antes del arreglo files.update dejaba el respaldo viejo como '
+            'revisión: el código VIEJO seguía abriendo la DEK',
+      );
+      // El código viejo ya no abre nada de lo que hay en la cuenta.
+      for (final v in versions) {
+        expect(await svc.recoverDek(code, RecoveryBackup.parse(v)), isNull);
+      }
+    });
+
+    test(
+      'S-04: si falla el borrado del viejo, se reintenta y limpia',
+      () async {
+        await env.sync.run();
+        final svc = KeyRecoveryService(kdfParams: fastKdf);
+        env.recoveryJson = (await svc.createBackup(
+          dek,
+          svc.generateRecoveryCode(),
+        )).toJsonString();
+        var failOnce = true;
+        env.cloud.failure = (op) {
+          if (op == 'delete' && failOnce) {
+            failOnce = false;
+            return const CloudServerException(503, 'x');
+          }
+          return null;
+        };
+        await env.sync.run();
+        await env.sync.run(manual: true);
+        expect(
+          env.cloud.allVersionsOf('recovery_backup.json').map(utf8.decode),
+          [env.recoveryJson],
+        );
+      },
+    );
+
     test('el blob no contiene la DEK, subllaves ni el código', () async {
       await env.sync.run();
       final blob = utf8.decode(env.cloud.bytesOf('recovery_backup.json')!);

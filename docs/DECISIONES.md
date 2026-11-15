@@ -177,3 +177,15 @@ Fecha base de las primeras entradas: 2026-11-14/15.
 
 ## D39 — Campo del código: formato en vivo, tolerante (F9)
 - Acepta minúsculas, espacios, guiones, `_` y `.`; agrupa de 4 en 4 y limita a 24; no reemplaza caracteres ambiguos (0/O, 1/I/L no existen en el alfabeto: se avisa). Tipografía propia `AppTypography.codeInput` para que quepan 29 caracteres.
+
+## D40 — Revisión de seguridad independiente: autobloqueo con suspensión acotada (S-01)
+- Contexto: `AutoLockSuspension` (D29) anulaba el autobloqueo sin límite si la app pasaba a segundo plano durante un diálogo del sistema o una petición de token de Google de la sincronización.
+- Elegida: con suspensión activa se arma un tope (`AutoLockController.maxSuspendedBackground` = 5 min, o el tiempo configurado si es mayor; temporizador + comprobación al volver). Si la suspensión termina con la app aún en segundo plano, se arma el autobloqueo normal desde ese instante con un mínimo de `rearmGrace` = 3 s (el resultado del selector llega justo antes de `resumed`; con "inmediato" no debe bloquear ahí). Sustituye la limitación documentada en D29.
+- Coste: un selector/diálogo abierto más de 5 min bloquea la bóveda al volver (la importación en curso falla limpiamente porque la llave se destruye).
+
+## D41 — Restos en claro de plugins se borran (S-02, S-03)
+- `file_picker`: la copia que entrega (Android `cache/file_picker/<ms>/<nombre>`, iOS `tmp/`) se borra siempre tras importar, SOLO si está dentro de esas carpetas (`PlainResidue.isWithinRoots`). Al arrancar se barren `cache/file_picker` (Android) y `vault_cache/import_tmp`. En iOS no se barre `tmp/` entero (compartido con otros plugins).
+- `photo_manager`: `PhotoManager.clearFileCache()` (Glide memoria+disco y copias `pm_*` de Android 10) al terminar cada lote, tras borrar originales y al arrancar. Coste: la cuadrícula del selector regenera miniaturas.
+
+## D42 — El respaldo de recuperación nunca se reemplaza in situ en Drive (S-04)
+- `files.update` deja el contenido anterior como revisión (≈30 días). Ahora: crear archivo nuevo → verificar tamaño+MD5 → `files.delete` (permanente, con revisiones) de todos los anteriores con ese nombre; si el borrado falla el trabajo se reintenta. La DEK sigue sin rotarse al regenerar el código (S-11, pendiente).

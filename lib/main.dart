@@ -11,11 +11,13 @@ import 'core/security/auto_lock.dart';
 import 'core/security/platform_security.dart';
 import 'core/security/security_preferences.dart';
 import 'core/services/app_paths.dart';
+import 'core/services/plain_residue.dart';
 import 'core/services/plain_temp_manager.dart';
 import 'core/theme/app_motion.dart';
 import 'core/theme/app_theme.dart';
 import 'data/cloud/cloud_provider.dart';
 import 'data/gallery/import_preferences.dart';
+import 'data/gallery/photo_manager_gallery_source.dart';
 import 'data/repositories/vault_database.dart';
 import 'data/restore/restore_service.dart';
 import 'data/sync/sync_preferences.dart';
@@ -39,8 +41,13 @@ void main() async {
   try {
     await AppPaths.init();
     await PlainTempManager.instance.sweep();
+    // S-02: copias en claro del selector de archivos (Android) y temporales
+    // de la importación de la galería que quedaron de un cierre abrupto.
+    await PlainResidue.sweepAtStartup();
+    // S-03: miniaturas en claro de Glide / copias pm_* de photo_manager.
+    await PhotoManagerGallerySource.clearPhotoManagerCaches();
   } on Object catch (e) {
-    debugPrint('No se pudo barrer tmp_plain: $e');
+    debugPrint('No se pudo barrer temporales en claro: ${e.runtimeType}');
   }
 
   // F7: seguridad del sistema, ANTES de dibujar la primera pantalla.

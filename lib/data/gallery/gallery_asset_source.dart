@@ -93,4 +93,10 @@ abstract interface class GalleryAssetSource {
   /// Borra originales de la galería (diálogo del sistema incluido). Devuelve
   /// los ids realmente borrados.
   Future<List<String>> deleteAssets(List<String> assetIds);
+
+  /// Borra las cachés EN CLARO que deja el plugin en el almacenamiento de la
+  /// app (S-03: miniaturas de Glide en disco y, en Android 10, copias
+  /// completas `pm_<id>_o_<nombre>`). Se llama al terminar cada lote de
+  /// importación, tras borrar originales y al arrancar. Nunca debe lanzar.
+  Future<void> clearPlainCaches();
 }

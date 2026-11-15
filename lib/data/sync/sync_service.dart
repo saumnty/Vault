@@ -836,13 +836,30 @@ class SyncService {
     if (json == null) return true;
     assertRecoveryBackupSafe(json);
     final bytes = Uint8List.fromList(utf8.encode(json));
-    final existing = await cloud.findByName(CloudNames.recoveryBackup);
+    // S-04 (revisión de seguridad): NO se reemplaza el contenido con
+    // `files.update`: Drive guarda el contenido anterior como REVISIÓN
+    // (≈30 días) y el respaldo viejo seguiría abriendo la MISMA DEK con el
+    // código VIEJO tras "Generar código nuevo". Se crea un archivo nuevo, se
+    // verifica y después se BORRAN (permanente, con sus revisiones) todos los
+    // anteriores con ese nombre. Si el borrado falla, el trabajo falla y se
+    // reintenta (se vuelve a crear y a borrar todo lo previo).
+    final previous = [
+      for (final f in await cloud.list())
+        if (f.name == CloudNames.recoveryBackup) f.id,
+    ];
     final remote = await cloud.uploadBytes(
       bytes: bytes,
       name: CloudNames.recoveryBackup,
-      replaceFileId: existing?.id,
     );
     _verify(remote, bytes.length, md5OfBytes(bytes));
+    for (final id in previous) {
+      if (id == remote.id) continue;
+      try {
+        await cloud.delete(id);
+      } on CloudNotFoundException {
+        // ya no existe
+      }
+    }
     final sha = crypto.sha256.convert(bytes).toString();
     await prefs.setRecoveryUploadedSha(sha);
     if (kDebugMode) {

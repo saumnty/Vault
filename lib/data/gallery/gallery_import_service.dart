@@ -280,6 +280,7 @@ class GalleryImportService {
         // Limpieza best-effort.
       }
       await _cleanTempRoot();
+      await _clearSourceCaches();
       progress.value = ImportBatchProgress(
         total: assets.length,
         completed: done,
@@ -479,6 +480,16 @@ class GalleryImportService {
     }
   }
 
+  /// S-03: miniaturas/copias en claro que el plugin de la galería deja en la
+  /// caché de la app (Glide en Android).
+  Future<void> _clearSourceCaches() async {
+    try {
+      await source.clearPlainCaches();
+    } on Object {
+      // Best-effort: también se limpia al arrancar.
+    }
+  }
+
   Future<void> _tryDelete(File f) async {
     try {
       if (await f.exists()) await f.delete();
@@ -556,6 +567,9 @@ class GalleryImportService {
     }
     if (byAsset.isEmpty) return const [];
     final deletedAssets = await source.deleteAssets(byAsset.keys.toList());
+    // S-03: sin original en la galería, sus miniaturas en la caché del
+    // plugin serían la única copia en claro fuera de la bóveda.
+    await _clearSourceCaches();
     final deletedItems = [
       for (final a in deletedAssets)
         if (byAsset.containsKey(a)) byAsset[a]!,

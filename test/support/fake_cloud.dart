@@ -12,6 +12,10 @@ class _Blob {
   final String name;
   Uint8List bytes;
   String md5;
+
+  /// Versiones anteriores (Drive conserva revisiones de archivos binarios
+  /// al reemplazar su contenido con `files.update`, hasta 30 días).
+  final List<Uint8List> revisions = [];
 }
 
 /// [CloudStorage] en memoria con fallos inyectables.
@@ -61,6 +65,13 @@ class FakeCloudStorage implements CloudStorage {
     return null;
   }
 
+  /// Contenido actual Y revisiones anteriores de todos los archivos con
+  /// [name] (lo que alguien con acceso a la cuenta podría recuperar).
+  List<Uint8List> allVersionsOf(String name) => [
+    for (final b in _blobs.values)
+      if (b.name == name) ...[b.bytes, ...b.revisions],
+  ];
+
   Uint8List? bytesOf(String name) {
     for (final b in _blobs.values) {
       if (b.name == name) return b.bytes;
@@ -106,6 +117,7 @@ class FakeCloudStorage implements CloudStorage {
     if (replaceId != null) {
       final b = _blobs[replaceId];
       if (b == null) throw const CloudNotFoundException();
+      b.revisions.add(b.bytes);
       b
         ..bytes = bytes
         ..md5 = md5;
