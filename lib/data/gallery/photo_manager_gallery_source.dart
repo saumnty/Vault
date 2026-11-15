@@ -1,3 +1,4 @@
+import '../../core/security/auto_lock.dart';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -14,7 +15,9 @@ class PhotoManagerGallerySource implements GalleryAssetSource {
 
   @override
   Future<GalleryPermission> requestPermission() async {
-    final state = await PhotoManager.requestPermissionExtend();
+    final state = await AutoLockSuspension.instance.run(
+      PhotoManager.requestPermissionExtend,
+    );
     if (state == PermissionState.authorized) return GalleryPermission.granted;
     if (state == PermissionState.limited) return GalleryPermission.limited;
     return GalleryPermission.denied;

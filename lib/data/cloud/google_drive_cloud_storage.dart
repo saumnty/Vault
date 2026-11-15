@@ -9,6 +9,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
 
 import '../../core/config/google_config.dart';
+import '../../core/security/auto_lock.dart';
 import 'cloud_storage.dart';
 
 /// Traduce cualquier error de red/Drive/plugin a un [CloudException].
@@ -101,7 +102,7 @@ class GoogleDriveCloudStorage implements CloudStorage {
   @override
   Future<CloudAccount> signIn() async {
     try {
-      final account = await _signIn.signIn();
+      final account = await AutoLockSuspension.instance.run(_signIn.signIn);
       if (account == null) throw const CloudSignInCancelledException();
       return _account(account);
     } catch (e) {
@@ -112,7 +113,9 @@ class GoogleDriveCloudStorage implements CloudStorage {
   @override
   Future<CloudAccount?> signInSilently() async {
     try {
-      final account = await _signIn.signInSilently();
+      final account = await AutoLockSuspension.instance.run(
+        _signIn.signInSilently,
+      );
       return account == null ? null : _account(account);
     } catch (_) {
       return null;
@@ -138,7 +141,10 @@ class GoogleDriveCloudStorage implements CloudStorage {
       }
       http.Client? client;
       try {
-        client = await _signIn.authenticatedClient();
+        // Puede abrir la pantalla de consentimiento de Google.
+        client = await AutoLockSuspension.instance.run(
+          _signIn.authenticatedClient,
+        );
         if (client == null) throw const CloudNotAuthenticatedException();
         return await op(drive.DriveApi(client));
       } catch (e) {

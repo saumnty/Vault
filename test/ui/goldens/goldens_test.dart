@@ -25,6 +25,7 @@ import 'package:vault/features/vault/vault_media_viewer_screen.dart';
 import 'package:vault/features/vault/viewer/media_opener.dart';
 import 'package:vault/features/vault/widgets/vault_sheets.dart';
 import 'package:vault/shared/widgets/blur_sheet.dart';
+import 'package:vault/shared/widgets/privacy_cover.dart';
 
 import '../../support/fake_video_platform.dart';
 import '../../support/fakes.dart';
@@ -232,6 +233,38 @@ void main() {
       await _shot('recuperacion.png');
       await tester.tap(find.text('Ya lo guardé'));
       await tester.pump(const Duration(seconds: 2));
+    });
+  });
+
+  group('F7: seguridad', () {
+    goldenTest('home_bloquear_ahora', (tester) async {
+      usePhoneSize(tester);
+      await tester.pumpWidget(
+        testApp(
+          HomeVaultScreen(
+            currentFolderName: 'Mi Bóveda',
+            services: fakeServices(FakeVaultRepository()),
+            onLock: () {},
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await _shot('home_bloquear_ahora.png');
+    });
+
+    goldenTest('privacy_cover', (tester) async {
+      usePhoneSize(tester);
+      await tester.pumpWidget(
+        testApp(
+          const PrivacyCover(
+            state: AppLifecycleState.inactive,
+            child: Text('contenido secreto'),
+          ),
+        ),
+      );
+      await tester.pump();
+      await _shot('privacy_cover.png');
     });
   });
 

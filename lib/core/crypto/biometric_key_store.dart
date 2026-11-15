@@ -1,3 +1,4 @@
+import '../security/auto_lock.dart';
 import 'dart:convert';
 import 'dart:io' show Platform;
 import 'dart:typed_data';
@@ -136,7 +137,10 @@ class SystemBiometricKeyStore implements BiometricKeyStore {
   Future<void> writeKey(Uint8List key) async {
     final file = await _file();
     try {
-      await file.write(base64Encode(key));
+      // El prompt biométrico pasa la app a inactive: no debe contar para el autobloqueo.
+      await AutoLockSuspension.instance.run(
+        () => file.write(base64Encode(key)),
+      );
     } on AuthException catch (e) {
       throw _mapAuth(e);
     }
@@ -147,7 +151,7 @@ class SystemBiometricKeyStore implements BiometricKeyStore {
     final file = await _file();
     final String? content;
     try {
-      content = await file.read();
+      content = await AutoLockSuspension.instance.run(() => file.read());
     } on AuthException catch (e) {
       throw _mapAuth(e);
     }

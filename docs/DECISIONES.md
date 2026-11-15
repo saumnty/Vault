@@ -103,3 +103,33 @@ Fecha base de las primeras entradas: 2026-11-14/15.
 ## D24 — El descifrado del servidor de streaming sigue en el isolate de UI
 - Con el nativo, el servidor entrega los 24,9 MB en 3,3 s (antes 12,0 s) y el primer MiB a los 99 ms; durante la reproducción el hilo principal estuvo al 17–38 % de CPU. El arranque del video en el emulador (≈18–25 s) lo domina ExoPlayer con el decodificador H.264 emulado, no el cifrado ⇒ no se mueve trabajo a otro isolate (no hay ganancia medible).
 - Coste aceptado: en Flutter 3.41 el hilo de plataforma y el de UI están fusionados; cada bloque de 1 MiB ocupa el hilo ≈40–50 ms (mediana; picos de 100–250 ms en el emulador). Antes, con Dart, eran ≈300–470 ms por bloque sin ceder. Revisar en dispositivo real (allí el canal y AES son mucho más rápidos).
+
+## D25 — Autobloqueo al pasar a segundo plano
+- Contexto F7. Opciones de tiempo: inmediato, 15 s, 30 s, **1 min (por defecto)**, 5 min, 15 min; preferencia `security.v1.autolock_ms` (`AutoLockPreferences`; API `AutoLockController.setDelay` para F8). Para pruebas en emulador: `--dart-define=VAULT_AUTOLOCK_MS=15000` (ignorado en release).
+- Mecanismo (`lib/core/security/auto_lock.dart`): `WidgetsBindingObserver` que marca el instante al pasar a `hidden`/`paused` (NO `inactive`: también ocurre con diálogos del sistema y la cortina de notificaciones) y, al volver (`resumed`), bloquea si transcurrió >= el tiempo. Además un `Timer` bloquea mientras el proceso sigue vivo en segundo plano; puede no dispararse (Android congela procesos), por eso la comprobación al reanudar es la garantía.
+- Reloj: `AutoLockClock` lee un reloj monotónico (`Stopwatch`) y el de pared (`DateTime`) y usa el MAYOR transcurrido. El monotónico no avanza con el dispositivo dormido (Android/Linux) y el de pared lo puede mover el usuario; hacia atrás se ignora y hacia adelante solo provoca un bloqueo de más (seguro). Inyectable en pruebas.
+- "Bloquear" = `AuthController.lock()` (-> `VaultSession.clear`: cierra BD, borra temporales en claro, cierra visor y servidor loopback, cancela subidas/descargas sin perder la cola persistente) + `VaultRootNavigator` hace `popUntil(isFirst)` (visor, hojas, diálogos) y vuelve a la PinScreen. Solo se navega si había sesión (no se destruye el flujo de creación/código de recuperación). Botón "Bloquear ahora" (candado) en la barra superior.
+- La biometría automática de la PinScreen espera a que la app esté en primer plano (tras un autobloqueo la pantalla puede construirse en segundo plano).
+
+## D26 — TRES mecanismos distintos de privacidad (no se sustituyen)
+| Mecanismo | Plataforma | Qué cubre | Qué NO cubre |
+|---|---|---|---|
+| `FLAG_SECURE` (`vault/security`.`setSecure`) | Android | capturas de pantalla, grabación, proyección y la miniatura en recientes | nada más |
+| Cobertura del selector de apps: `SceneDelegate` (UIView sólida #0B0B0E + candado en `sceneWillResignActive`, se quita en `sceneDidBecomeActive`) + `PrivacyCover` de Flutter (capa multiplataforma en inactive/hidden/paused) | iOS (nativo) y todas (Flutter) | vista previa en multitarea/selector de apps. En Android el `PrivacyCover` es segunda capa y también tapa durante diálogos del sistema (parpadeo aceptado) | NO impide capturas de pantalla en iOS |
+| `NSURLIsExcludedFromBackupKey` (`vault/security`.`excludeFromBackup`) sobre vault/, thumbs/, db/ y vault_cache/ | iOS | respaldo de iCloud/iTunes (los .vault y la BD no viajan) | nada de pantalla. Se repite en cada arranque (tras `AppPaths.init`, que crea las carpetas) |
+- iOS: escrito sin probar en dispositivo (no se puede compilar aquí). A verificar en Codemagic: `engineBridge.applicationRegistrar.messenger()` (API de `FlutterImplicitEngineBridge`) y las firmas de `sceneWillResignActive/sceneDidBecomeActive` en `FlutterSceneDelegate`.
+
+## D27 — "Proteger pantalla" (FLAG_SECURE) activa por defecto, también en debug
+- Preferencia `security.v1.protect_screen` (activa si no existe), `ScreenProtection` (`apply`/`setEnabled`, API para F8). `MainActivity.onCreate` pone FLAG_SECURE ANTES de dibujar (seguro por defecto); Dart lo apaga en el arranque solo si la preferencia está desactivada.
+- Para tomar capturas con `adb screencap` en pruebas: `--dart-define=VAULT_ALLOW_SCREENSHOTS=true` fuerza la protección APAGADA solo si `kReleaseMode == false`; en release el define se IGNORA (verificado por test). Sin el define, debug también protege (verificado en emulador: captura y miniatura de recientes salen negras).
+- Las pantallas del sistema (prompt biométrico, permisos) salen negras en `screencap` por ser ventanas seguras del sistema.
+
+## D28 — Sin respaldo del sistema en Android
+- `android:allowBackup="false"`, `fullBackupContent=@xml/backup_rules` y `dataExtractionRules=@xml/data_extraction_rules` (todo excluido en cloud-backup y device-transfer). La bóveda se recupera con el código de recuperación + Drive (F9), no con el respaldo del sistema. Debug y release compilan.
+
+## D29 — Suspensión del autobloqueo por UI del sistema
+- `AutoLockSuspension.instance.run(...)` (contador reentrante) envuelve: biometría (`SystemBiometricKeyStore.readKey/writeKey`), selector de archivos (`FilePicker`), permiso de fotos (`PhotoManager.requestPermissionExtend`) y Google (`signIn`, `signInSilently`, `authenticatedClient`). Mientras haya una activa, pasar a segundo plano no arma el autobloqueo. Verificado en emulador con el permiso de fotos (app en `paused` >20 s con umbral 15 s: no bloquea).
+- Limitación: si el usuario sale de la app (HOME) DURANTE esos diálogos, no se arma hasta la siguiente transición. No hay función de compartir aún; cuando exista debe envolverse igual. `openSettings` NO se envuelve (sale de la app a propósito).
+
+## D30 — `lock()` cancela un desbloqueo en vuelo (pendiente conocido resuelto)
+- `AuthController` lleva un contador de generación (`_lockGeneration`): `unlockWithPin`/`unlockWithBiometrics` lo capturan al llamar y, antes de abrir la sesión, si cambió destruyen las llaves y lanzan `UnlockCancelledException` (la PinScreen lo ignora). Un unlock lanzado antes de un lock ya no se fusiona con uno nuevo del mismo PIN. Crear/restaurar bóveda NO se cancelan (flujo explícito del usuario, ya persistió). `pin_stress_test` actualizado (antes esperaba que la sesión se abriera).

@@ -306,8 +306,14 @@ void main() {
       final ref = _Stored(storage);
       c.lock();
       final pending = c.unlockWithPin(_pin);
+      final cancelled = expectLater(
+        pending,
+        throwsA(isA<UnlockCancelledException>()),
+      );
       c.lock();
-      expect(await pending, isTrue);
+      // F7: el lock cancela el unlock en vuelo; la sesión NO se abre sola.
+      await cancelled;
+      expect(c.isUnlocked, isFalse);
       c.lock();
       expect(await c.unlockWithPin(_pin), isTrue);
       expect(c.session.keys.dekBytes(), dek);

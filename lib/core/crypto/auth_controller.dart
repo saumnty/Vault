@@ -17,6 +17,15 @@ export 'biometric_key_store.dart'
     show BiometricAvailability, BiometricCancelledException;
 export 'pin_attempt_limiter.dart' show PinLockedOutException;
 
+/// Un desbloqueo en curso fue cancelado porque se bloqueó la app ([lock])
+/// mientras se derivaba la llave: la sesión NO se abre.
+class UnlockCancelledException implements Exception {
+  const UnlockCancelledException();
+
+  @override
+  String toString() => 'Desbloqueo cancelado por bloqueo de la app';
+}
+
 /// Resultado de crear la bóveda.
 class VaultCreationResult {
   const VaultCreationResult({
@@ -147,7 +156,10 @@ class AuthController {
   /// contador de intentos nunca se lee y escribe a la vez.
   Future<bool> unlockWithPin(String pin) {
     final inFlight = _pinUnlockInFlight;
-    if (inFlight != null && _pinUnlockInFlightPin == pin) {
+    // Un unlock lanzado ANTES de un bloqueo está cancelado: no se fusiona.
+    if (inFlight != null &&
+        _pinUnlockInFlightPin == pin &&
+        _pinUnlockInFlightGen == _lockGeneration) {
       cryptoDebugLog(
         'unlock#${_attemptSeq + 1}: ignorado, unlock#$_pinUnlockInFlightId '
         'con el mismo PIN ya en vuelo',
@@ -158,8 +170,10 @@ class AuthController {
     if (inFlight != null || _busy) {
       cryptoDebugLog('unlock#$id: hay otra operación en vuelo; se encola');
     }
-    final future = _serialized(() => _unlockWithPin(pin, id));
+    final gen = _lockGeneration;
+    final future = _serialized(() => _unlockWithPin(pin, id, gen));
     _pinUnlockInFlight = future;
+    _pinUnlockInFlightGen = gen;
     _pinUnlockInFlightPin = pin;
     _pinUnlockInFlightId = id;
     void clear() {
@@ -174,7 +188,7 @@ class AuthController {
     return future;
   }
 
-  Future<bool> _unlockWithPin(String pin, int id) async {
+  Future<bool> _unlockWithPin(String pin, int id, int gen) async {
     final sw = Stopwatch()..start();
     cryptoDebugLog('unlock#$id: inicio (${pin.length} dígitos)');
     try {
@@ -186,7 +200,7 @@ class AuthController {
         return false;
       }
       try {
-        await _openSession(dek);
+        await _openSession(dek, gen);
         cryptoDebugLog('unlock#$id: fin OK (${sw.elapsedMilliseconds} ms)');
         return true;
       } finally {
@@ -204,6 +218,12 @@ class AuthController {
   Future<bool>? _pinUnlockInFlight;
   String? _pinUnlockInFlightPin;
   int? _pinUnlockInFlightId;
+  int _pinUnlockInFlightGen = 0;
+
+  /// Contador de generación de bloqueos: cada [lock] lo incrementa. Un
+  /// desbloqueo capturó el valor al empezar y, si cambió al terminar la
+  /// derivación, descarta las llaves y no abre la sesión.
+  int _lockGeneration = 0;
   int _attemptSeq = 0;
 
   // Cola de operaciones de llaves: una a la vez por controlador.
@@ -376,10 +396,11 @@ class AuthController {
     if (_busy) {
       cryptoDebugLog('biometría: hay otra operación en vuelo; se encola');
     }
-    return _serialized(_unlockWithBiometrics);
+    final gen = _lockGeneration;
+    return _serialized(() => _unlockWithBiometrics(gen));
   }
 
-  Future<bool> _unlockWithBiometrics() async {
+  Future<bool> _unlockWithBiometrics(int gen) async {
     if (!await isBiometricUnlockEnabled() || !await hasVault()) return false;
     final dek = await _biometrics.readKey();
     if (dek == null || dek.length != 32) {
@@ -395,11 +416,20 @@ class AuthController {
         await disableBiometricUnlock();
         return false;
       }
-      _session.open(keys);
+      _openChecked(keys, gen);
       return true;
     } finally {
       dek.fillRange(0, dek.length, 0);
     }
+  }
+
+  /// Abre la sesión salvo que se haya bloqueado desde que empezó el desbloqueo.
+  void _openChecked(KeyHierarchy keys, int gen) {
+    if (gen != _lockGeneration) {
+      keys.destroy();
+      throw const UnlockCancelledException();
+    }
+    _session.open(keys);
   }
 
   Future<void> _safeDeleteBiometricKey() async {
@@ -414,15 +444,19 @@ class AuthController {
   // Sesión
   // ---------------------------------------------------------------------
 
-  Future<void> _openSession(Uint8List dek) async {
+  Future<void> _openSession(Uint8List dek, int gen) async {
     final keys = await KeyHierarchy.fromDek(dek);
     // Autorreparación: versiones sin key_check guardado.
     if (await _storage.read(keyCheckKey) == null) {
       await _storage.write(keyCheckKey, keys.keyCheck);
     }
-    _session.open(keys);
+    _openChecked(keys, gen);
   }
 
-  /// Bloquea: destruye las llaves en memoria.
-  void lock() => _session.clear();
+  /// Bloquea: destruye las llaves en memoria y CANCELA cualquier desbloqueo en
+  /// curso (derivación Argon2/biometría): al terminar no abrirá la sesión.
+  void lock() {
+    _lockGeneration++;
+    _session.clear();
+  }
 }

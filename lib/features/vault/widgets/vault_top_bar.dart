@@ -32,6 +32,7 @@ class VaultTopBar extends StatelessWidget {
     required this.onOffline,
     required this.onDelete,
     this.trailing,
+    this.onLock,
   });
 
   final String title;
@@ -54,6 +55,9 @@ class VaultTopBar extends StatelessWidget {
 
   /// Acción extra antes de buscar (icono de sincronización).
   final Widget? trailing;
+
+  /// "Bloquear ahora" (icono de candado); `null` lo oculta.
+  final VoidCallback? onLock;
 
   @override
   Widget build(BuildContext context) {
@@ -145,6 +149,13 @@ class VaultTopBar extends StatelessWidget {
           ),
           if (!searching) ...[
             ?trailing,
+            if (onLock != null)
+              AppIconButton(
+                key: const ValueKey('lock-now'),
+                icon: Icons.lock_outline_rounded,
+                label: 'Bloquear ahora',
+                onPressed: onLock,
+              ),
             AppIconButton(
               icon: Icons.search,
               label: 'Buscar',

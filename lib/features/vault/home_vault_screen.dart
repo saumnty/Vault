@@ -42,6 +42,7 @@ class HomeVaultScreen extends StatefulWidget {
     required this.currentFolderName,
     this.services,
     this.initialColumns = AppGrid.defaultColumns,
+    this.onLock,
   });
 
   final String? currentFolderId;
@@ -50,6 +51,9 @@ class HomeVaultScreen extends StatefulWidget {
   /// Inyectable para pruebas; por defecto los servicios reales.
   final VaultServices? services;
   final int initialColumns;
+
+  /// "Bloquear ahora" (F7); `null` oculta el botón.
+  final VoidCallback? onLock;
 
   @override
   State<HomeVaultScreen> createState() => _HomeVaultScreenState();
@@ -136,6 +140,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
               currentFolderName: e.folder.name,
               services: _services,
               initialColumns: _controller.columns,
+              onLock: widget.onLock,
             ),
           ),
         );
@@ -352,6 +357,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                       onMove: () => _move(c.selectedEntries),
                       onOffline: () => _offline(c.selectedEntries),
                       onDelete: () => _delete(c.selectedEntries),
+                      onLock: widget.onLock,
                       trailing: _services.sync == null
                           ? null
                           : SyncCloudButton(

@@ -36,7 +36,7 @@ class PinScreen extends StatefulWidget {
   State<PinScreen> createState() => _PinScreenState();
 }
 
-class _PinScreenState extends State<PinScreen> {
+class _PinScreenState extends State<PinScreen> with WidgetsBindingObserver {
   late final AuthController _authController =
       widget.authController ?? AuthController();
   Timer? _lockTimer;
@@ -73,11 +73,32 @@ class _PinScreenState extends State<PinScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _checkVaultStatus();
+  }
+
+  /// La biometría automática solo se lanza con la app en primer plano (tras
+  /// un autobloqueo la pantalla puede construirse en segundo plano).
+  bool _pendingBiometric = false;
+
+  bool get _inForeground {
+    final s = WidgetsBinding.instance.lifecycleState;
+    return s == null || s == AppLifecycleState.resumed;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _pendingBiometric) {
+      _pendingBiometric = false;
+      if (mounted && _biometricEnabled && _lockSeconds == 0) {
+        _unlockWithBiometrics();
+      }
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _lockTimer?.cancel();
     super.dispose();
   }
@@ -106,7 +127,11 @@ class _PinScreenState extends State<PinScreen> {
     });
     if (lockout != null) _startLockout(lockout);
     if (biometricEnabled && lockout == null) {
-      await _unlockWithBiometrics();
+      if (_inForeground) {
+        await _unlockWithBiometrics();
+      } else {
+        _pendingBiometric = true;
+      }
     }
   }
 
@@ -255,6 +280,14 @@ class _PinScreenState extends State<PinScreen> {
         setState(() => _pin = '');
         _startLockout(e.remaining);
       }
+    } on UnlockCancelledException {
+      // La app se bloqueó mientras se derivaba la llave: nada que mostrar.
+      if (mounted) {
+        setState(() {
+          _pin = '';
+          _statusMessage = _idleMessage;
+        });
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -296,6 +329,8 @@ class _PinScreenState extends State<PinScreen> {
       }
     } on BiometricCancelledException {
       // El usuario prefirió el PIN.
+    } on UnlockCancelledException {
+      // Bloqueo durante el desbloqueo: se queda en el PIN.
     } catch (_) {
       if (mounted) {
         setState(() => _statusMessage = 'No se pudo usar la biometría');

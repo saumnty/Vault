@@ -1,3 +1,4 @@
+import '../../core/security/auto_lock.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
@@ -27,8 +28,8 @@ class VaultImportService {
       if (filesKey == null) return false;
 
       // 2. Seleccionar archivo
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        allowMultiple: false,
+      FilePickerResult? result = await AutoLockSuspension.instance.run(
+        () => FilePicker.platform.pickFiles(allowMultiple: false),
       );
 
       if (result == null || result.files.single.path == null) return false;
