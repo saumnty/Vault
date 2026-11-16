@@ -411,3 +411,11 @@ APK usados: **[R]** `vault-release-signed.apk` (llave de release; pasos sin Goog
 | 7 | Restaurar: `adb uninstall`, reinstalar, "Ya tengo una bóveda", Google, código incorrecto ("Código incorrecto") y luego el correcto, PIN nuevo con confirmación, huella opcional | D | OK: "6 archivos y 1 carpeta recuperados"; la carpeta conserva "disponible sin conexión"; foto, foto de la carpeta offline y video grande (descarga de Drive 100 %, descifrado y reproducción) abren (`reg_16`..`reg_21`) |
 
 Sin bugs nuevos ni cambios de código. La ofuscación no rompió nada.
+
+## Cierre de hallazgos S-05…S-21 (2026-11-16)
+
+Prueba de humo en el emulador (APK debug, instalación limpia, bóveda y cuenta de prueba): PIN nuevo de 6 dígitos (con 4 no avanza; el 6.º envía solo); crear bóveda, código y confirmación por posiciones; Google; importar 1 foto y 2 videos (Original); abrir foto y reproducir video por streaming (sin falsos positivos de S-09); bloquear/desbloquear; **S-07**: 5 PIN incorrectos → 30 s, luego 60 s y 2 min; con la hora de pared adelantada +1 día la espera SIGUE (91 s → 71 s) y el PIN correcto no abre; la espera persiste tras `force-stop`; pasado el plazo real el PIN correcto abre; hora restaurada. **S-09/restauración**: sincronizado todo, `adb uninstall` + reinstalar, código incorrecto → "Código incorrecto", código correcto → PIN nuevo → 3 archivos recuperados; foto y video se descargan de Drive, se verifican y abren. logcat: sin PIN, código ni nombres de archivo emitidos por la app. Capturas del onboarding en `docs/screens/emu/s_*.png`.
+
+Hallazgo extra de la prueba: al bloquear con el visor cerrándose salía `Looking up a deactivated widget's ancestor` en `_VaultMediaViewerScreenState._onLock`; el visor ahora guarda su `NavigatorState` (no se reprodujo en test, se endureció igualmente; test de regresión añadido en `test/ui/viewer_test.dart`).
+
+Tabla S-xx, 'Hacer tú': nada nuevo. Siguen siendo solo del usuario los pasos 1–6 del checklist (SHA-1 de release en Google Cloud, copia del keystore, push, Codemagic, Sideloadly, pruebas en iPhone); en iPhone además hay que probar el canal `monotonic` (S-07) y la verificación de `fileId` (S-09).

@@ -74,10 +74,20 @@ class _VaultMediaViewerScreenState extends State<VaultMediaViewerScreen> {
     super.dispose();
   }
 
+  // Se guarda el Navigator: al bloquear, este callback puede ejecutarse cuando
+  // el elemento ya está desactivado (visor cerrándose) y `Navigator.of(context)`
+  // lanzaría "Looking up a deactivated widget's ancestor is unsafe".
+  NavigatorState? _navigator;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _navigator = Navigator.of(context);
+  }
+
   void _onLock() {
-    if (!mounted) return;
     // Cierra el visor: al desmontar las páginas se liberan temporales y bytes.
-    Navigator.of(context).popUntil((r) => r.isFirst);
+    _navigator?.popUntil((r) => r.isFirst);
   }
 
   void _toggleChrome() => setState(() => _chrome = !_chrome);

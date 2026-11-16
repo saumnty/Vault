@@ -322,6 +322,24 @@ void main() {
     expect(find.byType(VaultMediaViewerScreen), findsNothing);
   });
 
+  testWidgets('bloquear con el visor a medio cerrar no lanza excepciones', (
+    tester,
+  ) async {
+    await loadPng(tester);
+    final session = await pumpViewer(
+      tester,
+      FakeMediaOpener(images: {'1': png}),
+    );
+    // Cierra el visor y bloquea durante la animación de salida: el elemento ya
+    // está desactivado pero aún no se ha desmontado.
+    await tester.tap(find.byTooltip('Cerrar'));
+    await tester.pump(const Duration(milliseconds: 60));
+    session.clear();
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.byType(VaultMediaViewerScreen), findsNothing);
+  });
+
   testWidgets('tipo sin vista previa muestra mensaje', (tester) async {
     final doc = fakeItem('9', name: 'notas.docx', mime: 'application/msword');
     await pumpViewer(tester, FakeMediaOpener(), list: [doc]);
