@@ -1,6 +1,8 @@
 package com.saumnty.vault
 
 import android.os.Bundle
+import android.os.SystemClock
+import android.provider.Settings
 import android.view.WindowManager
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -33,6 +35,21 @@ class MainActivity : FlutterFragmentActivity() {
                             }
                             result.success(null)
                         }
+                    }
+                    // S-07: reloj monotonico (no depende de la hora de pared) y
+                    // contador de arranques para el retraso del PIN.
+                    "monotonic" -> {
+                        val boot = try {
+                            Settings.Global.getInt(contentResolver, Settings.Global.BOOT_COUNT, -1)
+                        } catch (e: Exception) {
+                            -1
+                        }
+                        result.success(
+                            mapOf(
+                                "boot" to boot.toLong(),
+                                "elapsedMs" to SystemClock.elapsedRealtime()
+                            )
+                        )
                     }
                     else -> result.notImplemented()
                 }

@@ -1,8 +1,51 @@
 import 'dart:convert';
 
+import 'package:flutter/services.dart';
+
 import 'secure_kv_store.dart';
 
 typedef Clock = DateTime Function();
+
+/// Lectura de un reloj monotónico del sistema (S-07).
+///
+/// [elapsedMs] cuenta desde el arranque del teléfono (incluye el sueño) y NO
+/// depende de la hora de pared: cambiar la fecha en Ajustes no lo altera.
+/// [boot] identifica el arranque (Android: `Settings.Global.BOOT_COUNT`;
+/// `-1` si no se conoce).
+class MonotonicReading {
+  const MonotonicReading({required this.elapsedMs, this.boot = -1});
+  final int elapsedMs;
+  final int boot;
+}
+
+/// Fuente del reloj monotónico; `null` = no disponible (entonces solo se usa
+/// la hora de pared, como antes de S-07).
+abstract class MonotonicClock {
+  Future<MonotonicReading?> read();
+}
+
+/// Reloj monotónico nativo por el canal `vault/security` (método `monotonic`).
+/// Android: `SystemClock.elapsedRealtime` + `BOOT_COUNT`.
+/// iOS: `mach_continuous_time` (// iOS: sin probar en dispositivo).
+class PlatformMonotonicClock implements MonotonicClock {
+  PlatformMonotonicClock({MethodChannel? channel})
+    : _channel = channel ?? const MethodChannel('vault/security');
+  final MethodChannel _channel;
+
+  @override
+  Future<MonotonicReading?> read() async {
+    try {
+      final m = await _channel.invokeMapMethod<String, Object?>('monotonic');
+      final e = m?['elapsedMs'];
+      if (e is! int || e < 0) return null;
+      final b = m?['boot'];
+      return MonotonicReading(elapsedMs: e, boot: b is int ? b : -1);
+    } catch (_) {
+      // Canal ausente (tests/escritorio) o error nativo: sin reloj monotónico.
+      return null;
+    }
+  }
+}
 
 /// Se lanza cuando hay que esperar antes de volver a probar un PIN.
 class PinLockedOutException implements Exception {
@@ -24,18 +67,24 @@ class PinLockedOutException implements Exception {
 /// verificar el PIN y se borra si resulta correcto. Así, matar la app durante
 /// la derivación Argon2id no regala intentos.
 ///
-/// LIMITACIÓN: Flutter no expone un reloj monotónico que sobreviva al cierre
-/// de la app, así que se guarda la hora de pared (epoch ms). Si el usuario
-/// adelanta el reloj del sistema puede acortar la espera. Si lo atrasa, la
-/// espera se limita al retraso del nivel actual (no queda bloqueado de por
-/// vida). La defensa real contra fuerza bruta offline es Argon2id + que la
-/// envoltura del PIN nunca sale del teléfono.
+/// RELOJES (S-07): la espera se guarda con la hora de pared Y con un reloj
+/// monotónico nativo (ver [MonotonicClock]) y hay que cumplir AMBAS: adelantar
+/// la fecha del sistema ya no quita la espera. Si el reloj de pared se atrasa,
+/// la espera se limita al retraso del nivel actual (no queda bloqueado de por
+/// vida). Tras un REINICIO el monotónico no mide el tiempo apagado: solo se
+/// abona el tiempo transcurrido desde el arranque (nunca de más; fail-closed),
+/// así reiniciar no sirve para saltarse la espera. Sin reloj monotónico
+/// (escritorio/tests) solo se usa la hora de pared. La defensa real contra
+/// fuerza bruta offline sigue siendo Argon2id + que la envoltura del PIN no
+/// sale del teléfono.
 class PinAttemptLimiter {
   PinAttemptLimiter(
     this._store, {
     Clock? clock,
     this.key = storageKey,
-  }) : _clock = clock ?? DateTime.now;
+    MonotonicClock? monotonic,
+  }) : _clock = clock ?? DateTime.now,
+       _mono = monotonic ?? PlatformMonotonicClock();
 
   static const String storageKey = 'vault.v1.pin_attempts';
   static const int freeAttempts = 5;
@@ -51,6 +100,7 @@ class PinAttemptLimiter {
 
   final SecureKeyValueStore _store;
   final Clock _clock;
+  final MonotonicClock _mono;
 
   /// Clave de almacenamiento propia (F9: el límite de intentos del código de
   /// recuperación es independiente del del PIN).
@@ -68,7 +118,13 @@ class PinAttemptLimiter {
     if (raw == null) return const _AttemptState(0, 0);
     try {
       final json = jsonDecode(raw) as Map<String, dynamic>;
-      return _AttemptState(json['failures'] as int, json['lockedUntil'] as int);
+      return _AttemptState(
+        json['failures'] as int,
+        json['lockedUntil'] as int,
+        lockElapsedMs: json['lockElapsed'] as int?,
+        lockBoot: (json['lockBoot'] as int?) ?? -1,
+        lockDurMs: json['lockDur'] as int?,
+      );
     } catch (_) {
       // Estado corrupto: fallar cerrado (como si hubiera 5 fallos ahora).
       final now = _clock().millisecondsSinceEpoch;
@@ -85,6 +141,11 @@ class PinAttemptLimiter {
       'failures': state.failures,
       'lockedUntil': state.lockedUntilMs,
       'updatedAt': _clock().millisecondsSinceEpoch,
+      if (state.lockElapsedMs != null) ...{
+        'lockElapsed': state.lockElapsedMs,
+        'lockBoot': state.lockBoot,
+        'lockDur': state.lockDurMs,
+      },
     }),
   );
 
@@ -95,11 +156,28 @@ class PinAttemptLimiter {
   Future<Duration?> remainingLockout() async {
     final state = await _load();
     final now = _clock().millisecondsSinceEpoch;
-    var remainingMs = state.lockedUntilMs - now;
-    if (remainingMs <= 0) return null;
-    // Si el reloj se atrasó, no bloquear más de lo que toca a este nivel.
+    // Si el reloj de pared se atrasó, no bloquear más de lo que toca a este
+    // nivel.
     final cap = delayForFailures(state.failures).inMilliseconds;
+    var remainingMs = state.lockedUntilMs - now;
     if (remainingMs > cap) remainingMs = cap;
+
+    // S-07: además, el monotónico. Se exigen AMBOS: manda el mayor.
+    final lockElapsed = state.lockElapsedMs;
+    final lockDur = state.lockDurMs;
+    if (lockElapsed != null && lockDur != null && state.lockedUntilMs > 0) {
+      final cur = await _mono.read();
+      if (cur != null) {
+        final rebooted =
+            cur.boot != state.lockBoot || cur.elapsedMs < lockElapsed;
+        // Mismo arranque: tiempo real transcurrido. Reinicio: solo se abona
+        // el tiempo desde el arranque (cota inferior del real).
+        final passed = rebooted ? cur.elapsedMs : cur.elapsedMs - lockElapsed;
+        var monoRemaining = lockDur - passed;
+        if (monoRemaining > cap) monoRemaining = cap;
+        if (monoRemaining > remainingMs) remainingMs = monoRemaining;
+      }
+    }
     if (remainingMs <= 0) return null;
     return Duration(milliseconds: remainingMs);
   }
@@ -118,14 +196,39 @@ class PinAttemptLimiter {
     final lockedUntil = delay == Duration.zero
         ? 0
         : _clock().millisecondsSinceEpoch + delay.inMilliseconds;
-    await _save(_AttemptState(failures, lockedUntil));
+    if (delay == Duration.zero) {
+      await _save(_AttemptState(failures, 0));
+      return;
+    }
+    final mono = await _mono.read();
+    await _save(
+      _AttemptState(
+        failures,
+        lockedUntil,
+        lockElapsedMs: mono?.elapsedMs,
+        lockBoot: mono?.boot ?? -1,
+        lockDurMs: mono == null ? null : delay.inMilliseconds,
+      ),
+    );
   }
 
   Future<void> reset() => _store.delete(key);
 }
 
 class _AttemptState {
-  const _AttemptState(this.failures, this.lockedUntilMs);
+  const _AttemptState(
+    this.failures,
+    this.lockedUntilMs, {
+    this.lockElapsedMs,
+    this.lockBoot = -1,
+    this.lockDurMs,
+  });
   final int failures;
   final int lockedUntilMs;
+
+  /// Lectura monotónica al imponer el bloqueo (S-07), su arranque y su
+  /// duración. `null` si no había reloj monotónico.
+  final int? lockElapsedMs;
+  final int lockBoot;
+  final int? lockDurMs;
 }

@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import Darwin.Mach
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -47,6 +48,17 @@ import UIKit
         }
       case "setSecure":
         result(nil)
+      case "monotonic":
+        // iOS: sin probar en dispositivo (S-07). mach_continuous_time cuenta
+        // desde el arranque e incluye el sueno; no depende de la hora de
+        // pared. No hay contador de arranques fiable (kern.boottime cambia
+        // con la hora), asi que boot = -1 y el reinicio se detecta porque el
+        // valor baja.
+        var info = mach_timebase_info_data_t()
+        mach_timebase_info(&info)
+        let ticks = mach_continuous_time()
+        let nanos = ticks &* UInt64(info.numer) / UInt64(info.denom)
+        result(["boot": -1, "elapsedMs": Int(nanos / 1_000_000)])
       default:
         result(FlutterMethodNotImplemented)
       }

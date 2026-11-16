@@ -78,6 +78,7 @@ class AuthController {
     BiometricKeyStore? biometricStore,
     Argon2Params kdfParams = Argon2Params.production,
     Clock? clock,
+    MonotonicClock? monotonic,
     VaultSession? session,
     Random? random,
   }) : _storage = storage ?? FlutterSecureKeyValueStore(),
@@ -85,10 +86,11 @@ class AuthController {
        _kdf = kdfParams,
        _session = session ?? VaultSession(),
        _random = random ?? Random.secure() {
-    _limiter = PinAttemptLimiter(_storage, clock: clock);
+    _limiter = PinAttemptLimiter(_storage, clock: clock, monotonic: monotonic);
     _restoreLimiter = PinAttemptLimiter(
       _storage,
       clock: clock,
+      monotonic: monotonic,
       key: restoreAttemptsKey,
     );
     _recovery = KeyRecoveryService(kdfParams: _kdf, random: _random);
