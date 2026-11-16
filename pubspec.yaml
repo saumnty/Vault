@@ -30,23 +30,25 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  sqflite_sqlcipher: ^3.4.1
-  cryptography: ^2.7.0
+  # S-20: versiones de seguridad/cripto FIJADAS (exactas, sin ^); igualan pubspec.lock.
+  # Subirlas solo con revisión de cambios criptográficos.
+  sqflite_sqlcipher: 3.4.1
+  cryptography: 2.9.0
   # AES-GCM nativo (javax.crypto en Android, CryptoKit en iOS) con fallback a Dart. Ver D22.
   cryptography_flutter: 2.3.4
-  flutter_secure_storage: ^9.0.0
+  flutter_secure_storage: 9.2.4
   # Biometría ligada a almacenamiento seguro del SO (ver lib/core/crypto/biometric_key_store.dart)
   biometric_storage: 5.0.1
   path: 1.9.1
   # MD5 (md5Checksum de Drive) en streaming; ya era dependencia transitiva.
-  crypto: ^3.0.7
+  crypto: 3.0.8
   http: ^1.6.0
-  file_picker: ^8.0.0
+  file_picker: 8.3.7
   uuid: ^4.2.1
   path_provider: ^2.1.2
-  google_sign_in: ^6.3.0
-  googleapis: ^13.2.0
-  extension_google_sign_in_as_googleapis_auth: ^2.0.2 # <-- Añade esta línea
+  google_sign_in: 6.3.0
+  googleapis: 13.2.0
+  extension_google_sign_in_as_googleapis_auth: 2.0.13
   photo_manager: 3.12.0
   video_compress: 3.1.4
   # Argon2id nativo (libsodium crypto_pwhash) en Android/iOS. Ver
