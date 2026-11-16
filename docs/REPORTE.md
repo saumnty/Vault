@@ -460,6 +460,14 @@ Decisiones nuevas: D49 (solo Google Drive y una cuenta; iCloud y varias cuentas 
 7. **Comprueba**: Ajustes > Sincronización y cuenta debe mostrar tu correo personal y todo "En la nube"; abre una foto y un video. Tu **código de recuperación** no cambia (el respaldo nuevo queda en tu cuenta personal).
 8. Cuando ya no la uses, quita la cuenta de prueba de los usuarios de prueba de Google Cloud.
 
+### Prueba de humo en el emulador Android (2026-11-16, APK debug, instalación limpia)
+- **Miniaturas de video (nativo Kotlin):** importados 1 foto y 2 videos (Original): los videos salen con miniatura + ▶ + duración (0:25, 0:08); el log solo dice "Miniatura generada" (no cayó al respaldo de fototeca). Captura: `docs/screens/emu/s_ios1_cuadricula_video.png`.
+- **Regeneración:** borradas las 3 miniaturas del disco (`run-as`), reabierta la app y desbloqueada: "Regenerando miniaturas: 3 elementos / 3 regeneradas" y la cuadrícula las muestra de nuevo; Ajustes > "Regenerar miniaturas que faltan" dice "No falta ninguna".
+- **Cerrar deslizando:** con foto y con video, un deslizamiento largo hacia abajo cierra el visor; uno corto (50 px) lo deja abierto.
+- **Textos:** hoja de importación con "720p. Recomendado" y el interruptor de borrar originales apagado con su explicación; aviso "Los originales siguen en tu galería…" al terminar; bloque de la carpeta oculta de Drive en Ajustes; Diagnóstico con eventos sin datos personales.
+- **Cambiar de cuenta (con UNA cuenta en el emulador):** la hoja previa muestra 3 archivos, 26,05 MB a ocupar y **3,16 GB libres** (el método nativo `freeSpace` funciona en Android); "Empezar" abre el selector de Google; elegir la misma cuenta se rechaza ("Elegiste la misma cuenta. Elige OTRA cuenta de Google."); "Cancelar y volver a la cuenta anterior" restaura y vuelve a la cuenta (el log lo registra como `migration`). **No probado en el emulador:** migración completa a una segunda cuenta (solo hay una); está cubierta por las 30 pruebas automáticas.
+- Nota del emulador: tiene PIN de pantalla 1234 y tras un arranque en frío hay que desbloquearlo antes de usar `/sdcard`.
+
 ### Dónde retomar / pendiente
 - No hay **Compartir** en Diagnóstico (solo Copiar): hace falta `share_plus` (verificar versión compatible con Flutter 3.41.6) o un canal nativo.
 - La prueba de humo de la migración en el emulador Android solo cubre lo que se puede hacer con UNA cuenta (hoja previa, elegir la misma cuenta, cancelar); el flujo completo con dos cuentas reales queda para tu iPhone o para cuando agregues una segunda cuenta de prueba.

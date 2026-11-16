@@ -213,11 +213,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
             style: AppTypography.caption,
           ),
           const SizedBox(height: AppSpacing.md),
-          AppFilledButton(
-            label: 'Copiar',
-            icon: Icons.copy,
-            onPressed: _copy,
-          ),
+          AppFilledButton(label: 'Copiar', icon: Icons.copy, onPressed: _copy),
         ],
       ),
     );

@@ -524,7 +524,7 @@ class _Finished extends StatelessWidget {
           ),
           const SizedBox(height: AppSpacing.sm),
           const Text(
-            'El cambio de cuenta terminó. La sincronización normal se '
+            'El cambio de cuenta terminó (o se canceló). La sincronización normal se '
             'reanuda con la cuenta actual.',
             textAlign: TextAlign.center,
             style: AppTypography.bodySecondary,

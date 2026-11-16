@@ -326,6 +326,23 @@ void main() {
       expect(await regen().countMissing(), 1);
     });
 
+    test('miniatura registrada pero con el archivo perdido también se '
+        'regenera', () async {
+      final item = await videoWithoutThumb(
+        'c1',
+        plain: Uint8List.fromList(List.filled(100, 2)),
+        assetId: 'asset-c1',
+      );
+      await regen().run(); // la crea
+      final path = AppPaths.resolve(AppPaths.thumbRelativePath(item.id));
+      expect(path.existsSync(), isTrue);
+      path.deleteSync(); // se pierde el archivo local
+      expect(await regen().countMissing(), 1);
+      final r = await regen().run(manual: true);
+      expect(r.regenerated, 1);
+      expect(path.existsSync(), isTrue);
+    });
+
     test('los que no son foto/video no cuentan', () async {
       await repo.insertItem(
         const VaultItemModel(

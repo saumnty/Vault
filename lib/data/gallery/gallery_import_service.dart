@@ -228,7 +228,10 @@ class GalleryImportService {
     final results = <ImportItemResult>[];
     var done = 0;
     var failed = 0;
-    VaultLog.d('Importación iniciada: ${assets.length} elementos', category: 'import');
+    VaultLog.d(
+      'Importación iniciada: ${assets.length} elementos',
+      category: 'import',
+    );
     try {
       for (var i = 0; i < assets.length; i++) {
         final asset = assets[i];
@@ -296,7 +299,10 @@ class GalleryImportService {
         running: false,
       );
       _running = false;
-      VaultLog.d('Importación terminada: $done ok, $failed fallos', category: 'import');
+      VaultLog.d(
+        'Importación terminada: $done ok, $failed fallos',
+        category: 'import',
+      );
     }
     return ImportBatchResult(results, cancelled: token.isCancelled);
   }
@@ -431,7 +437,10 @@ class GalleryImportService {
           // sirve si el original venía de iCloud); no depende de la fototeca.
           bytes = await _videoThumbs.thumbnail(content, size: thumbnailSize);
           if (bytes == null || bytes.isEmpty) {
-            VaultLog.d('Miniatura de video: se prueba la fototeca', category: 'thumbs');
+            VaultLog.d(
+              'Miniatura de video: se prueba la fototeca',
+              category: 'thumbs',
+            );
           }
         }
         if (bytes == null || bytes.isEmpty) {
@@ -445,9 +454,7 @@ class GalleryImportService {
           VaultLog.d('Miniatura generada', category: 'thumbs');
         } else {
           VaultLog.d(
-            asset.isVideo
-                ? 'Sin miniatura (video)'
-                : 'Sin miniatura (imagen)',
+            asset.isVideo ? 'Sin miniatura (video)' : 'Sin miniatura (imagen)',
             category: 'thumbs',
           );
         }

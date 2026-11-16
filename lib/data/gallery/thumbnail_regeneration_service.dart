@@ -76,10 +76,15 @@ class ThumbnailRegenerationService {
   Future<int> countMissing() async => (await _candidates()).length;
 
   Future<List<VaultItemModel>> _candidates() async {
-    final all = await repository.getItemsMissingThumb();
+    // Sin miniatura registrada, O registrada pero cuyo archivo local ya no
+    // está (borrado, restauración incompleta).
+    final all = await repository.getAllItems();
     return [
       for (final i in all)
-        if (fileKindOf(i) == FileKind.image || fileKindOf(i) == FileKind.video)
+        if ((fileKindOf(i) == FileKind.image ||
+                fileKindOf(i) == FileKind.video) &&
+            (i.thumbPath == null ||
+                !AppPaths.resolve(i.thumbPath!).existsSync()))
           i,
     ];
   }
@@ -183,7 +188,8 @@ class ThumbnailRegenerationService {
       }
     }
     // 2. Video con .vault local: fotograma del contenido descifrado.
-    if ((bytes == null || bytes.isEmpty) && fileKindOf(item) == FileKind.video) {
+    if ((bytes == null || bytes.isEmpty) &&
+        fileKindOf(item) == FileKind.video) {
       bytes = await _frameFromLocalVault(item, fKey, manual: manual);
     }
     if (bytes == null || bytes.isEmpty) return false;
