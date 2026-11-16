@@ -3,6 +3,7 @@ import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 
+import '../../core/logging/vault_log.dart';
 import '../cloud/cloud_storage.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
@@ -90,7 +91,7 @@ class OfflineService {
       await reconcile();
       return true;
     } on Object catch (e) {
-      debugPrint('setItemOffline falló: $e');
+      VaultLog.e('setItemOffline falló', e);
       return false;
     }
   }
@@ -193,7 +194,7 @@ class OfflineService {
       // bloqueada / item borrado
     } on Object catch (e) {
       failures[id] = e;
-      debugPrint('Descarga sin conexión falló ($id): $e');
+      VaultLog.e('Descarga sin conexión falló', e);
     } finally {
       _setProgress(id, null);
     }

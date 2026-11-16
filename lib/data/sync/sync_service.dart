@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
 
 import '../../core/crypto/key_recovery_service.dart';
+import '../../core/logging/vault_log.dart';
 import '../cloud/cloud_storage.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
@@ -412,7 +413,7 @@ class SyncService {
         try {
           await hook();
         } on Object catch (e) {
-          debugPrint('afterRun falló: $e');
+          VaultLog.e('afterRun falló', e);
         }
       }
     }

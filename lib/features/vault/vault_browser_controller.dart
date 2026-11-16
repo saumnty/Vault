@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../core/logging/vault_log.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../data/models/folder_model.dart';
 import '../../data/models/vault_item_model.dart';
@@ -127,7 +128,7 @@ class VaultBrowserController extends ChangeNotifier {
       await services.syncRunner();
     } catch (e) {
       // La sincronización es best-effort; se mostrará el estado por archivo.
-      debugPrint('Sincronización fallida: $e');
+      VaultLog.e('Sincronización fallida', e);
     }
     await load();
   }

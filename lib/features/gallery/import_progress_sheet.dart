@@ -77,7 +77,8 @@ class _ImportProgressContentState extends State<ImportProgressContent> {
       );
       if (mounted) setState(() => _result = r);
     } on Object catch (e) {
-      if (mounted) setState(() => _startError = e.toString());
+      // S-12: nunca e.toString() (puede traer rutas); solo el tipo.
+      if (mounted) setState(() => _startError = e.runtimeType.toString());
     }
   }
 

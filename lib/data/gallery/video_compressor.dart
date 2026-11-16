@@ -34,6 +34,19 @@ abstract interface class VideoCompressor {
   Future<void> cleanup();
 }
 
+/// S-16: barrido best-effort de la caché del compresor al arrancar la app
+/// (una compresión interrumpida deja el video en claro). Cualquier error se
+/// ignora, incluido el `kotlin.Unit` que devuelve el plugin nativo.
+Future<void> sweepVideoCompressorCacheAtStartup(
+  VideoCompressor compressor,
+) async {
+  try {
+    await compressor.cleanup();
+  } on Object {
+    // Best-effort: no debe impedir el arranque.
+  }
+}
+
 /// Bitrates de referencia (bits/s) para ESTIMAR el tamaño antes de comprimir.
 /// Son aproximaciones: el resultado real depende del contenido y del
 /// codificador del dispositivo.

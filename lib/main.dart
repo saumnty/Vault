@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'core/crypto/aes_gcm_backend.dart';
 import 'core/crypto/auth_controller.dart';
 import 'core/crypto/secure_kv_store.dart';
+import 'core/logging/vault_log.dart';
 import 'core/security/auto_lock.dart';
 import 'core/security/platform_security.dart';
 import 'core/security/security_preferences.dart';
@@ -18,6 +19,8 @@ import 'core/theme/app_theme.dart';
 import 'data/cloud/cloud_provider.dart';
 import 'data/gallery/import_preferences.dart';
 import 'data/gallery/photo_manager_gallery_source.dart';
+import 'data/gallery/video_compress_plugin.dart';
+import 'data/gallery/video_compressor.dart';
 import 'data/repositories/vault_database.dart';
 import 'data/restore/restore_service.dart';
 import 'data/sync/sync_preferences.dart';
@@ -47,8 +50,10 @@ void main() async {
     // S-03: miniaturas en claro de Glide / copias pm_* de photo_manager.
     await PhotoManagerGallerySource.clearPhotoManagerCaches();
   } on Object catch (e) {
-    debugPrint('No se pudo barrer temporales en claro: ${e.runtimeType}');
+    VaultLog.e('No se pudo barrer temporales en claro', e);
   }
+  // S-16: caché de compresión de video (en claro) al arrancar; best-effort.
+  await sweepVideoCompressorCacheAtStartup(VideoCompressPlugin());
 
   // F7: seguridad del sistema, ANTES de dibujar la primera pantalla.
   // Android: FLAG_SECURE según la preferencia "Proteger pantalla" (activa por
@@ -63,7 +68,7 @@ void main() async {
       await PlatformSecurity.instance.excludeVaultFromBackup();
     }
   } on Object catch (e) {
-    debugPrint('No se pudo aplicar la seguridad del sistema: $e');
+    VaultLog.e('No se pudo aplicar la seguridad del sistema', e);
   }
 
   // Forzar orientación vertical para mantener la estética y seguridad de la app
