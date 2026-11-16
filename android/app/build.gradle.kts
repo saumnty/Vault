@@ -9,10 +9,36 @@ plugins {
 
 // Firma de release: android/key.properties (NO versionado, ver android/.gitignore)
 // apunta a un keystore fuera del repo. Si no existe (otra máquina/CI sin la llave)
-// se firma con la llave debug para que `flutter build` siga funcionando.
+// los builds de DEBUG siguen funcionando (llave debug), pero un build de
+// RELEASE sin llave FALLA (S-10): un APK de release firmado con la llave debug
+// no se puede actualizar y es fácil de suplantar. Solo se permite
+// explícitamente con ALLOW_DEBUG_SIGNED_RELEASE=true (variable de entorno o
+// -PALLOW_DEBUG_SIGNED_RELEASE=true), pensado solo para CI sin keystore.
 val keyProps = Properties().apply {
     val f = rootProject.file("key.properties")
     if (f.exists()) f.inputStream().use { load(it) }
+}
+val hasReleaseKey = keyProps.containsKey("storeFile")
+val allowDebugSignedRelease =
+    (System.getenv("ALLOW_DEBUG_SIGNED_RELEASE") ?: "").equals("true", ignoreCase = true) ||
+        (project.findProperty("ALLOW_DEBUG_SIGNED_RELEASE")?.toString() ?: "")
+            .equals("true", ignoreCase = true)
+
+gradle.taskGraph.whenReady {
+    val releaseRequested = allTasks.any {
+        it.project == project &&
+            (it.name.contains("Release") || it.name.contains("release")) &&
+            (it.name.startsWith("assemble") || it.name.startsWith("bundle") ||
+                it.name.startsWith("package") || it.name.startsWith("sign") ||
+                it.name.startsWith("validateSigning"))
+    }
+    if (releaseRequested && !hasReleaseKey && !allowDebugSignedRelease) {
+        throw GradleException(
+            "Falta android/key.properties: un build de release no se firma con la " +
+                "llave debug. Crea key.properties (storeFile, storePassword, keyAlias, " +
+                "keyPassword) o, solo en CI, define ALLOW_DEBUG_SIGNED_RELEASE=true."
+        )
+    }
 }
 
 android {
