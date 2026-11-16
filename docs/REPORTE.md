@@ -419,3 +419,48 @@ Prueba de humo en el emulador (APK debug, instalación limpia, bóveda y cuenta 
 Hallazgo extra de la prueba: al bloquear con el visor cerrándose salía `Looking up a deactivated widget's ancestor` en `_VaultMediaViewerScreenState._onLock`; el visor ahora guarda su `NavigatorState` (no se reprodujo en test, se endureció igualmente; test de regresión añadido en `test/ui/viewer_test.dart`).
 
 Tabla S-xx, 'Hacer tú': nada nuevo. Siguen siendo solo del usuario los pasos 1–6 del checklist (SHA-1 de release en Google Cloud, copia del keystore, push, Codemagic, Sideloadly, pruebas en iPhone); en iPhone además hay que probar el canal `monotonic` (S-07) y la verificación de `fileId` (S-09).
+
+## iOS ronda 1 (2026-11-16)
+
+Primeras pruebas del usuario en iPhone (Codemagic `ios-unsigned` + Sideloadly): (a) miniaturas de videos no se ven, (b) quiere cerrar el visor deslizando, (c) esperaba que las fotos importadas se borraran de la galería y verlas en Drive, (d) va a pasar de su cuenta de Google de prueba a su cuenta personal (Google One).
+
+### Qué se hizo
+| Tema | Resultado | Pruebas |
+|---|---|---|
+| (a) Miniaturas de video | Fotograma central del archivo ya materializado por un método nativo propio (`videoThumbnail`: Android MediaMetadataRetriever, iOS AVAssetImageGenerator `// iOS: sin probar`); la fototeca queda de respaldo; si todo falla, ícono ▶ + duración; regeneración automática al desbloquear y manual (Ajustes > Almacenamiento). Causa en D50: `video_compress` en iOS no responde si falla, devuelve resolución completa y `getFileThumbnail` borra el origen. | `test/thumbnails_video_test.dart` (16): video local, solo iCloud, sin ninguna miniatura, fototeca de respaldo, regeneración (fototeca, `.vault` local, solo nube, fileId, topes, fallos recordados, bloqueada), insignia. |
+| (b) Cerrar deslizando | `ViewerDismiss` (puntero directo, sin arena de gestos): solo con zoom 1 y movimiento vertical claro; sigue al dedo, el fondo se desvanece; umbral `min(120 px, 15 %)` o 700 px/s; vuelve si no llega; no actúa sobre los controles del video; accesibilidad `onDismiss`. | `test/ui/viewer_dismiss_test.dart` (8). |
+| (c) UI sobre borrado/Drive | Bloque "cifrado en una carpeta oculta de Drive" (no se ve en Drive ni en Google Fotos; cómo verla/borrarla: drive.google.com > Configuración > Administrar aplicaciones; recomienda verificación en dos pasos) en Sincronización y Ajustes; aviso al terminar una importación ("Los originales siguen en tu galería…"); aviso en la cuadrícula con "Borrar ahora" si hay originales verificados y el borrado está activado; mismo texto en el interruptor de la hoja de importación; 720p marcado "Recomendado" con el ahorro estimado (sin cambiar el valor por defecto). | `test/ui/clarity_test.dart`. |
+| (d) Cambiar de cuenta con migración | Ajustes > Sincronización y cuenta > "Cambiar de cuenta de Google": hoja explicativa (qué pasa, cuánto baja/ocupa, Wi-Fi, espacio local y comprobación), flujo reanudable persistido en la BD (esquema v7, incremental), pausa/cancelación sin perder nada, borrar o conservar la cuenta vieja con confirmación. Detalle en D52; cerrar sesión sin migrar ahora avisa de lo que implica. | `test/account_migration_test.dart` (23: feliz, reanudación con un servicio nuevo, corte de red, Wi-Fi, cuota, otra bóveda, misma cuenta, cancelar, borrar vieja, archivo dañado) y `test/ui/account_migration_screen_test.dart` (7). |
+| Diagnóstico | Ajustes > Acerca de > Diagnóstico: búfer en memoria (500 líneas) alimentado por `VaultLog` también en release; solo eventos y `runtimeType`; saneado defensivo (correos, rutas, UUID, tokens); se borra al bloquear; Copiar. **Compartir no está** (no hay `share_plus` en el proyecto y no se añadió una dependencia sin verificarla). | `test/diagnostics_test.dart` (8, incluye que no salgan correos/rutas/UUID/tokens). |
+| README | "Depurar en iPhone desde Windows" con libimobiledevice, comandos verificados contra el código fuente oficial. | - |
+
+Decisiones nuevas: D49 (solo Google Drive y una cuenta; iCloud y varias cuentas a v2, con motivos), D50, D51 (esquema v7 incremental porque ya hay datos reales), D52.
+
+### Pruebas de iPhone a repetir (en este orden)
+1. **Importar un video local**: debe verse su miniatura (fotograma) y la insignia ▶ con la duración. Es la prueba del método nativo `videoThumbnail` (Swift, sin probar).
+2. **Importar un video que solo esté en iCloud** ("Optimizar almacenamiento"): descarga con progreso, se cifra y también debe tener miniatura.
+3. **Videos ya importados sin miniatura**: abrir la bóveda (se regeneran solas al desbloquear) o Ajustes > Almacenamiento > "Regenerar miniaturas que faltan". Si alguna sigue sin miniatura, mira Ajustes > Acerca de > Diagnóstico (categoría `thumbs`) y mándame el texto copiado.
+4. **Cerrar el visor deslizando hacia abajo** con fotos y con videos; con zoom (pellizco) NO debe cerrar, el deslizar horizontal sigue cambiando de archivo y, en el video, arrastrar sobre la barra de progreso no debe cerrar.
+5. **Textos nuevos**: hoja de Sincronización y Ajustes (carpeta oculta de Drive), hoja de importación (borrar originales y 720p recomendado), aviso al terminar una importación.
+6. **Borrado de originales**: activarlo en Ajustes, esperar a que estén "En la nube" y usar "Borrar ahora" (diálogo del sistema de iOS).
+7. **Diagnóstico**: abrir, copiar y pegar en notas; no debe verse tu correo, rutas ni nombres de archivo.
+8. **Espacio libre** (`freeSpace` en iOS): en la hoja de "Cambiar de cuenta" debe mostrar un número real (si dice "no se pudo comprobar", avísame).
+9. Lo de rondas anteriores que siga pendiente (Face ID, multitarea, respaldo de iCloud, `monotonic` de S-07).
+
+### Pasar a tu cuenta personal (Google One), paso a paso
+**Antes (una sola vez, en Google Cloud):** si tu cuenta personal no está en la lista de usuarios de prueba de la pantalla de consentimiento OAuth (proyecto `vault-514801`, si está en modo "Testing"), agrégala en *APIs y servicios > Pantalla de consentimiento de OAuth > Usuarios de prueba*; si no, el inicio de sesión fallará con "acceso bloqueado". Si quieres que pruebe la migración completa en el emulador con una segunda cuenta, agrégala también ahí y avísame.
+
+**En el iPhone:**
+1. Conecta el iPhone a **Wi-Fi** y a la corriente, y deja la app abierta en primer plano.
+2. Ajustes > Sincronización y cuenta > **Cambiar de cuenta de Google**. Lee la hoja: confirma que el espacio libre del teléfono alcanza y que tu cuenta personal tiene al menos esa cantidad libre en Google Drive / Google One.
+3. **Empezar**. Primero baja de la cuenta de prueba lo que no esté en el teléfono (barra de progreso). Puedes pausar o cancelar cuando quieras; si se interrumpe, continúa al volver a abrir la bóveda.
+4. Cuando se abra el selector de Google, elige tu **cuenta personal** (si eliges la misma, te lo dirá). Si esa cuenta ya tiene el respaldo de OTRA bóveda de Vault, el cambio se detiene sin tocar nada.
+5. Espera a que suba y verifique todo (barra "n de m"). Al terminar verás "tus archivos están en la cuenta nueva".
+6. **Elige**: *Borrar datos de la cuenta anterior* (permanente; te pedirá iniciar sesión un momento con la cuenta de prueba y luego volver a la personal) o *Conservarlos* como copia extra.
+7. **Comprueba**: Ajustes > Sincronización y cuenta debe mostrar tu correo personal y todo "En la nube"; abre una foto y un video. Tu **código de recuperación** no cambia (el respaldo nuevo queda en tu cuenta personal).
+8. Cuando ya no la uses, quita la cuenta de prueba de los usuarios de prueba de Google Cloud.
+
+### Dónde retomar / pendiente
+- No hay **Compartir** en Diagnóstico (solo Copiar): hace falta `share_plus` (verificar versión compatible con Flutter 3.41.6) o un canal nativo.
+- La prueba de humo de la migración en el emulador Android solo cubre lo que se puede hacer con UNA cuenta (hoja previa, elegir la misma cuenta, cancelar); el flujo completo con dos cuentas reales queda para tu iPhone o para cuando agregues una segunda cuenta de prueba.
+- Swift sin compilar ni probar: `videoThumbnail`, `freeSpace` y (de antes) `monotonic` en `ios/Runner/AppDelegate.swift`.

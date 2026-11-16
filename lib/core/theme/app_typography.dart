@@ -67,6 +67,14 @@ abstract final class AppTypography {
   );
 
 
+  /// Líneas del registro de Diagnóstico (monoespaciado compacto).
+  static const TextStyle log = TextStyle(
+    fontSize: 11,
+    fontFamily: 'monospace',
+    height: 1.4,
+    color: AppColors.textSecondary,
+  );
+
   /// Campo donde se escribe el código completo (29 caracteres con guiones):
   /// más compacto que [code] para que quepa en una línea en el teléfono.
   static const TextStyle codeInput = TextStyle(

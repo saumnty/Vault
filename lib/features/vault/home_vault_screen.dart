@@ -11,9 +11,12 @@ import '../../shared/widgets/empty_state.dart';
 import '../../shared/widgets/pinch_detector.dart';
 import '../../data/gallery/gallery_asset_source.dart';
 import '../../data/gallery/gallery_import_service.dart';
+import '../../data/sync/sync_service.dart';
+import '../gallery/delete_originals_sheet.dart';
 import '../gallery/gallery_picker_screen.dart';
 import '../gallery/import_options_sheet.dart';
 import '../gallery/import_progress_sheet.dart';
+import '../gallery/originals_pending_banner.dart';
 import '../settings/settings_environment.dart';
 import '../settings/settings_screen.dart';
 import '../sync/sync_cloud_button.dart';
@@ -85,14 +88,60 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
         unawaited(_services.onUnlocked?.call());
       });
     }
+    if (_services.gallery != null) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => unawaited(_refreshPendingOriginals()),
+      );
+      _services.sync?.summary.addListener(_onSyncSummary);
+    }
   }
 
   final TextEditingController _search = TextEditingController();
   bool _searching = false;
   bool _pinching = false;
 
+  /// Originales ya en la nube pendientes de borrar (aviso sobre la cuadrícula;
+  /// 0 si el borrado está apagado).
+  int _pendingOriginals = 0;
+  SyncPhase? _lastPhase;
+
+  void _onSyncSummary() {
+    final phase = _services.sync?.summary.value.phase;
+    if (phase == _lastPhase) return;
+    _lastPhase = phase;
+    if (phase == SyncPhase.idle) unawaited(_refreshPendingOriginals());
+  }
+
+  Future<void> _refreshPendingOriginals() async {
+    final gallery = _services.gallery;
+    if (gallery == null) return;
+    int n;
+    try {
+      n = await gallery.service.pendingOriginalsCount();
+    } on Object {
+      n = 0; // bóveda bloqueada u otro fallo: sin aviso
+    }
+    if (mounted && n != _pendingOriginals) setState(() => _pendingOriginals = n);
+  }
+
+  /// Mismo flujo de Ajustes: lista verificada + confirmación del sistema.
+  Future<void> _deleteOriginalsNow() async {
+    final gallery = _services.gallery;
+    if (gallery == null) return;
+    final n = await showDeleteOriginalsSheet(context, service: gallery.service);
+    if (n > 0) {
+      _snack(
+        n == 1
+            ? 'Se borró 1 original del dispositivo'
+            : 'Se borraron $n originales del dispositivo',
+      );
+    }
+    await _refreshPendingOriginals();
+  }
+
   @override
   void dispose() {
+    _services.sync?.summary.removeListener(_onSyncSummary);
     _controller.dispose();
     _search.dispose();
     super.dispose();
@@ -292,8 +341,10 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
         folderId: widget.currentFolderId,
         videoQuality: choices.videoQuality,
       ),
+      deleteOriginalsEnabled: choices.deleteOriginalsWhenInCloud,
     );
     await _controller.load();
+    unawaited(_refreshPendingOriginals());
     _services.sync?.run(); // sube lo recién importado
     unawaited(_services.afterOpen?.call());
     if (result == null) return;
@@ -387,6 +438,11 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                                   showSyncSheet(context, _services.sync!),
                             ),
                     ),
+                    if (_pendingOriginals > 0 && !c.isSelecting)
+                      OriginalsPendingBanner(
+                        count: _pendingOriginals,
+                        onDelete: _deleteOriginalsNow,
+                      ),
                     Expanded(
                       child: PinchDetector(
                         onStep: _onPinch,

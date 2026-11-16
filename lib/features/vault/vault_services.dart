@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 
 import '../../core/crypto/auth_controller.dart';
 import '../../core/crypto/secure_kv_store.dart';
+import '../../core/logging/diagnostics_buffer.dart';
 import '../../core/services/app_paths.dart';
 import '../../core/services/cache_manager.dart';
 import '../../core/services/plain_temp_manager.dart';
@@ -17,8 +18,13 @@ import '../../core/streaming/vault_stream_server.dart';
 import '../../data/gallery/gallery_import_service.dart';
 import '../../data/gallery/import_preferences.dart';
 import '../../data/gallery/photo_manager_gallery_source.dart';
+import '../../data/gallery/thumbnail_regeneration_service.dart';
+import '../../data/gallery/video_thumbnailer.dart';
 import '../../data/gallery/video_compress_plugin.dart';
 import '../../data/cloud/cloud_provider.dart';
+import '../../data/migration/account_migration_service.dart';
+import '../../data/migration/free_space.dart';
+import '../../data/migration/migration_repository.dart';
 import '../../data/repositories/vault_database.dart';
 import '../../data/sync/network_monitor.dart';
 import '../../data/sync/offline_service.dart';
@@ -106,6 +112,7 @@ class VaultServices {
     this.gallery,
     this.sync,
     this.storage,
+    this.migration,
   });
 
   final VaultDataRepository repository;
@@ -152,6 +159,9 @@ class VaultServices {
   /// Almacenamiento de Ajustes (límite de caché, liberar espacio). `null` =
   /// no disponible (pruebas).
   final StorageService? storage;
+
+  /// Cambio de cuenta de Google con migración (`null` = no disponible).
+  final AccountMigrationService? migration;
 
   /// Servicios reales. Las dependencias pesadas se crean bajo demanda.
   factory VaultServices.real() {
@@ -216,6 +226,15 @@ class VaultServices {
         await core.temp.sweep();
         await core.offline.reconcile();
         await core.cache.enforce();
+        // Miniaturas que faltan (p. ej. videos importados sin miniatura):
+        // en segundo plano, acotado y sin bloquear la apertura.
+        final regen = _sharedGallery?.regeneration;
+        if (regen != null) unawaited(regen.run());
+        // Cambio de cuenta a medias (app matada, bloqueo): se retoma solo
+        // si no necesita al usuario.
+        final m = core.migration;
+        final st = await m.refresh();
+        if (st != null && _autoResumable(st.phase)) unawaited(m.resume());
       },
       gallery: _sharedGallery ??= _createGallery(repository, sync),
       sync: sync,
@@ -224,6 +243,7 @@ class VaultServices {
         items: repository,
         offline: core.offline,
       ),
+      migration: core.migration,
     );
   }
 
@@ -253,6 +273,8 @@ class VaultServices {
       resolvePath: AppPaths.resolve,
     );
     final temp = PlainTempManager.instance;
+    // Al bloquear: el registro de diagnóstico en memoria se borra.
+    session.addOnClear(DiagnosticsBuffer.instance.clear);
     // Al bloquear: temporales descifrados fuera, SIN esperas.
     session.addOnClear(temp.purgeSync);
     // ...y todo servidor de streaming local cerrado (corta conexiones).
@@ -276,8 +298,31 @@ class VaultServices {
         await cache.enforce();
       },
     );
-    return _Core(sync, cache, fetcher, offline, opener, temp);
+    final migration = AccountMigrationService(
+      cloud: cloud,
+      items: repository,
+      migration: MigrationRepository(),
+      queue: sync.queue,
+      sync: sync,
+      fetcher: fetcher,
+      network: ConnectivityPlusMonitor(),
+      prefs: SyncPreferences(prefsStore),
+      recoveryBackupProvider: () => AuthController().exportRecoveryBackup(),
+      resolvePath: AppPaths.resolve,
+      setCachePurgeSuspended: (v) => cache.suspended = v,
+      freeSpace: platformFreeSpace,
+    );
+    // Al bloquear: el cambio de cuenta se pausa (el estado queda en la BD).
+    session.addOnClear(migration.pause);
+    return _Core(sync, cache, fetcher, offline, opener, temp, migration);
   }
+
+  /// Fases que se retoman solas (las demás esperan una decisión).
+  static bool _autoResumable(MigrationPhase p) =>
+      p == MigrationPhase.downloading ||
+      p == MigrationPhase.checkingNew ||
+      p == MigrationPhase.uploading ||
+      p == MigrationPhase.finalizing;
 
   static SyncService _createSync(
     VaultDataRepository repository,
@@ -327,6 +372,7 @@ class VaultServices {
     final session = VaultSession();
     final source = PhotoManagerGallerySource();
     final preferences = GalleryImportPreferences(FlutterSecureKeyValueStore());
+    final videoThumbnailer = PlatformVideoThumbnailer();
     final service = GalleryImportService(
       source: source,
       compressor: VideoCompressPlugin(),
@@ -341,11 +387,22 @@ class VaultServices {
       // defecto, leída en cada intento). No se borra nada automáticamente.
       deletionEnabledProvider: preferences.getDeleteOriginalsWhenInCloud,
       cloudVerifier: sync.cloudVerifier,
+      videoThumbnailer: videoThumbnailer,
+    );
+    final regeneration = ThumbnailRegenerationService(
+      repository: repository,
+      source: source,
+      videoThumbnailer: videoThumbnailer,
+      filesKey: () => session.filesKey,
+      thumbsKey: () => session.keysOrNull?.thumbs,
+      tempDirProvider: () =>
+          Directory(p.join(AppPaths.cacheDir.path, 'import_tmp')),
     );
     return GalleryDeps(
       source: source,
       service: service,
       preferences: preferences,
+      regeneration: regeneration,
     );
   }
 }
@@ -359,6 +416,7 @@ class _Core {
     this.offline,
     this.opener,
     this.temp,
+    this.migration,
   );
 
   final SyncService sync;
@@ -367,4 +425,5 @@ class _Core {
   final OfflineService offline;
   final VaultMediaOpener opener;
   final PlainTempManager temp;
+  final AccountMigrationService migration;
 }

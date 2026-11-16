@@ -10,6 +10,7 @@ import 'package:sqflite_sqlcipher/sqflite.dart';
 import '../../core/crypto/auth_controller.dart';
 import '../../core/crypto/crypto_service.dart';
 import '../../core/crypto/key_recovery_service.dart';
+import '../../core/logging/vault_log.dart';
 import '../../core/services/app_paths.dart';
 import '../cloud/cloud_storage.dart';
 import '../repositories/vault_database.dart';
@@ -272,6 +273,7 @@ class RestoreService {
     if (await auth.hasVault()) {
       throw StateError('Ya existe una bóveda en este dispositivo');
     }
+    VaultLog.d('Restauración iniciada', category: 'restore');
     await AppPaths.init();
     final staging = stagingDir..createSync(recursive: true);
     final stagedThumbs = Directory(p.join(staging.path, 'thumbs'))
@@ -337,6 +339,7 @@ class RestoreService {
     await prefs.markSnapshotDone(_now());
     await discardStaging();
     _candidate = null; // las llaves pasaron a la sesión
+    VaultLog.d('Restauración terminada', category: 'restore');
     return RestoreResult(
       items: summary.items - summary.lost,
       folders: summary.folders,
@@ -533,7 +536,11 @@ class RestoreService {
       final version = Sqflite.firstIntValue(
         await db.rawQuery('PRAGMA user_version'),
       );
-      if (version != VaultSchema.version) {
+      // v6 (anterior al cambio de cuenta) se acepta: al abrirla la app la
+      // actualiza de forma incremental. Más nuevas o más viejas: incompatible.
+      if (version == null ||
+          version < VaultSchema.minUpgradableVersion ||
+          version > VaultSchema.version) {
         throw const RestoreIncompatibleException();
       }
 
@@ -548,6 +555,12 @@ class RestoreService {
       var missingThumbs = 0;
       final thumbs = <_ThumbJob>[];
       final batch = db.batch();
+      if (version >= 7) {
+        // Un cambio de cuenta a medias en la copia NO se hereda: el estado de
+        // una migración pertenece al teléfono que la hizo.
+        batch.delete('migration_items');
+        batch.delete('migration_state');
+      }
       for (final r in rows) {
         final id = r['id'] as String;
         // S-15: el id acaba en nombres de archivo locales (`<id>.thumb`): solo

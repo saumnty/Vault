@@ -18,11 +18,18 @@ import '../../core/session/vault_session.dart';
 /// v4 = F5 (tabla `sync_queue`; vault_items.cloudMd5/cloudSize/
 /// thumbDriveFileId); v5 = F6a (sync_queue.payload para borrados remotos);
 /// v6 = S-09 (vault_items.fileId y thumbFileId: UUID del encabezado del
-/// `.vault`/`.thumb`, comprobado al abrir/descargar). Sin migración: al subir de versión se recrea todo.
+/// `.vault`/`.thumb`, comprobado al abrir/descargar);
+/// v7 = cambio de cuenta de Google (tablas `migration_state` y
+/// `migration_items`). DESDE v6 la actualización es INCREMENTAL (conserva los
+/// datos: ya hay bóvedas reales en iPhone); versiones anteriores se recrean. Sin migración: al subir de versión se recrea todo.
 class VaultSchema {
   VaultSchema._();
 
-  static const int version = 6;
+  static const int version = 7;
+
+  /// Primera versión que se actualiza sin perder datos (y que un snapshot de
+  /// Drive puede traer al restaurar).
+  static const int minUpgradableVersion = 6;
   static const String dbFileName = 'vault_secure.db';
 
   static const List<String> indexNames = [
@@ -98,10 +105,54 @@ class VaultSchema {
       'CREATE INDEX idx_items_drive ON vault_items(driveFileId)',
     );
     await db.execute('CREATE INDEX idx_folders_parent ON folders(parentId)');
+    await createMigrationTables(db);
+  }
+
+  /// Cambio de cuenta de Google (v7). Una sola fila de estado (`id = 1`) y,
+  /// por item, las referencias a la nube de la cuenta ANTERIOR (para poder
+  /// cancelar sin perder nada tras el reinicio de referencias).
+  static Future<void> createMigrationTables(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS migration_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        phase TEXT NOT NULL,
+        oldEmail TEXT,
+        newEmail TEXT,
+        startedAt INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL,
+        neededBytes INTEGER NOT NULL DEFAULT 0,
+        downloadTotal INTEGER NOT NULL DEFAULT 0,
+        downloadDone INTEGER NOT NULL DEFAULT 0,
+        lastError TEXT
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS migration_items (
+        itemId TEXT PRIMARY KEY,
+        oldStatus TEXT NOT NULL,
+        oldDriveFileId TEXT,
+        oldCloudMd5 TEXT,
+        oldCloudSize INTEGER,
+        oldThumbDriveFileId TEXT
+      )
+    ''');
+  }
+
+  /// Actualiza una BD existente. Desde [minUpgradableVersion] es incremental
+  /// (no borra nada); anteriores se recrean (sin datos reales entonces).
+  static Future<void> upgrade(Database db, int from, int to) async {
+    if (from < minUpgradableVersion) {
+      await recreate(db);
+      return;
+    }
+    // v6 -> v7: tablas del cambio de cuenta.
+    await createMigrationTables(db);
   }
 
   /// Borra todo y recrea (sustituye a una migración).
   static Future<void> recreate(Database db) async {
+    await db.execute('DROP TABLE IF EXISTS migration_items');
+    await db.execute('DROP TABLE IF EXISTS migration_state');
     await db.execute('DROP TABLE IF EXISTS sync_queue');
     await db.execute('DROP TABLE IF EXISTS vault_items');
     await db.execute('DROP TABLE IF EXISTS folders');
@@ -256,7 +307,7 @@ class VaultDatabase {
         version: VaultSchema.version,
         onCreate: (db, v) => VaultSchema.create(db),
         // Sin datos reales: cualquier cambio de versión recrea el esquema.
-        onUpgrade: (db, o, n) => VaultSchema.recreate(db),
+        onUpgrade: (db, o, n) => VaultSchema.upgrade(db, o, n),
         onDowngrade: (db, o, n) => VaultSchema.recreate(db),
       ),
     );

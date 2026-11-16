@@ -278,6 +278,13 @@ class SyncQueueRepository {
   }
 
   /// "Sincronizar ahora": los pendientes aplazados por backoff se adelantan.
+  /// Vacía la cola entera (cambio de cuenta: los ids de la cuenta vieja no
+  /// valen en la nueva).
+  Future<void> clearAll() async {
+    final db = await _dbProvider();
+    await db.delete('sync_queue');
+  }
+
   Future<void> clearBackoff() async {
     final db = await _dbProvider();
     await db.update(

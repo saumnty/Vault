@@ -1,3 +1,4 @@
+import AVFoundation
 import Flutter
 import UIKit
 import Darwin.Mach
@@ -48,6 +49,53 @@ import Darwin.Mach
         }
       case "setSecure":
         result(nil)
+      case "freeSpace":
+        // iOS: sin probar en dispositivo. Espacio disponible para datos
+        // importantes del usuario (el que iOS puede liberar incluido).
+        let home = URL(fileURLWithPath: NSHomeDirectory())
+        if let values = try? home.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+           let free = values.volumeAvailableCapacityForImportantUsage {
+          result(NSNumber(value: free))
+        } else {
+          result(nil)
+        }
+      case "videoThumbnail":
+        // iOS: sin probar en dispositivo. Miniatura de un video LOCAL con
+        // AVAssetImageGenerator: lado maximo `size`, JPEG, fotograma central
+        // (o el primero si falla). Devuelve nil si no se pudo. Se usa en vez
+        // de video_compress (fotograma a resolucion completa, sin respuesta si
+        // falla y con posicion -1 por defecto, invalida en iOS).
+        guard let args = call.arguments as? [String: Any],
+              let path = args["path"] as? String else {
+          result(FlutterError(code: "bad_args", message: "path requerido", details: nil))
+          return
+        }
+        let maxSide = (args["size"] as? Int) ?? 256
+        DispatchQueue.global(qos: .userInitiated).async {
+          let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+          let generator = AVAssetImageGenerator(asset: asset)
+          generator.appliesPreferredTrackTransform = true
+          generator.maximumSize = CGSize(width: maxSide, height: maxSide)
+          generator.requestedTimeToleranceBefore = CMTime.positiveInfinity
+          generator.requestedTimeToleranceAfter = CMTime.positiveInfinity
+          let seconds = CMTimeGetSeconds(asset.duration)
+          let middle = seconds.isFinite && seconds > 0 ? seconds / 2.0 : 0.0
+          var jpeg: Data? = nil
+          for t in [middle, 0.0] {
+            let time = CMTime(seconds: t, preferredTimescale: 600)
+            if let image = try? generator.copyCGImage(at: time, actualTime: nil) {
+              jpeg = UIImage(cgImage: image).jpegData(compressionQuality: 0.8)
+              if jpeg != nil { break }
+            }
+          }
+          DispatchQueue.main.async {
+            if let data = jpeg {
+              result(FlutterStandardTypedData(bytes: data))
+            } else {
+              result(nil)
+            }
+          }
+        }
       case "monotonic":
         // iOS: sin probar en dispositivo (S-07). mach_continuous_time cuenta
         // desde el arranque e incluye el sueno; no depende de la hora de

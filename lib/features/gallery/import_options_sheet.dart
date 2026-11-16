@@ -9,6 +9,7 @@ import '../../data/gallery/video_compressor.dart';
 import '../../shared/format.dart';
 import '../../shared/widgets/app_buttons.dart';
 import '../../shared/widgets/blur_sheet.dart';
+import 'delete_originals_sheet.dart';
 
 /// Elecciones del usuario antes de importar.
 class ImportChoices {
@@ -94,6 +95,25 @@ class _ImportOptionsContentState extends State<ImportOptionsContent> {
     return 'Tamaño estimado $after';
   }
 
+  /// "Ahorras ≈ X" al elegir 720p en vez de Original (solo si se conoce el
+  /// tamaño original y el ahorro es real).
+  String? _savingText() {
+    final videos = _videos;
+    if (videos.isEmpty || videos.any((v) => v.sizeBytes == null)) return null;
+    final original = videos.fold<int>(0, (s, v) => s + v.sizeBytes!);
+    final duration = videos.fold<Duration>(
+      Duration.zero,
+      (s, v) => s + v.duration,
+    );
+    final at720 = estimateVideoBytes(
+      duration: duration,
+      quality: VideoQualityOption.p720,
+      originalBytes: original,
+    );
+    if (at720 == null || original - at720 <= 0) return null;
+    return 'Ahorras ≈ ${formatBytes(original - at720)}';
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasVideos = _videos.isNotEmpty;
@@ -113,6 +133,8 @@ class _ImportOptionsContentState extends State<ImportOptionsContent> {
             _QualityTile(
               label: q.label,
               detail: _sizeText(q),
+              recommended: q == VideoQualityOption.p720,
+              saving: q == VideoQualityOption.p720 ? _savingText() : null,
               selected: q == _quality,
               onTap: () => setState(() => _quality = q),
             ),
@@ -127,8 +149,7 @@ class _ImportOptionsContentState extends State<ImportOptionsContent> {
               style: AppTypography.body,
             ),
             subtitle: const Text(
-              'Solo se guarda la preferencia. Nunca se borra nada sin tu '
-              'confirmación y sin verificar la copia en la nube.',
+              deleteOriginalsExplanation,
               style: AppTypography.caption,
             ),
           ),
@@ -160,10 +181,14 @@ class _QualityTile extends StatelessWidget {
     required this.detail,
     required this.selected,
     required this.onTap,
+    this.recommended = false,
+    this.saving,
   });
 
   final String label;
   final String detail;
+  final bool recommended;
+  final String? saving;
   final bool selected;
   final VoidCallback onTap;
 
@@ -173,7 +198,9 @@ class _QualityTile extends StatelessWidget {
       button: true,
       inMutuallyExclusiveGroup: true,
       checked: selected,
-      label: 'Calidad $label. $detail',
+      label:
+          'Calidad $label. ${recommended ? 'Recomendado. ' : ''}$detail'
+          '${saving == null ? '' : '. $saving'}',
       excludeSemantics: true,
       onTap: onTap,
       child: InkWell(
@@ -198,8 +225,28 @@ class _QualityTile extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(label, style: AppTypography.body),
+                      Row(
+                        children: [
+                          Text(label, style: AppTypography.body),
+                          if (recommended) ...[
+                            const SizedBox(width: AppSpacing.sm),
+                            Text(
+                              'Recomendado',
+                              style: AppTypography.label.copyWith(
+                                color: AppColors.success,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
                       Text(detail, style: AppTypography.caption),
+                      if (saving != null)
+                        Text(
+                          saving!,
+                          style: AppTypography.caption.copyWith(
+                            color: AppColors.success,
+                          ),
+                        ),
                     ],
                   ),
                 ),

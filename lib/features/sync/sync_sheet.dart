@@ -8,6 +8,7 @@ import '../../data/sync/sync_queue_repository.dart';
 import '../../data/sync/sync_service.dart';
 import '../../shared/widgets/app_buttons.dart';
 import '../../shared/widgets/blur_sheet.dart';
+import '../../shared/widgets/cloud_privacy_note.dart';
 import 'quota_bar.dart';
 
 /// Hoja "Sincronización" (mínimo de F5; el ajuste definitivo irá en F8).
@@ -122,6 +123,8 @@ class _SyncSheetContentState extends State<SyncSheetContent> {
               const SizedBox(height: AppSpacing.lg),
               _counts(s.counts),
             ],
+            const SizedBox(height: AppSpacing.lg),
+            const CloudPrivacyNote(),
             const SizedBox(height: AppSpacing.sm),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,

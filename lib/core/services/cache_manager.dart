@@ -91,6 +91,9 @@ class CacheManager {
   /// `.vault` no se purga aunque se supere el límite. Contador por id.
   final Map<String, int> _inUse = {};
 
+  /// `true` durante un cambio de cuenta: [enforce] no purga.
+  bool suspended = false;
+
   /// Marca [itemId] como en uso hasta [releaseInUse].
   void markInUse(String itemId) =>
       _inUse.update(itemId, (n) => n + 1, ifAbsent: () => 1);
@@ -149,6 +152,9 @@ class CacheManager {
   /// Purga LRU hasta bajar de [maxBytes] (por defecto el límite guardado).
   /// Las llamadas se serializan. Devuelve los ids purgados, en orden.
   Future<List<String>> enforce({int? maxBytes}) {
+    // Cambio de cuenta en curso: NO se purga nada (hay archivos recién
+    // bajados de la cuenta vieja que aún no están en la nueva).
+    if (suspended) return Future.value(const <String>[]);
     final run = _tail.then((_) => _enforce(maxBytes));
     _tail = run.then<void>((_) {}, onError: (_) {});
     return run;

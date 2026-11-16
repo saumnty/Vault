@@ -1,9 +1,15 @@
 import 'package:flutter/foundation.dart';
 
+import 'diagnostics_buffer.dart';
+
 /// S-12: logger central. En depuración imprime el mensaje; en release NO emite
-/// nada (logcat/Console son legibles por otros procesos con adb). Para errores
-/// ([error]) solo se registra el `runtimeType`, nunca `toString()`: una
-/// `FileSystemException` incluye rutas/nombres de archivo.
+/// nada por consola (logcat/Console son legibles por otros procesos con adb).
+/// Para errores ([error]) solo se registra el `runtimeType`, nunca
+/// `toString()`: una `FileSystemException` incluye rutas/nombres de archivo.
+///
+/// Además, SIEMPRE (también en release) alimenta el [DiagnosticsBuffer] en
+/// memoria que muestra Ajustes > Acerca de > Diagnóstico. [category] es una
+/// etiqueta corta fija (import, thumbs, sync, migration, auth, ui...).
 class VaultLog {
   VaultLog._();
 
@@ -15,16 +21,20 @@ class VaultLog {
 
   static void _defaultSink(String message) => debugPrint(message);
 
-  /// Mensaje fijo (sin datos del usuario). Silencioso en release.
-  static void d(String message) {
+  /// Mensaje fijo (sin datos del usuario). Consola solo en depuración; el
+  /// búfer de diagnóstico siempre.
+  static void d(String message, {String category = 'app'}) {
+    DiagnosticsBuffer.instance.add(DiagLevel.debug, category, message);
     if (!isDebug()) return;
     sink(message);
   }
 
   /// Registra [message] y, si hay [error], solo su `runtimeType`.
-  static void e(String message, [Object? error]) {
+  static void e(String message, [Object? error, String category = 'app']) {
+    final line = error == null ? message : '$message (${error.runtimeType})';
+    DiagnosticsBuffer.instance.add(DiagLevel.error, category, line);
     if (!isDebug()) return;
-    sink(error == null ? message : '$message (${error.runtimeType})');
+    sink(line);
   }
 
   /// Solo pruebas: restaura valores por defecto.

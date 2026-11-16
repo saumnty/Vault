@@ -112,6 +112,22 @@ void main() {
     );
   });
 
+  testWidgets('explica que se sube cifrado a una carpeta oculta de Drive', (
+    tester,
+  ) async {
+    final ui = await _build(tester, signedIn: false);
+    await _open(tester, ui);
+    expect(find.textContaining('carpeta oculta de tu Google Drive'),
+        findsOneWidget);
+    expect(find.textContaining('Administrar aplicaciones'), findsNothing);
+    await tester.ensureVisible(find.text('Más información'));
+    await tester.tap(find.text('Más información'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Administrar aplicaciones > Vault'),
+        findsOneWidget);
+    expect(find.textContaining('verificación en dos pasos'), findsOneWidget);
+  });
+
   testWidgets('con cuenta: correo, cuota con barra, conteos y errores', (
     tester,
   ) async {

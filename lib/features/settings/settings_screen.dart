@@ -10,14 +10,18 @@ import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
 import '../../data/cloud/cloud_storage.dart';
 import '../../data/gallery/video_compressor.dart';
+import '../../data/migration/account_migration_service.dart';
 import '../../data/sync/storage_service.dart';
 import '../../data/sync/sync_service.dart';
 import '../../shared/format.dart';
 import '../../shared/widgets/app_buttons.dart';
 import '../../shared/widgets/choice_sheet.dart';
+import '../../shared/widgets/cloud_privacy_note.dart';
 import '../gallery/delete_originals_sheet.dart';
 import '../sync/quota_bar.dart';
 import '../vault/vault_services.dart';
+import 'account_migration_screen.dart';
+import 'diagnostics_screen.dart';
 import 'pin_flows.dart';
 import 'settings_environment.dart';
 import 'widgets/settings_widgets.dart';
@@ -72,6 +76,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _wifiOnly = true;
   String _version = '';
   bool _busyStorage = false;
+  int? _missingThumbs;
+  bool _regenBusy = false;
   bool _signingIn = false;
 
   @override
@@ -92,6 +98,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final delete = await _env.importPreferences.getDeleteOriginalsWhenInCloud();
     final wifi = await _sync?.getWifiOnly() ?? true;
     final stats = await _safeStats();
+    final missing = await _safeMissingThumbs();
     String version = '';
     try {
       version = (await _env.versionLoader()).toString();
@@ -107,6 +114,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _deleteOriginals = delete;
       _wifiOnly = wifi;
       _stats = stats;
+      _missingThumbs = missing;
       _version = version;
       _loaded = true;
     });
@@ -117,6 +125,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return await _storage?.stats();
     } on Object {
       return null; // bóveda bloqueada
+    }
+  }
+
+  Future<int?> _safeMissingThumbs() async {
+    try {
+      return await widget.services.gallery?.regeneration?.countMissing();
+    } on Object {
+      return null; // bóveda bloqueada
+    }
+  }
+
+  /// Regenera las miniaturas que faltan (videos importados sin miniatura,
+  /// miniaturas perdidas al restaurar...). Manual: sin topes y reintenta lo
+  /// que falló.
+  Future<void> _regenerateThumbs() async {
+    final regen = widget.services.gallery?.regeneration;
+    if (regen == null || _regenBusy) return;
+    setState(() => _regenBusy = true);
+    try {
+      final r = await regen.run(manual: true);
+      final left = await _safeMissingThumbs();
+      if (!mounted) return;
+      setState(() => _missingThumbs = left);
+      _snack(
+        r.candidates == 0
+            ? 'No falta ninguna miniatura'
+            : '${r.regenerated} miniatura(s) regenerada(s)'
+                  '${r.failed > 0 ? ', ${r.failed} sin resolver' : ''}',
+      );
+    } finally {
+      if (mounted) setState(() => _regenBusy = false);
     }
   }
 
@@ -382,6 +421,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _openMigration(AccountMigrationService migration) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => AccountMigrationScreen(service: migration),
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
   Future<void> _signOut() async {
     final sync = _sync;
     if (sync == null) return;
@@ -391,7 +439,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       message:
           'Vault dejará de sincronizar con tu Drive. Tus archivos en el '
           'teléfono se conservan y lo que ya está en tu Drive no se borra. '
-          'Puedes volver a iniciar sesión cuando quieras.',
+          'Si luego inicias sesión con OTRA cuenta, tus archivos NO se '
+          'moverán solos: lo que está en el Drive de ahora no pasa a la '
+          'cuenta nueva y los archivos que ya no estén en este teléfono '
+          'dejarán de estar disponibles. Para cambiar de cuenta sin perder '
+          'nada usa «Cambiar de cuenta de Google». Puedes volver a iniciar '
+          'sesión cuando quieras.',
       confirmLabel: 'Cerrar sesión',
       destructive: true,
     );
@@ -468,9 +521,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     SettingsSwitchTile(
       icon: Icons.delete_sweep_outlined,
       title: 'Borrar originales cuando estén en la nube',
-      subtitle:
-          'Apagado por defecto. Solo se borra un original con su copia '
-          'verificada en Drive y siempre se pide confirmación.',
+      subtitle: deleteOriginalsExplanation,
       value: _deleteOriginals,
       onChanged: _toggleDeleteOriginals,
     ),
@@ -513,19 +564,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
         title: 'Vaciar caché ahora',
         onTap: _busyStorage ? null : _clearCache,
       ),
+      if (widget.services.gallery?.regeneration != null)
+        SettingsTile(
+          icon: Icons.image_search_outlined,
+          title: 'Regenerar miniaturas que faltan',
+          subtitle: _regenBusy
+              ? 'Regenerando…'
+              : (_missingThumbs == null
+                    ? null
+                    : (_missingThumbs == 0
+                          ? 'No falta ninguna'
+                          : 'Faltan $_missingThumbs')),
+          onTap: _regenBusy ? null : _regenerateThumbs,
+        ),
     ];
   }
 
   Widget _syncSection(SyncService sync) {
     return ListenableBuilder(
-      listenable: Listenable.merge([sync.summary, sync.quota]),
+      listenable: Listenable.merge([
+        sync.summary,
+        sync.quota,
+        ?widget.services.migration?.status,
+      ]),
       builder: (context, _) {
         final s = sync.summary.value;
         final email = s.accountEmail;
         final signedIn = email != null;
+        final migration = widget.services.migration;
+        final migrating = migration?.status.value.active ?? false;
         return SettingsSection(
           title: 'Sincronización y cuenta',
           children: [
+            if (migration != null && migrating)
+              SettingsTile(
+                icon: Icons.swap_horiz,
+                title: 'Cambio de cuenta en curso',
+                subtitle: 'Toca para ver el progreso o continuar',
+                onTap: () => _openMigration(migration),
+              ),
+            const Padding(padding: AppSpacing.page, child: CloudPrivacyNote()),
             SettingsSwitchTile(
               icon: Icons.wifi,
               title: 'Solo Wi-Fi',
@@ -553,11 +631,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ? null
                     : () => unawaited(sync.run(manual: true)),
               ),
+              if (migration != null && !migrating)
+                SettingsTile(
+                  icon: Icons.swap_horiz,
+                  title: 'Cambiar de cuenta de Google',
+                  subtitle: 'Mueve tu bóveda a otra cuenta sin perder nada',
+                  onTap: () => _openMigration(migration),
+                ),
               SettingsTile(
                 icon: Icons.logout,
                 title: 'Cerrar sesión de Google',
                 destructive: true,
-                onTap: _signOut,
+                onTap: migrating ? null : _signOut,
               ),
             ] else
               Padding(
@@ -668,6 +753,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       'Vault no tiene servidores, ni '
                                       'analíticas, ni comparte datos con '
                                       'terceros.',
+                                ),
+                                SettingsTile(
+                                  icon: Icons.bug_report_outlined,
+                                  title: 'Diagnóstico',
+                                  subtitle: 'Registro local sin datos tuyos',
+                                  onTap: () => Navigator.of(context).push(
+                                    MaterialPageRoute<void>(
+                                      builder: (_) => DiagnosticsScreen(
+                                        headerLoader: () =>
+                                            loadDiagnosticsHeader(
+                                              versionLoader: _env.versionLoader,
+                                            ),
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ],
                             ),

@@ -59,7 +59,7 @@ class PhoneA {
   late SyncService sync;
   late SyncPreferences prefs;
   late FakeNetworkMonitor net;
-  final cloud = FakeCloudStorage();
+  FakeCloudStorage cloud = FakeCloudStorage();
   final crypto = CryptoService();
   late String recoveryCode;
   final Map<String, Uint8List> plains = {};

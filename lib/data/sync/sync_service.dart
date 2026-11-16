@@ -226,6 +226,10 @@ class SyncService {
   /// Última cuota consultada.
   final ValueNotifier<CloudQuota?> quota = ValueNotifier(null);
 
+  /// Cambio de cuenta de Google en curso: la sincronización normal queda en
+  /// pausa (la subida a la cuenta nueva la dirige `AccountMigrationService`).
+  bool pausedForMigration = false;
+
   bool _running = false;
   bool get isRunning => _running;
   CloudCancelToken? _token;
@@ -359,10 +363,15 @@ class SyncService {
   // -------------------------------------------------------------- ejecución
 
   /// Procesa la cola. [manual]: ignora la espera de backoff de los pendientes.
-  Future<void> run({bool manual = false}) async {
+  ///
+  /// Con [pausedForMigration] solo corre si [force] (la usa el cambio de
+  /// cuenta, que es quien manda la subida mientras dura).
+  Future<void> run({bool manual = false, bool force = false}) async {
     if (_running || _disposed) return;
     if (!isUnlocked()) return;
+    if (pausedForMigration && !force) return;
     _running = true;
+    VaultLog.d('Sincronización iniciada', category: 'sync');
     final token = _token = CloudCancelToken();
     _wake?.cancel();
     _wake = null;
@@ -403,17 +412,19 @@ class SyncService {
       // Bóveda bloqueada a mitad de la ejecución: se descarta sin ruido.
       _publishQuiet();
     } on CloudException catch (e) {
+      VaultLog.e('Sincronización con error', e, 'sync');
       summary.value = summary.value.copyWith(lastMessage: describeSyncError(e));
       await _finish(SyncPhase.idle);
     } finally {
       _running = false;
+      VaultLog.d('Sincronización terminada', category: 'sync');
       progress.value = const {};
       final hook = afterRun;
       if (hook != null && !_disposed && isUnlocked()) {
         try {
           await hook();
         } on Object catch (e) {
-          VaultLog.e('afterRun falló', e);
+          VaultLog.e('afterRun falló', e, 'sync');
         }
       }
     }
@@ -900,9 +911,7 @@ class SyncService {
       );
       _verify(remote, size, md5);
       await prefs.markSnapshotDone(_now(), takenAtMs: takenAt);
-      if (kDebugMode) {
-        debugPrint('[sync] snapshot de la BD subido: $size B');
-      }
+      VaultLog.d('Snapshot de la BD subido', category: 'sync');
       return true;
     } finally {
       try {

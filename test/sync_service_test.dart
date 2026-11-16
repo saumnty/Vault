@@ -535,7 +535,7 @@ void main() {
           'createdAt',
         ]),
       );
-      expect(VaultSchema.version, 6);
+      expect(VaultSchema.version, 7);
     });
 
     test('items borrados mientras están en cola se descartan', () async {

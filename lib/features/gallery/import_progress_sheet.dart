@@ -17,6 +17,7 @@ Future<ImportBatchResult?> showImportProgressSheet(
   required GalleryImportService service,
   required List<GalleryAsset> assets,
   required ImportOptions options,
+  bool deleteOriginalsEnabled = false,
 }) {
   return showBlurSheet<ImportBatchResult>(
     context,
@@ -25,6 +26,7 @@ Future<ImportBatchResult?> showImportProgressSheet(
       service: service,
       assets: assets,
       options: options,
+      deleteOriginalsEnabled: deleteOriginalsEnabled,
     ),
   );
 }
@@ -47,11 +49,15 @@ class ImportProgressContent extends StatefulWidget {
     required this.service,
     required this.assets,
     required this.options,
+    this.deleteOriginalsEnabled = false,
   });
 
   final GalleryImportService service;
   final List<GalleryAsset> assets;
   final ImportOptions options;
+
+  /// Si el borrado de originales está activado (cambia el mensaje final).
+  final bool deleteOriginalsEnabled;
 
   @override
   State<ImportProgressContent> createState() => _ImportProgressContentState();
@@ -186,6 +192,18 @@ class _ImportProgressContentState extends State<ImportProgressContent> {
             overflow: TextOverflow.ellipsis,
           ),
         ),
+      if (r.succeeded > 0) ...[
+        const SizedBox(height: AppSpacing.sm),
+        Text(
+          widget.deleteOriginalsEnabled
+              ? 'Los originales siguen en tu galería. Cuando su copia esté '
+                    'verificada en la nube, te ofreceremos borrarlos, siempre '
+                    'con tu confirmación.'
+              : 'Los originales siguen en tu galería; cuando estén en la nube '
+                    'podrás borrarlos desde Ajustes.',
+          style: AppTypography.bodySecondary,
+        ),
+      ],
       const SizedBox(height: AppSpacing.md),
       AppFilledButton(
         label: 'Listo',

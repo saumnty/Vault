@@ -226,6 +226,40 @@ class VaultDataRepository {
     return rows.map(VaultItemModel.fromMap).toList();
   }
 
+  /// Todos los items (cambio de cuenta), los más antiguos primero.
+  Future<List<VaultItemModel>> getAllItems() async {
+    final db = await _dbProvider();
+    final rows = await db.query('vault_items', orderBy: 'createdAt ASC');
+    return rows.map(VaultItemModel.fromMap).toList();
+  }
+
+  /// Items sin miniatura cifrada registrada (importación que no pudo generarla
+  /// o miniatura perdida al restaurar), los más recientes primero.
+  Future<List<VaultItemModel>> getItemsMissingThumb() async {
+    final db = await _dbProvider();
+    final rows = await db.query(
+      'vault_items',
+      where: 'thumbPath IS NULL',
+      orderBy: 'createdAt DESC',
+    );
+    return rows.map(VaultItemModel.fromMap).toList();
+  }
+
+  /// Registra una miniatura (re)generada: ruta, fileId del encabezado (S-09)
+  /// y `thumbDriveFileId` a null para que la sincronización la suba.
+  Future<void> setThumb(
+    String id, {
+    required String thumbPath,
+    required String thumbFileId,
+  }) async {
+    AppPaths.validateRelative(thumbPath);
+    await _updateItem(id, {
+      'thumbPath': thumbPath,
+      'thumbFileId': thumbFileId,
+      'thumbDriveFileId': null,
+    });
+  }
+
   /// Items con copia local recuperable (estado `en_cache`), el menos usado
   /// recientemente primero (los nunca abiertos van antes).
   Future<List<VaultItemModel>> getCachedItemsLru() async {

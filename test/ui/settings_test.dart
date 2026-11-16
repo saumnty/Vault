@@ -103,6 +103,23 @@ void main() {
     expect(find.text('santy@example.com'), findsOneWidget);
   });
 
+  testWidgets('Sincronización y cuenta explica la carpeta oculta de Drive', (
+    tester,
+  ) async {
+    await _open(tester);
+    expect(find.textContaining('carpeta oculta de tu Google Drive'),
+        findsOneWidget);
+    await tester.ensureVisible(find.text('Más información'));
+    await tester.tap(find.text('Más información'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Administrar aplicaciones > Vault'),
+        findsOneWidget);
+    expect(find.textContaining('verificación en dos pasos'), findsOneWidget);
+    // El interruptor de borrar originales usa el mismo texto aclaratorio.
+    expect(find.textContaining('Apagado por defecto. Solo se borran'),
+        findsOneWidget);
+  });
+
   testWidgets('sin servicios de nube/almacenamiento oculta esas secciones', (
     tester,
   ) async {

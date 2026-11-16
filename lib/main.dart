@@ -38,6 +38,7 @@ void main() async {
   // D22: AES-GCM nativo (cryptography_flutter) con respaldo Dart; el resto de
   // primitivas siguen en Dart. Antes de cualquier operación criptográfica.
   configureCryptography();
+  VaultLog.d('Arranque de la app', category: 'app');
 
   // F6a: por si la app se cerró de forma abrupta con un video descifrado en
   // disco, se barre la carpeta de temporales en claro al arrancar.

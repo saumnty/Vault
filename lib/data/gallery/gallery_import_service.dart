@@ -13,6 +13,7 @@ import '../models/vault_item_model.dart';
 import '../repositories/vault_data_repository.dart';
 import 'gallery_asset_source.dart';
 import 'video_compressor.dart';
+import 'video_thumbnailer.dart';
 
 /// Etapa por la que pasa un archivo del lote.
 enum ImportStage {
@@ -151,7 +152,9 @@ class GalleryImportService {
     this.deletionEnabledProvider,
     this.cloudVerifier,
     this.thumbnailSize = 256,
+    VideoThumbnailer? videoThumbnailer,
   }) : _crypto = crypto ?? CryptoService(),
+       _videoThumbs = videoThumbnailer ?? PlatformVideoThumbnailer(),
        _newId = idGenerator ?? (() => const Uuid().v4()),
        _clock = clock ?? DateTime.now,
        _isIOS = isIOS ?? Platform.isIOS;
@@ -191,6 +194,7 @@ class GalleryImportService {
   final Future<bool> Function(VaultItemModel item)? cloudVerifier;
 
   final CryptoService _crypto;
+  final VideoThumbnailer _videoThumbs;
   final String Function() _newId;
   final DateTime Function() _clock;
   final bool _isIOS;
@@ -224,6 +228,7 @@ class GalleryImportService {
     final results = <ImportItemResult>[];
     var done = 0;
     var failed = 0;
+    VaultLog.d('Importación iniciada: ${assets.length} elementos', category: 'import');
     try {
       for (var i = 0; i < assets.length; i++) {
         final asset = assets[i];
@@ -291,6 +296,7 @@ class GalleryImportService {
         running: false,
       );
       _running = false;
+      VaultLog.d('Importación terminada: $done ok, $failed fallos', category: 'import');
     }
     return ImportBatchResult(results, cancelled: token.isCancelled);
   }
@@ -419,15 +425,34 @@ class GalleryImportService {
       var thumbOk = false;
       String? thumbFileId;
       try {
-        final bytes = await source.thumbnail(asset.id, size: thumbnailSize);
+        Uint8List? bytes;
+        if (asset.isVideo) {
+          // Videos: primero un fotograma del archivo ya materializado (también
+          // sirve si el original venía de iCloud); no depende de la fototeca.
+          bytes = await _videoThumbs.thumbnail(content, size: thumbnailSize);
+          if (bytes == null || bytes.isEmpty) {
+            VaultLog.d('Miniatura de video: se prueba la fototeca', category: 'thumbs');
+          }
+        }
+        if (bytes == null || bytes.isEmpty) {
+          bytes = await source.thumbnail(asset.id, size: thumbnailSize);
+        }
         if (bytes != null && bytes.isNotEmpty) {
           final enc = await _crypto.encryptBytes(bytes, tKey);
           await AppPaths.resolve(thumbRel).writeAsBytes(enc, flush: true);
           thumbFileId = CryptoService.fileIdOfHeader(enc);
           thumbOk = true;
+          VaultLog.d('Miniatura generada', category: 'thumbs');
+        } else {
+          VaultLog.d(
+            asset.isVideo
+                ? 'Sin miniatura (video)'
+                : 'Sin miniatura (imagen)',
+            category: 'thumbs',
+          );
         }
       } on Object catch (e) {
-        VaultLog.e('Miniatura no generada', e);
+        VaultLog.e('Miniatura no generada', e, 'thumbs');
       }
       check();
 
@@ -522,6 +547,15 @@ class GalleryImportService {
             i.sourceAssetId != null)
           i,
     ];
+  }
+
+  /// Cuántos originales distintos podrían borrarse (ya en la nube según la BD
+  /// local, SIN consultar a Drive). 0 si el borrado está apagado o no hay
+  /// verificador. Sirve para el aviso de la cuadrícula; no borra nada.
+  Future<int> pendingOriginalsCount() async {
+    if (cloudVerifier == null || !await isDeletionEnabled) return 0;
+    final all = await deleteOriginalCandidates();
+    return {for (final c in all) c.sourceAssetId}.length;
   }
 
   /// Candidatos cuya copia en la nube SE VERIFICA ahora mismo (consulta a

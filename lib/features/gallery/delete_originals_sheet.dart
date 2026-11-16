@@ -9,6 +9,13 @@ import '../../shared/format.dart';
 import '../../shared/widgets/app_buttons.dart';
 import '../../shared/widgets/blur_sheet.dart';
 
+/// Texto aclaratorio del interruptor "Borrar originales cuando estén en la
+/// nube" (hoja de importación y Ajustes).
+const String deleteOriginalsExplanation =
+    'Apagado por defecto. Solo se borran los originales cuya copia ya está '
+    'verificada en la nube, y el sistema te pedirá confirmación antes de '
+    'borrar.';
+
 /// Muestra la hoja "Borrar originales" y devuelve cuántos originales se
 /// borraron (0 si no hay nada, se cancela o falla). Nunca borra sin que el
 /// usuario pulse el botón destructivo.
