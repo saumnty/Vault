@@ -55,7 +55,7 @@ import Darwin.Mach
         // con la hora), asi que boot = -1 y el reinicio se detecta porque el
         // valor baja.
         var info = mach_timebase_info_data_t()
-        mach_timebase_info(&info)
+        _ = mach_timebase_info(&info)
         let ticks = mach_continuous_time()
         let nanos = ticks &* UInt64(info.numer) / UInt64(info.denom)
         result(["boot": -1, "elapsedMs": Int(nanos / 1_000_000)])
