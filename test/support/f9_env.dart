@@ -124,6 +124,9 @@ class PhoneA {
     String? folderId,
     int plainSize = 40000,
     bool thumb = true,
+
+    /// Miniatura cifrada de verdad (formato .vault con su fileId, S-09).
+    bool realThumb = false,
   }) async {
     final rng = Random(id.hashCode);
     final plain = Uint8List.fromList(
@@ -134,14 +137,21 @@ class PhoneA {
     final file = AppPaths.resolve(rel);
     final src = File('${file.path}.plain');
     await src.writeAsBytes(plain);
-    await crypto.encryptFile(src, file, session.filesKey!);
+    final header = await crypto.encryptFile(src, file, session.filesKey!);
     await src.delete();
     String? thumbRel;
+    String? thumbFileId;
     if (thumb) {
       thumbRel = AppPaths.thumbRelativePath(id);
       final t = Uint8List.fromList(List.generate(300, (_) => rng.nextInt(256)));
       thumbs[id] = t;
-      await AppPaths.resolve(thumbRel).writeAsBytes(t);
+      if (realThumb) {
+        final enc = await crypto.encryptBytes(t, session.keys.thumbs);
+        await AppPaths.resolve(thumbRel).writeAsBytes(enc);
+        thumbFileId = CryptoService.fileIdOfHeader(enc);
+      } else {
+        await AppPaths.resolve(thumbRel).writeAsBytes(t);
+      }
     }
     await items.insertItem(
       VaultItemModel(
@@ -154,6 +164,8 @@ class PhoneA {
         createdAt: '2026-02-01T00:00:00',
         thumbPath: thumbRel,
         sourceAssetId: 'asset-$id',
+        fileId: header.fileIdString,
+        thumbFileId: thumbFileId,
       ),
     );
     return (await items.getItem(id))!;

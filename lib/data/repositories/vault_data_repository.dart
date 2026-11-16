@@ -1,5 +1,6 @@
 import 'package:sqflite_sqlcipher/sqflite.dart';
 
+import '../../core/services/app_paths.dart';
 import '../models/folder_model.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
@@ -320,16 +321,8 @@ class VaultDataRepository {
   /// [thumbPath] debe ser relativa.
   Future<void> setThumbPath(String id, String? thumbPath) async {
     if (thumbPath != null) {
-      // Misma validación que el modelo.
-      VaultItemModel(
-        id: id,
-        name: '',
-        encryptedPath: 'x',
-        fileSize: 0,
-        mimeType: '',
-        createdAt: '',
-        thumbPath: thumbPath,
-      ).toMap();
+      // Misma validación que el modelo (S-15: thumbs/<uuid>.thumb).
+      AppPaths.validateRelative(thumbPath);
     }
     await _updateItem(id, {'thumbPath': thumbPath});
   }

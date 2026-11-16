@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -75,9 +76,55 @@ class AppPaths {
       RegExp(r'^[A-Za-z]:').hasMatch(path) ||
       p.isAbsolute(path);
 
-  /// Valida y normaliza una ruta relativa. Rechaza absolutas, vacías y las
-  /// que salgan del directorio base (`..`). Devuelve la ruta con `/`.
+  /// UUID v4 en minúsculas (los ids de items se generan con `Uuid().v4()`).
+  static final RegExp _uuidV4 = RegExp(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+  );
+
+  static final RegExp _itemFilePath = RegExp(
+    r'^(?:vault/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.vault'
+    r'|thumbs/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.thumb)$',
+  );
+
+  /// Solo pruebas: acepta ids no UUID (`i1`, `a`…) en las rutas de items. Las
+  /// pruebas de S-15 lo dejan en `false`.
+  @visibleForTesting
+  static bool allowNonUuidIdsForTesting = false;
+
+  /// `true` si [id] es un UUID v4 en minúsculas.
+  static bool isValidItemId(String id) =>
+      _uuidV4.hasMatch(id) ||
+      (allowNonUuidIdsForTesting &&
+          RegExp(r'^[A-Za-z0-9_-]{1,64}$').hasMatch(id));
+
+  /// S-15: valida la ruta relativa de un archivo de item. Solo se acepta
+  /// exactamente `vault/<uuid>.vault` o `thumbs/<uuid>.thumb` (UUID v4 en
+  /// minúsculas, sin subcarpetas, `..`, mayúsculas ni barras invertidas).
+  /// Devuelve la ruta tal cual. Las rutas de otros recursos (caché, tmp, BD)
+  /// no pasan por aquí: se construyen con [cacheDir], [tmpPlainDir], [dbDir].
   static String validateRelative(String path) {
+    // Primero las comprobaciones genéricas (mensajes claros: vacía, absoluta,
+    // sale de la base).
+    validateGenericRelative(path);
+    if (_itemFilePath.hasMatch(path)) return path;
+    if (allowNonUuidIdsForTesting &&
+        RegExp(
+          r'^(?:vault/[^/\\]+\.vault|thumbs/[^/\\]+\.thumb)$',
+        ).hasMatch(path) &&
+        !path.contains('..')) {
+      return path;
+    }
+    throw ArgumentError.value(
+      path,
+      'path',
+      'Se esperaba vault/<uuid>.vault o thumbs/<uuid>.thumb',
+    );
+  }
+
+  /// Valida y normaliza una ruta relativa cualquiera dentro de la base.
+  /// Rechaza absolutas, vacías y las que salgan del directorio base (`..`).
+  /// Devuelve la ruta con `/`. NO sirve para archivos de items (S-15).
+  static String validateGenericRelative(String path) {
     if (path.trim().isEmpty) {
       throw ArgumentError.value(path, 'path', 'La ruta está vacía');
     }

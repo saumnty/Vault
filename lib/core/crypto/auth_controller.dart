@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../session/vault_session.dart';
 import 'biometric_key_store.dart';
 import 'crypto_debug.dart';
@@ -437,6 +439,11 @@ class AuthController {
   ///
   /// Devuelve `false` si el código es incorrecto. Lanza [FormatException] si
   /// [recoveryBackupJson] no es un respaldo válido.
+  ///
+  /// S-19: la app NO usa este método (restaura por `RestoreService`, que sí
+  /// aplica el límite de intentos del código). Se conserva solo como primitiva
+  /// de pruebas: no aplica límite de intentos, no lo uses en la interfaz.
+  @visibleForTesting
   Future<bool> restoreFromRecovery({
     required String recoveryCode,
     required String recoveryBackupJson,

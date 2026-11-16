@@ -121,6 +121,13 @@ class CloudCancelledException extends CloudException {
   const CloudCancelledException([super.message = 'Cancelado']);
 }
 
+/// S-14: el archivo remoto (declarado o recibido) supera el tope permitido.
+class CloudTooLargeException extends CloudException {
+  const CloudTooLargeException([
+    super.message = 'El archivo de la nube supera el tamaño permitido',
+  ]);
+}
+
 /// Cualquier otro error inesperado.
 class CloudUnknownException extends CloudException {
   const CloudUnknownException(super.message);
@@ -163,15 +170,21 @@ abstract interface class CloudStorage {
 
   Future<CloudFile> getMetadata(String fileId);
 
-  /// Descarga a [destination].
+  /// Descarga a [destination]. Si [maxBytes] no es null y el tamaño declarado
+  /// o los bytes recibidos lo superan, aborta, borra lo escrito y lanza
+  /// [CloudTooLargeException] (S-14).
   Future<void> download(
     String fileId,
     File destination, {
     CloudProgress? onProgress,
     CloudCancelToken? cancel,
+    int? maxBytes,
   });
 
-  Future<Uint8List> downloadBytes(String fileId);
+  /// Descarga en memoria. Con [maxBytes] lanza [CloudTooLargeException] si el
+  /// tamaño declarado en los metadatos o los bytes recibidos lo superan,
+  /// cortando la lectura en cuanto se excede (S-14).
+  Future<Uint8List> downloadBytes(String fileId, {int? maxBytes});
 
   Future<void> delete(String fileId);
 

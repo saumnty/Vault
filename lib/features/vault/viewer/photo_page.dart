@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../../../core/session/image_cache_wipe.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_motion.dart';
 import '../../../core/theme/app_radii.dart';
@@ -78,7 +79,9 @@ class _PhotoPageState extends State<PhotoPage>
     _tc.removeListener(_onTransform);
     _tc.dispose();
     _anim.dispose();
-    // Libera la referencia a los bytes en claro.
+    // Libera la referencia a los bytes en claro y los sobrescribe (S-05): el
+    // widget ya no existe y son un buffer propio.
+    zeroFill(_bytes);
     _bytes = null;
     super.dispose();
   }

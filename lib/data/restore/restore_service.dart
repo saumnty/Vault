@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite_sqlcipher/sqflite.dart';
 
 import '../../core/crypto/auth_controller.dart';
+import '../../core/crypto/crypto_service.dart';
 import '../../core/crypto/key_recovery_service.dart';
 import '../../core/services/app_paths.dart';
 import '../cloud/cloud_storage.dart';
@@ -91,10 +92,18 @@ class RestoreIncompatibleException extends RestoreException {
     : super('El respaldo es de una versión de Vault incompatible.');
 }
 
+/// S-14: un archivo de la nube supera el tope permitido (no se reintenta).
+class RestoreTooLargeException extends RestoreException {
+  const RestoreTooLargeException()
+    : super('El respaldo en la nube es demasiado grande y se rechazó.');
+}
+
 /// Lo descargado no coincide con el tamaño/MD5 de Drive: se puede reintentar.
 class RestoreDownloadMismatchException extends RestoreException {
   const RestoreDownloadMismatchException()
-    : super('La descarga no coincide con la copia de Drive. Inténtalo de nuevo.');
+    : super(
+        'La descarga no coincide con la copia de Drive. Inténtalo de nuevo.',
+      );
 }
 
 /// Restauración en un teléfono nuevo o instalación limpia (F9).
@@ -124,8 +133,10 @@ class RestoreService {
     String? dbPath,
     int parallelism = 4,
     int Function()? nowMs,
+    int? maxSnapshotBytes,
   }) : _opener = opener ?? openSqlCipherDatabase,
        _dbPathOverride = dbPath,
+       maxSnapshotBytes = maxSnapshotBytes ?? defaultMaxSnapshotBytes,
        _parallelism = parallelism < 1 ? 1 : parallelism,
        _now = nowMs ?? (() => DateTime.now().millisecondsSinceEpoch);
 
@@ -137,7 +148,21 @@ class RestoreService {
   final int _parallelism;
   final int Function() _now;
 
+  /// Tope del snapshot (inyectable en pruebas).
+  final int maxSnapshotBytes;
+
   static const String stagingDirName = 'restore_staging';
+
+  /// S-14: tope de `recovery_backup.json` (el real mide ~1 KiB).
+  static const int maxRecoveryBackupBytes = 4 * 1024;
+
+  /// S-14: tope del snapshot de la BD cifrada. Una BD SQLCipher con decenas de
+  /// miles de items (~1 KiB/fila) ocupa unas decenas de MiB; 256 MiB deja un
+  /// margen amplio sin permitir que una cuenta ajena agote disco/memoria.
+  static const int defaultMaxSnapshotBytes = 256 * 1024 * 1024;
+
+  /// S-14: tope de una miniatura cifrada (~256 px JPEG, decenas de KiB).
+  static const int maxThumbBytes = 8 * 1024 * 1024;
 
   String? _backupJson;
   CloudFile? _snapshotMeta;
@@ -171,10 +196,24 @@ class RestoreService {
     final keyMeta = await cloud.findByName(CloudNames.recoveryBackup);
     if (keyMeta == null) return RestoreProbeResult.noBackup;
     final snapshot = await cloud.findByName(CloudNames.dbSnapshot);
+    // S-14: el respaldo real mide ~1 KiB; se rechaza por tamaño declarado y
+    // por bytes recibidos ANTES de decodificar ni parsear nada.
+    if (keyMeta.size > maxRecoveryBackupBytes) {
+      return RestoreProbeResult.invalid;
+    }
     final String json;
     try {
-      json = utf8.decode(await cloud.downloadBytes(keyMeta.id));
+      final bytes = await cloud.downloadBytes(
+        keyMeta.id,
+        maxBytes: maxRecoveryBackupBytes,
+      );
+      if (bytes.length > maxRecoveryBackupBytes) {
+        return RestoreProbeResult.invalid;
+      }
+      json = utf8.decode(bytes);
       RecoveryBackup.parse(json);
+    } on CloudTooLargeException {
+      return RestoreProbeResult.invalid;
     } on FormatException {
       return RestoreProbeResult.invalid;
     }
@@ -242,7 +281,7 @@ class RestoreService {
     // 1. Snapshot de la BD.
     onProgress?.call(const RestoreProgress(RestoreStage.downloadingDb));
     final fresh = await cloud.getMetadata(snapshotMeta.id);
-    await _downloadVerified(fresh, stagedDb, cancel);
+    await _downloadVerified(fresh, stagedDb, cancel, maxSnapshotBytes);
 
     // 2. Abrir con la llave derivada de la DEK y reconciliar.
     onProgress?.call(const RestoreProgress(RestoreStage.opening));
@@ -350,11 +389,19 @@ class RestoreService {
     CloudFile meta,
     File target,
     CloudCancelToken? cancel,
+    int maxBytes,
   ) async {
+    // S-14: tope por tamaño declarado (antes de descargar) y por bytes
+    // recibidos (la nube corta la descarga al excederlo).
+    if (meta.size > maxBytes) throw const RestoreTooLargeException();
     final part = File('${target.path}.part');
     try {
       if (part.existsSync()) await part.delete();
-      await cloud.download(meta.id, part, cancel: cancel);
+      try {
+        await cloud.download(meta.id, part, cancel: cancel, maxBytes: maxBytes);
+      } on CloudTooLargeException {
+        throw const RestoreTooLargeException();
+      }
       final size = await part.length();
       final md5 = await md5OfFile(part);
       final expectedMd5 = meta.md5Checksum?.toLowerCase();
@@ -388,11 +435,34 @@ class RestoreService {
       return true; // ya descargada en un intento anterior
     }
     try {
-      await _downloadVerified(job.remote, target, cancel);
-      return true;
+      await _downloadVerified(job.remote, target, cancel, maxThumbBytes);
     } on CloudNotFoundException {
       return false;
+    } on RestoreTooLargeException {
+      // Miniatura desproporcionada (S-14): se trata como perdida.
+      return false;
     }
+    // S-09: la miniatura de Drive debe ser la que el snapshot registró (otra
+    // miniatura auténtica de la bóveda, o un snapshot viejo, no vale): se
+    // descarta y cuenta como miniatura perdida.
+    final expected = job.expectedFileId;
+    if (expected != null) {
+      String? got;
+      try {
+        got = await CryptoService.fileIdOfFile(target);
+      } on Object {
+        got = null;
+      }
+      if (got != expected) {
+        try {
+          await target.delete();
+        } on FileSystemException {
+          // staging: se limpia al terminar
+        }
+        return false;
+      }
+    }
+    return true;
   }
 
   /// Ejecuta [work] sobre [jobs] con hasta [_parallelism] a la vez. Al primer
@@ -480,6 +550,9 @@ class RestoreService {
       final batch = db.batch();
       for (final r in rows) {
         final id = r['id'] as String;
+        // S-15: el id acaba en nombres de archivo locales (`<id>.thumb`): solo
+        // se aceptan UUID v4 (nada de `/`, `..`, mayúsculas, etc.).
+        if (!AppPaths.isValidItemId(id)) throw const RestoreCorruptException();
         final file = remote[CloudNames.file(id)];
         final md5 = r['cloudMd5'] as String?;
         final size = r['cloudSize'] as int?;
@@ -515,7 +588,7 @@ class RestoreService {
         if (r['thumbPath'] != null) {
           final thumb = remote[CloudNames.thumb(id)];
           if (thumb != null) {
-            thumbs.add(_ThumbJob(id, thumb));
+            thumbs.add(_ThumbJob(id, thumb, r['thumbFileId'] as String?));
             batch.update(
               'vault_items',
               {'thumbDriveFileId': thumb.id},
@@ -605,7 +678,10 @@ class RestoreService {
 }
 
 class _ThumbJob {
-  const _ThumbJob(this.itemId, this.remote);
+  const _ThumbJob(this.itemId, this.remote, this.expectedFileId);
+
+  /// S-09: fileId registrado en el snapshot para esta miniatura.
+  final String? expectedFileId;
   final String itemId;
   final CloudFile remote;
 }

@@ -11,6 +11,7 @@ import '../../core/crypto/secure_kv_store.dart';
 import '../../core/services/app_paths.dart';
 import '../../core/services/cache_manager.dart';
 import '../../core/services/plain_temp_manager.dart';
+import '../../core/session/image_cache_wipe.dart';
 import '../../core/session/vault_session.dart';
 import '../../core/streaming/vault_stream_server.dart';
 import '../../data/gallery/gallery_import_service.dart';
@@ -314,6 +315,8 @@ class VaultServices {
     );
     // Al bloquear, la caché en memoria se vacía.
     session.addOnClear(loader.clear);
+    // S-05: y la caché global de imágenes decodificadas de Flutter.
+    session.addOnClear(wipeImageCache);
     return loader;
   }
 

@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
 import '../../core/crypto/crypto_service.dart';
+import '../../core/logging/vault_log.dart';
 import '../../core/services/app_paths.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
@@ -399,7 +400,11 @@ class GalleryImportService {
       // (d) Cifrar con la subllave "files".
       emit(ImportStage.encrypting);
       stageWatch.reset();
-      await _crypto.encryptFile(content, AppPaths.resolve(vaultRel), fKey);
+      final fileHeader = await _crypto.encryptFile(
+        content,
+        AppPaths.resolve(vaultRel),
+        fKey,
+      );
       if (!kReleaseMode) {
         // Solo tamaños y duraciones (sin nombres ni rutas).
         debugPrint(
@@ -412,15 +417,17 @@ class GalleryImportService {
       // (e) Miniatura cifrada con la subllave "thumbs". Su fallo no aborta.
       emit(ImportStage.thumbnail);
       var thumbOk = false;
+      String? thumbFileId;
       try {
         final bytes = await source.thumbnail(asset.id, size: thumbnailSize);
         if (bytes != null && bytes.isNotEmpty) {
           final enc = await _crypto.encryptBytes(bytes, tKey);
           await AppPaths.resolve(thumbRel).writeAsBytes(enc, flush: true);
+          thumbFileId = CryptoService.fileIdOfHeader(enc);
           thumbOk = true;
         }
       } on Object catch (e) {
-        debugPrint('Miniatura no generada para ${asset.id}: $e');
+        VaultLog.e('Miniatura no generada', e);
       }
       check();
 
@@ -438,6 +445,8 @@ class GalleryImportService {
           createdAt: _clock().toIso8601String(),
           syncStatus: SyncStatus.pendiente,
           thumbPath: thumbOk ? thumbRel : null,
+          fileId: fileHeader.fileIdString,
+          thumbFileId: thumbOk ? thumbFileId : null,
           contentHash: contentHash,
           sourceAssetId: asset.id,
           durationMs: asset.isVideo ? asset.duration.inMilliseconds : null,

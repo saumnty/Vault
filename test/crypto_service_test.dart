@@ -32,11 +32,6 @@ void main() {
         throwsA(isA<VaultAuthException>()),
       );
     });
-
-    test('encryptData/decryptData', () async {
-      final box = await crypto.encryptData('hola', keys.files);
-      expect(await crypto.decryptData(box, keys.files), 'hola');
-    });
   });
 
   group('Argon2id', () {

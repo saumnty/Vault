@@ -100,7 +100,11 @@ class VaultImportService {
 
       // 4. Cifrar en formato .vault v2 (bloques de 1 MiB, streaming).
       // Si falla, encryptFile borra el destino parcial y lanza excepción.
-      await _cryptoService.encryptFile(sourceFile, destFile, filesKey);
+      final fileHeader = await _cryptoService.encryptFile(
+        sourceFile,
+        destFile,
+        filesKey,
+      );
 
       // Verificar que el archivo cifrado realmente se creó en el sandbox
       if (!await destFile.exists()) return false;
@@ -116,6 +120,7 @@ class VaultImportService {
         createdAt: DateTime.now().toIso8601String(),
         syncStatus: SyncStatus.pendiente,
         contentHash: contentHash,
+        fileId: fileHeader.fileIdString,
       );
 
       await _repo.insertItem(itemModel);

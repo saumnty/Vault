@@ -83,7 +83,10 @@ void main() {
         );
       }
       expect(AppPaths.validateRelative('vault/a.vault'), 'vault/a.vault');
-      expect(AppPaths.validateRelative(r'vault\a.vault'), 'vault/a.vault');
+      // S-15: ni barras invertidas ni subcarpetas ni otros nombres.
+      for (final bad in [r'vault\a.vault', 'vault/sub/a.vault', 'x.vault']) {
+        expect(() => AppPaths.validateRelative(bad), throwsArgumentError);
+      }
     });
 
     test('resolve y relative son inversos', () {

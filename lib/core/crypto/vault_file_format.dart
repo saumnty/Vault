@@ -103,6 +103,14 @@ class VaultAuthException extends VaultCryptoException {
   final int? blockIndex;
 }
 
+/// S-09: el `.vault` (o `.thumb`) es auténtico pero NO es el que la base de
+/// datos registró para ese item (intercambio de archivos, índice antiguo). Se
+/// trata como archivo dañado.
+class VaultFileMismatchException extends VaultCryptoException {
+  const VaultFileMismatchException()
+    : super('El archivo no corresponde a este elemento (fileId distinto)');
+}
+
 // -----------------------------------------------------------------------------
 // Encabezado
 // -----------------------------------------------------------------------------
@@ -503,11 +511,18 @@ class VaultFileFormat {
   }
 
   /// Descifra bytes producidos por [encryptBytes] (o un `.vault` completo).
-  Future<Uint8List> decryptBytes(List<int> encrypted, SecretKey key) async {
+  Future<Uint8List> decryptBytes(
+    List<int> encrypted,
+    SecretKey key, {
+    String? expectedFileId,
+  }) async {
     final data = encrypted is Uint8List
         ? encrypted
         : Uint8List.fromList(encrypted);
     final header = VaultHeader.parse(data);
+    if (expectedFileId != null && header.fileIdString != expectedFileId) {
+      throw const VaultFileMismatchException();
+    }
     final layout = VaultLayout.fromEncryptedLength(
       data.length,
       header.blockSize,
@@ -568,6 +583,7 @@ class VaultFileReader {
     SecretKey key, {
     bool verifyFinal = true,
     AesGcmBackend? backend,
+    String? expectedFileId,
   }) async {
     final raf = await file.open(mode: FileMode.read);
     try {
@@ -575,6 +591,12 @@ class VaultFileReader {
       final header = VaultHeader.parse(
         await _readFully(raf, VaultHeader.length),
       );
+      // S-09: comparar con el fileId registrado ANTES de descifrar nada. El
+      // encabezado está en la AAD de cada bloque, así que no se puede
+      // falsear sin romper la autenticación.
+      if (expectedFileId != null && header.fileIdString != expectedFileId) {
+        throw const VaultFileMismatchException();
+      }
       final layout = VaultLayout.fromEncryptedLength(length, header.blockSize);
       final reader = VaultFileReader._(raf, header, layout, key, backend);
       if (verifyFinal) await reader.decryptBlock(layout.blockCount - 1);

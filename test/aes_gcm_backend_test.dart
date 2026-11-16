@@ -329,9 +329,7 @@ void main() {
         final crypto = CryptoService();
         final enc = await crypto.encryptBytes(utf8.encode('hola'), key);
         expect(utf8.decode(await crypto.decryptBytes(enc, key)), 'hola');
-        final s = await crypto.encryptData('texto', key);
-        expect(await crypto.decryptData(s, key), 'texto');
-        expect(p.calls, 4);
+        expect(p.calls, 2);
       },
     );
 

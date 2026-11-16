@@ -16,11 +16,13 @@ import '../../core/session/vault_session.dart';
 /// relativas, syncStatus, driveFileId, thumbPath, lastAccessedAt,
 /// contentHash, sourceAssetId, durationMs, folders.isOffline, índices);
 /// v4 = F5 (tabla `sync_queue`; vault_items.cloudMd5/cloudSize/
-/// thumbDriveFileId); v5 = F6a (sync_queue.payload para borrados remotos). Sin migración: al subir de versión se recrea todo.
+/// thumbDriveFileId); v5 = F6a (sync_queue.payload para borrados remotos);
+/// v6 = S-09 (vault_items.fileId y thumbFileId: UUID del encabezado del
+/// `.vault`/`.thumb`, comprobado al abrir/descargar). Sin migración: al subir de versión se recrea todo.
 class VaultSchema {
   VaultSchema._();
 
-  static const int version = 5;
+  static const int version = 6;
   static const String dbFileName = 'vault_secure.db';
 
   static const List<String> indexNames = [
@@ -62,7 +64,9 @@ class VaultSchema {
         durationMs INTEGER,
         cloudMd5 TEXT,
         cloudSize INTEGER,
-        thumbDriveFileId TEXT
+        thumbDriveFileId TEXT,
+        fileId TEXT,
+        thumbFileId TEXT
       )
     ''');
     // Cola de sincronización persistente (F5). Una fila por (itemId, kind);

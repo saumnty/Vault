@@ -535,7 +535,7 @@ void main() {
           'createdAt',
         ]),
       );
-      expect(VaultSchema.version, 5);
+      expect(VaultSchema.version, 6);
     });
 
     test('items borrados mientras están en cola se descartan', () async {
@@ -733,7 +733,9 @@ void main() {
         expect(blob.contains(hex(s)), isFalse);
       }
       expect(blob.contains(code), isFalse);
-      expect(blob.toLowerCase().contains('pin'), isFalse);
+      // (Sin buscar 'pin' en el texto: el base64 aleatorio puede contenerlo.)
+      final top = (jsonDecode(blob) as Map<String, dynamic>).keys;
+      expect(top.any((k) => k.toLowerCase().contains('pin')), isFalse);
       // Solo los campos esperados de una envoltura.
       final map = jsonDecode(blob) as Map<String, dynamic>;
       expect(map.keys.toSet(), {

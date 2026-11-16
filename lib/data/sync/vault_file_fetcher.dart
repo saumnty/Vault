@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import '../../core/crypto/crypto_service.dart';
 import '../cloud/cloud_storage.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
@@ -110,6 +111,24 @@ class VaultFileFetcher {
       final gotMd5 = await md5OfFile(part);
       if (gotMd5.toLowerCase() != md5.toLowerCase()) {
         throw const VaultFetchVerificationException('MD5 distinto');
+      }
+      // S-09: el .vault descargado debe ser EL de este item (fileId del
+      // encabezado == el registrado), no otro archivo auténtico de la bóveda.
+      final expectedId = fresh.fileId;
+      if (expectedId != null) {
+        final String gotId;
+        try {
+          gotId = await CryptoService.fileIdOfFile(part);
+        } on Object {
+          throw const VaultFetchVerificationException(
+            'encabezado .vault ilegible',
+          );
+        }
+        if (gotId != expectedId) {
+          throw const VaultFetchVerificationException(
+            'el archivo no corresponde a este elemento (fileId)',
+          );
+        }
       }
       await part.rename(target.path);
     } catch (_) {

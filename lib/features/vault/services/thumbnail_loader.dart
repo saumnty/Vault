@@ -7,6 +7,7 @@ import 'package:flutter/painting.dart';
 
 import '../../../core/crypto/crypto_service.dart';
 import '../../../core/services/app_paths.dart';
+import '../../../core/session/image_cache_wipe.dart';
 import '../../../data/models/vault_item_model.dart';
 
 /// Descifra miniaturas (`thumbs/<id>.thumb`) con la subllave "thumbs" y las
@@ -52,7 +53,9 @@ class EncryptedThumbnailLoader {
       _cache[cacheKey] = hit; // más reciente
       return Future.value(hit);
     }
-    return _inFlight[cacheKey] ??= _decrypt(rel).then((bytes) {
+    return _inFlight[cacheKey] ??= _decrypt(rel, item.thumbFileId).then((
+      bytes,
+    ) {
       _inFlight.remove(cacheKey);
       if (bytes != null) {
         _cache[cacheKey] = bytes;
@@ -64,20 +67,32 @@ class EncryptedThumbnailLoader {
     });
   }
 
-  Future<Uint8List?> _decrypt(String rel) async {
+  Future<Uint8List?> _decrypt(String rel, String? expectedFileId) async {
     final key = thumbsKey();
     if (key == null) return null;
     try {
       final file = _resolve(rel);
       if (!await file.exists()) return null;
-      return await _crypto.decryptBytes(await file.readAsBytes(), key);
+      // S-09: una miniatura de otro item (mismo vault, auténtica) no se
+      // muestra: se trata como dañada.
+      return await _crypto.decryptBytes(
+        await file.readAsBytes(),
+        key,
+        expectedFileId: expectedFileId,
+      );
     } on Object {
       // Miniatura corrupta/ausente: la UI muestra el ícono por tipo.
       return null;
     }
   }
 
+  /// Vacía la caché y sobrescribe con ceros los bytes en claro (S-05). Solo
+  /// se llama al bloquear (ahí ya se vacía el `ImageCache`), así que ningún
+  /// `ImageProvider` activo los volverá a leer.
   void clear() {
+    for (final b in _cache.values) {
+      zeroFill(b);
+    }
     _cache.clear();
   }
 }

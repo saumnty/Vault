@@ -44,6 +44,12 @@ class VaultItemModel {
   /// Id en Drive de la miniatura cifrada (`.thumb`), una vez verificada.
   final String? thumbDriveFileId;
 
+  /// S-09: fileId (UUID) del encabezado del `.vault` y de la `.thumb`
+  /// cifrados, registrado al crearlos. Al abrir/descargar se compara con el
+  /// del archivo; si no coincide se trata como dañado.
+  final String? fileId;
+  final String? thumbFileId;
+
   const VaultItemModel({
     required this.id,
     required this.name,
@@ -64,6 +70,8 @@ class VaultItemModel {
     this.cloudMd5,
     this.cloudSize,
     this.thumbDriveFileId,
+    this.fileId,
+    this.thumbFileId,
   });
 
   /// Lanza [ArgumentError] si alguna ruta es absoluta.
@@ -89,6 +97,8 @@ class VaultItemModel {
     'cloudMd5': cloudMd5,
     'cloudSize': cloudSize,
     'thumbDriveFileId': thumbDriveFileId,
+    'fileId': fileId,
+    'thumbFileId': thumbFileId,
   };
 
   factory VaultItemModel.fromMap(Map<String, dynamic> map) => VaultItemModel(
@@ -111,5 +121,7 @@ class VaultItemModel {
     cloudMd5: map['cloudMd5'] as String?,
     cloudSize: map['cloudSize'] as int?,
     thumbDriveFileId: map['thumbDriveFileId'] as String?,
+    fileId: map['fileId'] as String?,
+    thumbFileId: map['thumbFileId'] as String?,
   );
 }

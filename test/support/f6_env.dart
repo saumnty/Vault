@@ -131,12 +131,18 @@ class F6Env {
     String name = 'foto.jpg',
     String mime = 'image/jpeg',
     bool thumb = true,
+
+    /// S-09: bytes distintos a los locales en Drive (p. ej. el .vault de otro
+    /// item), con su MD5/tamaño registrados como si la subida fuera válida.
+    Uint8List? cloudBytes,
   }) async {
     final file = localFile(id);
+    String? fileId;
     if (plain != null) {
       final src = File('${file.path}.plain');
       await src.writeAsBytes(plain);
-      await crypto.encryptFile(src, file, session.filesKey!);
+      final h = await crypto.encryptFile(src, file, session.filesKey!);
+      fileId = h.fileIdString;
       await src.delete();
     } else {
       final rng = Random(id.hashCode);
@@ -144,7 +150,7 @@ class F6Env {
         Uint8List.fromList(List.generate(size, (_) => rng.nextInt(256))),
       );
     }
-    final bytes = await file.readAsBytes();
+    final bytes = cloudBytes ?? await file.readAsBytes();
     String? driveId;
     if (verified) {
       driveId = (await cloud.uploadBytes(bytes: bytes, name: '$id.vault')).id;
@@ -170,6 +176,7 @@ class F6Env {
         lastAccessedAt: lastAccessedAt,
         cloudMd5: verified ? md5OfBytes(bytes) : null,
         cloudSize: verified ? bytes.length : null,
+        fileId: fileId,
       ),
     );
     if (!keepLocal) await file.delete();

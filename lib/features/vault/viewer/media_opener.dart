@@ -194,7 +194,11 @@ class VaultMediaOpener implements MediaOpener {
         MediaProgress(MediaPhase.downloading, total <= 0 ? null : got / total),
       ),
     );
-    final reader = await crypto.openReader(file, requireKey());
+    final reader = await crypto.openReader(
+      file,
+      requireKey(),
+      expectedFileId: item.fileId,
+    );
     try {
       return await reader.readRange(0, reader.plaintextLength);
     } finally {
@@ -255,7 +259,11 @@ class FullDecryptVideoSource implements VideoSource {
       );
       _temp = plain;
       report(MediaPhase.decrypting, 0);
-      final reader = await opener.crypto.openReader(local, key);
+      final reader = await opener.crypto.openReader(
+        local,
+        key,
+        expectedFileId: item.fileId,
+      );
       RandomAccessFile? out;
       try {
         out = await plain.open(mode: FileMode.write);
@@ -361,7 +369,10 @@ class StreamingVideoSource implements VideoSource {
         item,
         cancel: _cancel,
         onProgress: (got, total) => onProgress?.call(
-          MediaProgress(MediaPhase.downloading, total <= 0 ? null : got / total),
+          MediaProgress(
+            MediaPhase.downloading,
+            total <= 0 ? null : got / total,
+          ),
         ),
       );
       _checkAlive();
@@ -369,7 +380,11 @@ class StreamingVideoSource implements VideoSource {
       final mime = videoMimeType(mimeType: item.mimeType, fileName: item.name);
       // verifyFinal (por defecto): autentica ya la longitud total
       // (Content-Length fiable) y detecta truncados antes de servir nada.
-      final reader = await opener.crypto.openReader(local, key);
+      final reader = await opener.crypto.openReader(
+        local,
+        key,
+        expectedFileId: item.fileId,
+      );
       if (_released) {
         await reader.close();
         throw const MediaOpenCancelled();

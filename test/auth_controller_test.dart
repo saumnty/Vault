@@ -124,7 +124,6 @@ void main() {
         final crypto = CryptoService();
 
         // Datos cifrados ANTES del cambio de PIN con la subllave "files".
-        final box = await crypto.encryptData('secreto', c.session.keys.files);
         final tmp = await Directory.systemTemp.createTemp('vault_test');
         addTearDown(() => tmp.delete(recursive: true));
         final plain = File('${tmp.path}/a.bin')
@@ -147,10 +146,6 @@ void main() {
         expect(await reopened.unlockWithPin(pin), isFalse);
         expect(await reopened.unlockWithPin('654321'), isTrue);
         expect(reopened.session.keys.dekBytes(), dek);
-        expect(
-          await crypto.decryptData(box, reopened.session.keys.files),
-          'secreto',
-        );
         final out = File('${tmp.path}/a.out');
         await crypto.decryptFile(enc, out, reopened.session.keys.files);
         expect(out.readAsBytesSync(), plain.readAsBytesSync());

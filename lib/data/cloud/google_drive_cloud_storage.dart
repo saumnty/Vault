@@ -268,9 +268,13 @@ class GoogleDriveCloudStorage implements CloudStorage {
     File destination, {
     CloudProgress? onProgress,
     CloudCancelToken? cancel,
+    int? maxBytes,
   }) => _withApi((api) async {
     final media = await _media(api, fileId);
     final total = media.length ?? 0;
+    if (maxBytes != null && total > maxBytes) {
+      throw const CloudTooLargeException();
+    }
     var got = 0;
     final sink = destination.openWrite();
     try {
@@ -278,8 +282,11 @@ class GoogleDriveCloudStorage implements CloudStorage {
         if (cancel?.isCancelled ?? false) {
           throw const CloudCancelledException();
         }
-        sink.add(chunk);
         got += chunk.length;
+        if (maxBytes != null && got > maxBytes) {
+          throw const CloudTooLargeException();
+        }
+        sink.add(chunk);
         onProgress?.call(got, total);
       }
       await sink.close();
@@ -291,14 +298,21 @@ class GoogleDriveCloudStorage implements CloudStorage {
   });
 
   @override
-  Future<Uint8List> downloadBytes(String fileId) => _withApi((api) async {
-    final media = await _media(api, fileId);
-    final builder = BytesBuilder(copy: false);
-    await for (final chunk in media.stream) {
-      builder.add(chunk);
-    }
-    return builder.takeBytes();
-  });
+  Future<Uint8List> downloadBytes(String fileId, {int? maxBytes}) =>
+      _withApi((api) async {
+        final media = await _media(api, fileId);
+        if (maxBytes != null && (media.length ?? 0) > maxBytes) {
+          throw const CloudTooLargeException();
+        }
+        final builder = BytesBuilder(copy: false);
+        await for (final chunk in media.stream) {
+          builder.add(chunk);
+          if (maxBytes != null && builder.length > maxBytes) {
+            throw const CloudTooLargeException();
+          }
+        }
+        return builder.takeBytes();
+      });
 
   @override
   Future<void> delete(String fileId) =>

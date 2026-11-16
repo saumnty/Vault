@@ -1,11 +1,9 @@
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 
 import 'aes_gcm_backend.dart';
 import 'vault_file_format.dart';
-import 'wrapped_key.dart' show randomBytes;
 
 export 'vault_file_format.dart'
     show
@@ -23,8 +21,6 @@ typedef StringMap = Map<String, String>;
 ///   el layout byte a byte). Llave = subllave "files" (`VaultSession().filesKey`)
 ///   para archivos y "thumbs" para miniaturas; nunca la DEK ni algo derivado
 ///   del PIN.
-/// * Textos cortos: [encryptData]/[decryptData] (AES-GCM, usado por
-///   VaultRepository).
 ///
 /// Errores de formato → [VaultFormatException]; de autenticación (llave
 /// incorrecta, alteración, reordenado, truncado, bloque ajeno) →
@@ -38,38 +34,6 @@ class CryptoService {
 
   final AesGcmBackend? _backend;
   final VaultFileFormat _format;
-
-  AesGcmBackend get _aes => _backend ?? AesGcmBackend.current;
-
-  /// Cifra un texto corto (AES-256-GCM). Usado por VaultRepository.
-  Future<StringMap> encryptData(String plainText, SecretKey secretKey) async {
-    final plainBytes = utf8.encode(plainText);
-    final nonce = randomBytes(AesGcmBackend.nonceLength);
-    final secretBox = await _aes.encrypt(
-      plainBytes,
-      secretKey: secretKey,
-      nonce: nonce,
-    );
-
-    return {
-      'ciphertext': base64Encode(secretBox.cipherText),
-      'nonce': base64Encode(nonce),
-      'mac': base64Encode(secretBox.mac.bytes),
-    };
-  }
-
-  Future<String> decryptData(
-    StringMap encryptedData,
-    SecretKey secretKey,
-  ) async {
-    final secretBox = SecretBox(
-      base64Decode(encryptedData['ciphertext']!),
-      nonce: base64Decode(encryptedData['nonce']!),
-      mac: Mac(base64Decode(encryptedData['mac']!)),
-    );
-    final decryptedBytes = await _aes.decrypt(secretBox, secretKey: secretKey);
-    return utf8.decode(decryptedBytes);
-  }
 
   // =====================================================================
   // ARCHIVOS .vault v2
@@ -106,11 +70,13 @@ class CryptoService {
     File encryptedFile,
     SecretKey filesKey, {
     bool verifyFinal = true,
+    String? expectedFileId,
   }) => VaultFileReader.open(
     encryptedFile,
     filesKey,
     verifyFinal: verifyFinal,
     backend: _backend,
+    expectedFileId: expectedFileId,
   );
 
   /// Lee [length] bytes en claro desde [offset] (recortado al final).
@@ -136,6 +102,24 @@ class CryptoService {
   }) => _format.encryptBytes(plain, key, blockSize: blockSize);
 
   /// Inverso de [encryptBytes].
-  Future<Uint8List> decryptBytes(List<int> encrypted, SecretKey key) =>
-      _format.decryptBytes(encrypted, key);
+  Future<Uint8List> decryptBytes(
+    List<int> encrypted,
+    SecretKey key, {
+    String? expectedFileId,
+  }) => _format.decryptBytes(encrypted, key, expectedFileId: expectedFileId);
+
+  /// fileId (UUID) del encabezado de un `.vault`/`.thumb` a partir de sus
+  /// primeros bytes, SIN llave (S-09). Lanza [VaultFormatException].
+  static String fileIdOfHeader(List<int> firstBytes) =>
+      VaultHeader.parse(firstBytes).fileIdString;
+
+  /// Igual que [fileIdOfHeader] leyendo los primeros bytes de [file].
+  static Future<String> fileIdOfFile(File file) async {
+    final raf = await file.open(mode: FileMode.read);
+    try {
+      return fileIdOfHeader(await raf.read(VaultHeader.length));
+    } finally {
+      await raf.close();
+    }
+  }
 }

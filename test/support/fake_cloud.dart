@@ -232,16 +232,22 @@ class FakeCloudStorage implements CloudStorage {
     File destination, {
     CloudProgress? onProgress,
     CloudCancelToken? cancel,
+    int? maxBytes,
   }) async {
-    await destination.writeAsBytes(await downloadBytes(fileId));
+    await destination.writeAsBytes(
+      await downloadBytes(fileId, maxBytes: maxBytes),
+    );
   }
 
   @override
-  Future<Uint8List> downloadBytes(String fileId) async {
+  Future<Uint8List> downloadBytes(String fileId, {int? maxBytes}) async {
     _requireAuth();
     _check('bytes');
     final b = _blobs[fileId];
     if (b == null) throw const CloudNotFoundException();
+    if (maxBytes != null && b.bytes.length > maxBytes) {
+      throw const CloudTooLargeException();
+    }
     return b.bytes;
   }
 

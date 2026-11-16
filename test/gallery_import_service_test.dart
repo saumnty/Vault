@@ -191,6 +191,15 @@ void main() {
       expect(item.fileSize, plain.length);
       expect(item.encryptedPath, 'vault/${item.id}.vault');
       expect(item.thumbPath, 'thumbs/${item.id}.thumb');
+      // S-09: se registran los fileId de los encabezados del .vault y la .thumb.
+      expect(
+        item.fileId,
+        await CryptoService.fileIdOfFile(AppPaths.resolve(item.encryptedPath)),
+      );
+      expect(
+        item.thumbFileId,
+        await CryptoService.fileIdOfFile(AppPaths.resolve(item.thumbPath!)),
+      );
 
       // El .vault descifra al original.
       final out = File('${tmp.path}/out_${item.id}');
