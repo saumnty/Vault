@@ -469,6 +469,6 @@ Decisiones nuevas: D49 (solo Google Drive y una cuenta; iCloud y varias cuentas 
 - Nota del emulador: tiene PIN de pantalla 1234 y tras un arranque en frío hay que desbloquearlo antes de usar `/sdcard`.
 
 ### Dónde retomar / pendiente
-- No hay **Compartir** en Diagnóstico (solo Copiar): hace falta `share_plus` (verificar versión compatible con Flutter 3.41.6) o un canal nativo.
+- **Compartir** en Diagnóstico: descartado por decisión del usuario (basta Copiar; no se añade `share_plus`).
 - La prueba de humo de la migración en el emulador Android solo cubre lo que se puede hacer con UNA cuenta (hoja previa, elegir la misma cuenta, cancelar); el flujo completo con dos cuentas reales queda para tu iPhone o para cuando agregues una segunda cuenta de prueba.
 - Swift sin compilar ni probar: `videoThumbnail`, `freeSpace` y (de antes) `monotonic` en `ios/Runner/AppDelegate.swift`.
