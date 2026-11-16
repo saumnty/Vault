@@ -1,5 +1,6 @@
 package com.saumnty.vault
 
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
@@ -18,6 +19,10 @@ class MainActivity : FlutterFragmentActivity() {
             WindowManager.LayoutParams.FLAG_SECURE
         )
         super.onCreate(savedInstanceState)
+        // S-21: sin miniatura de la app en "recientes" (Android 13+).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            setRecentsScreenshotEnabled(false)
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
