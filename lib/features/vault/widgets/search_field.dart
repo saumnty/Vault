@@ -45,6 +45,10 @@ class VaultSearchField extends StatelessWidget {
               child: TextField(
                 controller: controller,
                 autofocus: true,
+                // S-13: la búsqueda no entra en el aprendizaje del teclado.
+                autocorrect: false,
+                enableSuggestions: false,
+                enableIMEPersonalizedLearning: false,
                 onChanged: onChanged,
                 style: AppTypography.body,
                 textInputAction: TextInputAction.search,

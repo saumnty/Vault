@@ -92,6 +92,10 @@ class _NewFolderContentState extends State<NewFolderContent> {
           child: TextField(
             controller: _name,
             autofocus: true,
+            // S-13: el teclado no aprende ni sugiere nombres de la bóveda.
+            autocorrect: false,
+            enableSuggestions: false,
+            enableIMEPersonalizedLearning: false,
             style: AppTypography.body,
             textInputAction: TextInputAction.done,
             onSubmitted: (_) => _submit(),
