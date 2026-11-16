@@ -14,6 +14,7 @@ import '../../../data/models/vault_item_model.dart';
 import '../vault_services.dart';
 import 'media_opener.dart';
 import 'photo_page.dart';
+import 'viewer_dismiss.dart';
 
 /// "1:05" / "1:02:03".
 String formatDuration(Duration d) {
@@ -348,10 +349,13 @@ class _VideoPageState extends State<VideoPage> with WidgetsBindingObserver {
                 opacity: widget.chromeVisible ? 1 : 0,
                 child: IgnorePointer(
                   ignoring: !widget.chromeVisible,
-                  child: VideoControls(
-                    controller: c,
-                    fullscreen: _fullscreen,
-                    onToggleFullscreen: _toggleFullscreen,
+                  // Sobre los controles el arrastre vertical no cierra.
+                  child: ViewerDismissBlocker(
+                    child: VideoControls(
+                      controller: c,
+                      fullscreen: _fullscreen,
+                      onToggleFullscreen: _toggleFullscreen,
+                    ),
                   ),
                 ),
               ),

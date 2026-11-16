@@ -17,6 +17,7 @@ import 'vault_services.dart';
 import 'viewer/media_opener.dart';
 import 'viewer/photo_page.dart';
 import 'viewer/video_page.dart';
+import 'viewer/viewer_dismiss.dart';
 import 'widgets/sync_status_icon.dart';
 
 /// Visor a pantalla completa: navega entre los archivos de la carpeta
@@ -59,6 +60,9 @@ class _VaultMediaViewerScreenState extends State<VaultMediaViewerScreen> {
   bool _zoomed = false;
   bool _fullscreen = false;
 
+  /// Progreso (0..1) del gesto de cerrar deslizando hacia abajo.
+  final ValueNotifier<double> _dismiss = ValueNotifier<double>(0);
+
   VaultItemModel get _item => widget.items[_index];
 
   @override
@@ -71,6 +75,7 @@ class _VaultMediaViewerScreenState extends State<VaultMediaViewerScreen> {
   void dispose() {
     _session.removeOnClear(_onLock);
     _pages.dispose();
+    _dismiss.dispose();
     super.dispose();
   }
 
@@ -110,37 +115,61 @@ class _VaultMediaViewerScreenState extends State<VaultMediaViewerScreen> {
   @override
   Widget build(BuildContext context) {
     final showBars = _chrome && !_fullscreen;
-    return Scaffold(
-      backgroundColor: AppColors.viewerBackground,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          PageView.builder(
-            key: const ValueKey('viewer-pages'),
-            controller: _pages,
-            physics: _zoomed
-                ? const NeverScrollableScrollPhysics()
-                : const PageScrollPhysics(),
-            itemCount: widget.items.length,
-            onPageChanged: _onPageChanged,
-            itemBuilder: (context, i) => _page(widget.items[i]),
-          ),
-          Align(
-            alignment: Alignment.topCenter,
-            child: _fade(showBars, _TopBar(item: _item, onInfo: _showInfo)),
-          ),
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: _fade(
-              showBars && fileKindOf(_item) != FileKind.video,
-              _BottomBar(
-                item: _item,
-                position: _index + 1,
-                total: widget.items.length,
+    // El fondo (y las barras) se desvanecen según la distancia del arrastre.
+    return ValueListenableBuilder<double>(
+      valueListenable: _dismiss,
+      builder: (context, p, _) => Scaffold(
+        key: const ValueKey('viewer-scaffold'),
+        backgroundColor: AppColors.viewerBackground.withValues(alpha: 1 - p),
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            Semantics(
+              onDismiss: () => Navigator.of(context).maybePop(),
+              child: ViewerDismissible(
+                progress: _dismiss,
+                enabled: !_zoomed,
+                onDismiss: () => Navigator.of(context).maybePop(),
+                child: PageView.builder(
+                  key: const ValueKey('viewer-pages'),
+                  controller: _pages,
+                  physics: _zoomed
+                      ? const NeverScrollableScrollPhysics()
+                      : const PageScrollPhysics(),
+                  itemCount: widget.items.length,
+                  onPageChanged: _onPageChanged,
+                  itemBuilder: (context, i) => _page(widget.items[i]),
+                ),
               ),
             ),
-          ),
-        ],
+            Opacity(
+              opacity: 1 - p,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Align(
+                    alignment: Alignment.topCenter,
+                    child: _fade(
+                      showBars,
+                      _TopBar(item: _item, onInfo: _showInfo),
+                    ),
+                  ),
+                  Align(
+                    alignment: Alignment.bottomCenter,
+                    child: _fade(
+                      showBars && fileKindOf(_item) != FileKind.video,
+                      _BottomBar(
+                        item: _item,
+                        position: _index + 1,
+                        total: widget.items.length,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
