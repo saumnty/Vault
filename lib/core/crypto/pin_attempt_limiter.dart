@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:flutter/services.dart';
 
@@ -34,6 +35,9 @@ class PlatformMonotonicClock implements MonotonicClock {
 
   @override
   Future<MonotonicReading?> read() async {
+    // Solo móvil (S-07): en tests/escritorio no hay canal y, bajo FakeAsync,
+    // esperar a un canal sin implementar cuelga los tests de widgets.
+    if (!Platform.isAndroid && !Platform.isIOS) return null;
     try {
       final m = await _channel.invokeMapMethod<String, Object?>('monotonic');
       final e = m?['elapsedMs'];
