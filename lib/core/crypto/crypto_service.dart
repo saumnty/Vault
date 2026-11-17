@@ -49,6 +49,15 @@ class CryptoService {
   }) =>
       _format.encryptFile(sourceFile, destFile, filesKey, blockSize: blockSize);
 
+  /// Cifra un [VaultByteSource] (sin archivo en claro en disco) hacia
+  /// [destFile]; mismo formato que [encryptFile].
+  Future<VaultHeader> encryptSource(
+    VaultByteSource source,
+    File destFile,
+    SecretKey filesKey, {
+    int blockSize = VaultHeader.defaultBlockSize,
+  }) => _format.encryptSource(source, destFile, filesKey, blockSize: blockSize);
+
   /// Descifra un `.vault` completo en streaming. Si falla, [destFile] se
   /// borra y se relanza la excepción.
   Future<void> decryptFile(

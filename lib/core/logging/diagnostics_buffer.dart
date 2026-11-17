@@ -47,7 +47,12 @@ class DiagnosticsBuffer {
 
   void add(DiagLevel level, String category, String message) {
     _entries.addLast(
-      DiagEntry(_clock(), level, sanitize(category, max: 16), sanitize(message)),
+      DiagEntry(
+        _clock(),
+        level,
+        sanitize(category, max: 16),
+        sanitize(message),
+      ),
     );
     while (_entries.length > capacity) {
       _entries.removeFirst();

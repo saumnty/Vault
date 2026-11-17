@@ -387,6 +387,35 @@ class VaultBlockCipher {
 // Operaciones completas
 // -----------------------------------------------------------------------------
 
+/// Origen de bytes en claro para cifrar sin que exista un archivo en disco
+/// (selector de documentos propio: lee del proveedor del sistema por trozos).
+abstract interface class VaultByteSource {
+  /// Devuelve hasta [length] bytes. Devuelve menos (o vacío) solo al llegar
+  /// al final de los datos; [VaultFileFormat.encryptSource] tolera igualmente
+  /// lecturas cortas y vuelve a pedir hasta completar o recibir vacío.
+  Future<Uint8List> read(int length);
+}
+
+class _RafByteSource implements VaultByteSource {
+  _RafByteSource(this._raf);
+  final RandomAccessFile _raf;
+
+  @override
+  Future<Uint8List> read(int length) => _readFully(_raf, length);
+}
+
+Future<Uint8List> _fillFrom(VaultByteSource source, int count) async {
+  final first = await source.read(count);
+  if (first.length >= count || first.isEmpty) return first;
+  final out = BytesBuilder(copy: false)..add(first);
+  while (out.length < count) {
+    final more = await source.read(count - out.length);
+    if (more.isEmpty) break;
+    out.add(more);
+  }
+  return out.takeBytes();
+}
+
 class VaultFileFormat {
   VaultFileFormat({Random? random, AesGcmBackend? backend})
     : _random = random ?? Random.secure(),
@@ -409,18 +438,39 @@ class VaultFileFormat {
     SecretKey key, {
     int blockSize = VaultHeader.defaultBlockSize,
   }) async {
-    final header = VaultHeader.generate(blockSize: blockSize, random: _random);
     final input = await source.open(mode: FileMode.read);
+    try {
+      return await encryptSource(
+        _RafByteSource(input),
+        dest,
+        key,
+        blockSize: blockSize,
+      );
+    } finally {
+      await input.close();
+    }
+  }
+
+  /// Igual que [encryptFile] pero el origen es un [VaultByteSource] (p. ej.
+  /// el selector de documentos propio: NO hay copia en claro en disco). El
+  /// formato resultante es idéntico. Si algo falla, [dest] se borra.
+  Future<VaultHeader> encryptSource(
+    VaultByteSource source,
+    File dest,
+    SecretKey key, {
+    int blockSize = VaultHeader.defaultBlockSize,
+  }) async {
+    final header = VaultHeader.generate(blockSize: blockSize, random: _random);
     RandomAccessFile? output;
     var ok = false;
     try {
       output = await dest.open(mode: FileMode.write);
       await output.writeFrom(header.bytes);
-      var current = await _readFully(input, blockSize);
+      var current = await _fillFrom(source, blockSize);
       for (var index = 0; ; index++) {
         final next = current.length < blockSize
             ? Uint8List(0)
-            : await _readFully(input, blockSize);
+            : await _fillFrom(source, blockSize);
         final isFinal = next.isEmpty;
         await output.writeFrom(
           await _cipher.seal(header, index, isFinal, current, key),
@@ -432,7 +482,6 @@ class VaultFileFormat {
       ok = true;
       return header;
     } finally {
-      await input.close();
       await output?.close();
       if (!ok) await _deleteQuietly(dest);
     }

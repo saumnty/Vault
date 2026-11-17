@@ -130,7 +130,10 @@ class _TagsScreenState extends State<TagsScreen> {
                   Expanded(
                     child: Semantics(
                       header: true,
-                      child: const Text('Etiquetas', style: AppTypography.title),
+                      child: const Text(
+                        'Etiquetas',
+                        style: AppTypography.title,
+                      ),
                     ),
                   ),
                 ],
@@ -224,7 +227,10 @@ class _TagsScreenState extends State<TagsScreen> {
                         overflow: TextOverflow.ellipsis,
                         style: AppTypography.body,
                       ),
-                      Text(_filesLabel(t.itemCount), style: AppTypography.caption),
+                      Text(
+                        _filesLabel(t.itemCount),
+                        style: AppTypography.caption,
+                      ),
                     ],
                   ),
                 ),

@@ -99,7 +99,9 @@ class _CloudPrivacyNoteState extends State<CloudPrivacyNote> {
                 borderRadius: AppRadii.smAll,
                 onTap: () => setState(() => _expanded = !_expanded),
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(minHeight: AppSizes.fabMini),
+                  constraints: const BoxConstraints(
+                    minHeight: AppSizes.fabMini,
+                  ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [

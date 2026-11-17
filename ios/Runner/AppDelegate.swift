@@ -1,6 +1,7 @@
 import AVFoundation
 import Flutter
 import UIKit
+import UniformTypeIdentifiers
 import Darwin.Mach
 
 @main
@@ -12,9 +13,13 @@ import Darwin.Mach
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
+  // v2 fase 6: selector de documentos propio (se retiene aqui).
+  private let documentPicker = VaultDocumentPicker()
+
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     registerSecurityChannel(messenger: engineBridge.applicationRegistrar.messenger())
+    documentPicker.register(messenger: engineBridge.applicationRegistrar.messenger())
   }
 
   // iOS: sin probar en dispositivo (F7). Canal 'vault/security': el metodo
@@ -109,6 +114,139 @@ import Darwin.Mach
         result(["boot": -1, "elapsedMs": Int(nanos / 1_000_000)])
       default:
         result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+}
+
+// iOS: sin probar (v2 fase 6). Selector de documentos propio, canal
+// 'vault/picker'. UIDocumentPickerViewController con asCopy = false: NO copia
+// el archivo a tmp/ (a diferencia de file_picker); se lee el original por
+// trozos con acceso con alcance de seguridad y se libera al cerrar. Sin logs
+// de nombres ni rutas.
+final class VaultDocumentPicker: NSObject, UIDocumentPickerDelegate {
+  private var pending: FlutterResult?
+  private var docs: [Int: (url: URL, handle: FileHandle)] = [:]
+  private var nextHandle = 1
+  private let io = DispatchQueue(label: "vault.picker.io")
+
+  func register(messenger: FlutterBinaryMessenger) {
+    let channel = FlutterMethodChannel(name: "vault/picker", binaryMessenger: messenger)
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else { return }
+      switch call.method {
+      case "pick":
+        self.pick(result: result)
+      case "read":
+        let args = call.arguments as? [String: Any]
+        let handle = args?["handle"] as? Int ?? -1
+        let length = min(max(args?["length"] as? Int ?? 0, 0), 4 << 20)
+        self.io.async {
+          guard let doc = self.docs[handle] else {
+            DispatchQueue.main.async {
+              result(FlutterError(code: "closed", message: "documento cerrado", details: nil))
+            }
+            return
+          }
+          var data = Data()
+          do {
+            while data.count < length {
+              let chunk: Data
+              if #available(iOS 13.4, *) {
+                guard let c = try doc.handle.read(upToCount: length - data.count) else { break }
+                chunk = c
+              } else {
+                chunk = doc.handle.readData(ofLength: length - data.count)
+              }
+              if chunk.isEmpty { break }
+              data.append(chunk)
+            }
+            DispatchQueue.main.async { result(FlutterStandardTypedData(bytes: data)) }
+          } catch {
+            DispatchQueue.main.async {
+              result(FlutterError(code: "io", message: "lectura fallida", details: nil))
+            }
+          }
+        }
+      case "close":
+        let args = call.arguments as? [String: Any]
+        let handle = args?["handle"] as? Int ?? -1
+        self.io.async {
+          if let doc = self.docs.removeValue(forKey: handle) {
+            if #available(iOS 13.0, *) { try? doc.handle.close() }
+            doc.url.stopAccessingSecurityScopedResource()
+          }
+          DispatchQueue.main.async { result(nil) }
+        }
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  private func topViewController() -> UIViewController? {
+    let window = UIApplication.shared.connectedScenes
+      .compactMap { $0 as? UIWindowScene }
+      .flatMap { $0.windows }
+      .first { $0.isKeyWindow }
+    var top = window?.rootViewController
+    while let presented = top?.presentedViewController { top = presented }
+    return top
+  }
+
+  private func pick(result: @escaping FlutterResult) {
+    if pending != nil {
+      result(FlutterError(code: "busy", message: "selector ya abierto", details: nil))
+      return
+    }
+    guard let top = topViewController() else {
+      result(FlutterError(code: "no_ui", message: "sin ventana", details: nil))
+      return
+    }
+    pending = result
+    let picker: UIDocumentPickerViewController
+    if #available(iOS 14.0, *) {
+      picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.item], asCopy: false)
+    } else {
+      // iOS 13: modo "abrir" (sin copia) con el UTI genérico.
+      picker = UIDocumentPickerViewController(documentTypes: ["public.item"], in: .open)
+    }
+    picker.allowsMultipleSelection = false
+    picker.delegate = self
+    top.present(picker, animated: true)
+  }
+
+  func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+    pending?(nil)
+    pending = nil
+  }
+
+  func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+    guard let result = pending else { return }
+    pending = nil
+    guard let url = urls.first else {
+      result(nil)
+      return
+    }
+    io.async {
+      let scoped = url.startAccessingSecurityScopedResource()
+      do {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .nameKey])
+        let handle = try FileHandle(forReadingFrom: url)
+        let id = self.nextHandle
+        self.nextHandle += 1
+        self.docs[id] = (url: url, handle: handle)
+        let reply: [String: Any] = [
+          "handle": id,
+          "name": values?.name ?? url.lastPathComponent,
+          "size": values?.fileSize ?? -1,
+        ]
+        DispatchQueue.main.async { result(reply) }
+      } catch {
+        if scoped { url.stopAccessingSecurityScopedResource() }
+        DispatchQueue.main.async {
+          result(FlutterError(code: "open", message: "no se pudo abrir", details: nil))
+        }
       }
     }
   }

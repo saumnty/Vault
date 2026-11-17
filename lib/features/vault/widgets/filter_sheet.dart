@@ -43,7 +43,9 @@ Widget filterChip({
     onSelected: onSelected,
     backgroundColor: AppColors.surfaceHigh,
     selectedColor: AppColors.accentContainer,
-    side: BorderSide(color: selected ? AppColors.accentLight : AppColors.border),
+    side: BorderSide(
+      color: selected ? AppColors.accentLight : AppColors.border,
+    ),
     shape: const RoundedRectangleBorder(borderRadius: AppRadii.pillAll),
     labelStyle: AppTypography.label.copyWith(
       color: selected ? AppColors.accentLight : AppColors.textPrimary,
@@ -80,7 +82,7 @@ class FilterSheetContent extends StatefulWidget {
 
 class _FilterSheetContentState extends State<FilterSheetContent> {
   late KindFilter? _kind = widget.current.kind;
-  late final Set<String> _tagIds ={...widget.current.tagIds};
+  late final Set<String> _tagIds = {...widget.current.tagIds};
   late DateTime? _from = widget.current.from;
   late DateTime? _to = widget.current.to;
   List<TagModel>? _tags;
@@ -228,7 +230,8 @@ class _FilterSheetContentState extends State<FilterSheetContent> {
       children: [
         const SheetHeader(
           title: 'Filtros',
-          message: 'Los resultados incluyen toda la bóveda, no solo esta carpeta.',
+          message:
+              'Los resultados incluyen toda la bóveda, no solo esta carpeta.',
         ),
         _section('Tipo'),
         Wrap(
@@ -301,11 +304,7 @@ class _FilterSheetContentState extends State<FilterSheetContent> {
           ],
         ),
         const SizedBox(height: AppSpacing.xl),
-        AppFilledButton(
-          label: 'Aplicar',
-          icon: Icons.check,
-          onPressed: _apply,
-        ),
+        AppFilledButton(label: 'Aplicar', icon: Icons.check, onPressed: _apply),
         const SizedBox(height: AppSpacing.sm),
         AppTextButton(label: 'Limpiar', onPressed: _clear),
       ],

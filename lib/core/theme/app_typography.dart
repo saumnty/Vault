@@ -66,7 +66,6 @@ abstract final class AppTypography {
     color: AppColors.textPrimary,
   );
 
-
   /// Líneas del registro de Diagnóstico (monoespaciado compacto).
   static const TextStyle log = TextStyle(
     fontSize: 11,

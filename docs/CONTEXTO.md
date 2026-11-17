@@ -57,3 +57,4 @@ F0 auditoría · F1 llaves · F2 .vault v2 · F3 BD · F3.5 rediseño UI · F4 i
 - v2 (PLAN.md sección v2): fase 7 (S-17: `lockWithFlush`, ≤1 s), fase 4 (Guardar en Fotos: `VaultMediaExporter`, D54) y fase 10 (gestos de video: `video_gestures.dart`, D55) hechas; siguiente: fase 5 (Papelera, BD v8).
 - v2 fase 5 (Papelera, D56): BD v8 (`deletedAt`/`trashRoot`), `TrashService` (30 días, `delete_remote` solo al borrar de verdad), Ajustes > Papelera. Siguiente: fase 9 (etiquetas/filtros/búsqueda, BD v9).
 - v2 fase 9 (D57): BD v9 (`tags`, `item_tags`), `TagRepository`, filtros globales (`ItemFilter`), UI de etiquetas/filtros. Siguiente: fase 6 (selector de archivos propio).
+- v2 fase 6 (D58): `file_picker` fuera; selector propio `vault/picker` (`lib/data/picker/document_picker.dart`, Kotlin en MainActivity, Swift `VaultDocumentPicker` en AppDelegate sin probar) + `encryptSource`. Siguiente: fase 1 (rotar DEK).

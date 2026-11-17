@@ -40,9 +40,9 @@ Reglas: una fase a la vez; migraciones de BD incrementales (v7 → v8…), nunca
 | 10 | Gestos en video (doble toque ±10 s, zoom 1x–4x) | Sonnet | 🧪 `video_gestures.dart`, 14 tests, emulador: −10 s y controles OK; pellizco solo en tests (adb no hace multitoque) |
 | 5 | Papelera (30 días, BD v8) | Sonnet | 🧪 BD v8 incremental, `TrashRepository`/`TrashService`, pantalla Ajustes > Papelera, 23 tests |
 | 9 | Etiquetas, filtros y búsqueda (BD v9) | Sonnet | 🧪 BD v9 incremental, `TagRepository`, filtros globales, hoja de etiquetas, Ajustes > Etiquetas; tests + emulador |
-| 6 | Selector de archivos propio (sin file_picker; S-02 residual, S-18) | Sonnet | ⬜ |
+| 6 | Selector de archivos propio (sin file_picker; S-02 residual, S-18) | Sonnet | 🧪 canal `vault/picker` (Kotlin probado en emulador; Swift sin compilar), `encryptSource`, `file_picker` fuera; tests |
 | 1 | Rotar la DEK (S-11), diseño revisado por Opus; PARAR al terminar | Opus | ⬜ |
 | 8 | Bóveda señuelo: PREGUNTAR variante (disimulo / negable) antes | Opus | ⬜ |
 | 11 | Kern: nombre visible e ícono | Haiku | ⬜ |
 
-Dónde retomar: Fase 6 (selector de archivos propio, sin file_picker).
+Dónde retomar: Fase 1 (rotar la DEK, S-11): diseño revisado por Opus antes de codificar; al terminar PARAR y dar el simulacro de restauración.

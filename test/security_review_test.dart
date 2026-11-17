@@ -10,6 +10,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -17,11 +18,13 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:vault/core/crypto/crypto_service.dart';
 import 'package:vault/core/crypto/key_hierarchy.dart';
+import 'package:vault/core/crypto/vault_file_format.dart';
 import 'package:vault/core/security/auto_lock.dart';
 import 'package:vault/core/security/security_preferences.dart';
 import 'package:vault/core/services/app_paths.dart';
 import 'package:vault/core/services/plain_residue.dart';
 import 'package:vault/core/session/vault_session.dart';
+import 'package:vault/data/picker/document_picker.dart';
 import 'package:vault/data/repositories/vault_data_repository.dart';
 import 'package:vault/data/repositories/vault_database.dart';
 import 'package:vault/data/services/vault_import_service.dart';
@@ -80,8 +83,8 @@ class _H {
 
 class _FailingCrypto extends CryptoService {
   @override
-  Future<VaultHeader> encryptFile(
-    File sourceFile,
+  Future<VaultHeader> encryptSource(
+    VaultByteSource source,
     File destFile,
     SecretKey filesKey, {
     int blockSize = VaultHeader.defaultBlockSize,
@@ -177,7 +180,7 @@ void main() {
     });
   });
 
-  group('S-02 copia en claro del selector de archivos', () {
+  group('S-02 (cerrado en v2 fase 6): selector propio sin copia en claro', () {
     late Directory tmp;
     late Directory pickerRoot;
     late VaultSession session;
@@ -215,72 +218,110 @@ void main() {
       }
     });
 
-    /// Lo que deja file_picker en Android: `<cache>/file_picker/<ms>/<nombre>`.
-    File pickerCopy(String name) {
-      final f = File(p.join(pickerRoot.path, '1731600000000', name))
-        ..createSync(recursive: true)
-        ..writeAsStringSync('declaracion de impuestos (en claro)');
-      return f;
-    }
-
-    VaultImportService service(File picked, {CryptoService? crypto}) =>
+    VaultImportService service(_FakeDoc? doc, {CryptoService? crypto}) =>
         VaultImportService(
-          pickFile: () async => (
-            path: picked.path,
-            name: p.basename(picked.path),
-            size: picked.lengthSync(),
-            extension: 'pdf',
-          ),
-          pickerCopyRoots: () async => [pickerRoot],
+          picker: _FakePicker(doc),
           filesKey: () => session.filesKey,
           crypto: crypto,
           repository: repo,
         );
 
-    test('tras importar, la copia en claro ya no existe', () async {
-      final copy = pickerCopy('Declaracion 2025.pdf');
-      final ok = await service(copy).importAndEncryptFile(targetFolderId: null);
-      expect(ok, isTrue);
-      expect(copy.existsSync(), isFalse, reason: 'antes del arreglo quedaba');
-      expect(copy.parent.existsSync(), isFalse, reason: 'carpeta <ms> vacía');
-      expect(pickerRoot.existsSync(), isTrue, reason: 'la raíz no se borra');
-      final items = await repo.getItemsByFolder(null);
-      expect(items, hasLength(1));
-      expect(AppPaths.resolve(items.single.encryptedPath).existsSync(), isTrue);
-    });
-
-    test('si el cifrado falla, la copia también se borra', () async {
-      final copy = pickerCopy('Contrato.pdf');
-      final ok = await service(
-        copy,
-        crypto: _FailingCrypto(),
-      ).importAndEncryptFile(targetFolderId: null);
-      expect(ok, isFalse);
-      expect(copy.existsSync(), isFalse);
-    });
+    List<FileSystemEntity> residue() => [
+      ...pickerRoot.listSync(recursive: true),
+      ...AppPaths.tmpPlainDir.existsSync()
+          ? AppPaths.tmpPlainDir.listSync(recursive: true)
+          : <FileSystemEntity>[],
+    ];
 
     test(
-      'un archivo FUERA de las carpetas del plugin nunca se borra',
+      'importa leyendo del proveedor: cifra, hash, tamaño y SIN copias',
       () async {
-        final user = File(p.join(tmp.path, 'Documentos', 'original.pdf'))
-          ..createSync(recursive: true)
-          ..writeAsStringSync('original del usuario');
+        final data = Uint8List.fromList(
+          List.generate(2 * 1024 * 1024 + 321, (i) => (i * 7) & 0xff),
+        );
+        final doc = _FakeDoc('Declaracion 2025.pdf', data, chunk: 300000);
         final ok = await service(
-          user,
+          doc,
         ).importAndEncryptFile(targetFolderId: null);
         expect(ok, isTrue);
-        expect(user.existsSync(), isTrue);
+        expect(doc.closed, isTrue);
+        expect(residue(), isEmpty);
+        final item = (await repo.getItemsByFolder(null)).single;
+        expect(item.fileSize, data.length);
+        expect(item.name, 'Declaracion 2025.pdf');
+        expect(item.mimeType, 'pdf');
         expect(
-          PlainResidue.isWithinRoots(pickerRoot.path, [pickerRoot]),
-          isFalse,
-          reason: 'la raíz misma no cuenta como "dentro"',
+          item.contentHash,
+          crypto.sha256.convert(data).toString(),
+          reason: 'SHA-256 del contenido original',
         );
+        // El .vault descifra a los bytes originales.
+        final plain = await CryptoService().decryptBytes(
+          await AppPaths.resolve(item.encryptedPath).readAsBytes(),
+          session.filesKey!,
+        );
+        expect(plain, data);
       },
     );
 
-    test('barrido al arrancar: vacía las carpetas de restos', () async {
-      pickerCopy('a.jpg');
-      pickerCopy('b.mp4');
+    test('archivo vacío y exacto al tamaño de bloque', () async {
+      for (final n in [0, 1024 * 1024]) {
+        final ok = await service(
+          _FakeDoc('x$n.bin', Uint8List(n)),
+        ).importAndEncryptFile(targetFolderId: null);
+        expect(ok, isTrue, reason: 'n=$n');
+      }
+      final items = await repo.getItemsByFolder(null);
+      expect(items.map((i) => i.fileSize).toSet(), {0, 1024 * 1024});
+    });
+
+    test('cancelar el selector: no importa nada', () async {
+      expect(
+        await service(null).importAndEncryptFile(targetFolderId: null),
+        isFalse,
+      );
+      expect(await repo.getItemsByFolder(null), isEmpty);
+    });
+
+    test(
+      'si la lectura falla: false, flujo cerrado, sin .vault parcial',
+      () async {
+        final doc = _FakeDoc('c.pdf', Uint8List(3 * 1024 * 1024), failAfter: 1);
+        final ok = await service(
+          doc,
+        ).importAndEncryptFile(targetFolderId: null);
+        expect(ok, isFalse);
+        expect(doc.closed, isTrue);
+        expect(AppPaths.vaultDir.listSync(), isEmpty);
+        expect(await repo.getItemsByFolder(null), isEmpty);
+      },
+    );
+
+    test('si el cifrado falla: el flujo también se cierra', () async {
+      final doc = _FakeDoc('d.pdf', Uint8List(100));
+      final ok = await service(
+        doc,
+        crypto: _FailingCrypto(),
+      ).importAndEncryptFile(targetFolderId: null);
+      expect(ok, isFalse);
+      expect(doc.closed, isTrue);
+    });
+
+    test('bóveda bloqueada: no abre el selector', () async {
+      final picker = _FakePicker(_FakeDoc('e.pdf', Uint8List(10)));
+      final ok = await VaultImportService(
+        picker: picker,
+        filesKey: () => null,
+        repository: repo,
+      ).importAndEncryptFile(targetFolderId: null);
+      expect(ok, isFalse);
+      expect(picker.opened, 0);
+    });
+
+    test('barrido al arrancar: restos de versiones anteriores', () async {
+      File(p.join(pickerRoot.path, '1731600000000', 'a.jpg'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('en claro');
       final importTmp = PlainResidue.galleryImportTmp
         ..createSync(recursive: true);
       File(p.join(importTmp.path, 'x', 'video.mov'))
@@ -292,4 +333,57 @@ void main() {
       expect(importTmp.listSync(), isEmpty);
     });
   });
+}
+
+class _FakeDoc implements PickedDocument {
+  _FakeDoc(this.name, this.data, {this.chunk = 1 << 20, this.failAfter});
+
+  final Uint8List data;
+  final int chunk;
+  final int? failAfter;
+  int _pos = 0;
+  int _reads = 0;
+  bool closed = false;
+
+  @override
+  final String name;
+
+  @override
+  int? get size => data.length;
+
+  @override
+  String? get extension {
+    final dot = name.lastIndexOf('.');
+    return dot < 0 ? null : name.substring(dot + 1).toLowerCase();
+  }
+
+  @override
+  Future<Uint8List> read(int length) async {
+    if (failAfter != null && _reads++ >= failAfter!) {
+      throw const FileSystemException('lectura');
+    }
+    final n = [
+      length,
+      chunk,
+      data.length - _pos,
+    ].reduce((a, b) => a < b ? a : b);
+    final out = Uint8List.sublistView(data, _pos, _pos + n);
+    _pos += n;
+    return Uint8List.fromList(out);
+  }
+
+  @override
+  Future<void> close() async => closed = true;
+}
+
+class _FakePicker implements DocumentPicker {
+  _FakePicker(this.doc);
+  final _FakeDoc? doc;
+  int opened = 0;
+
+  @override
+  Future<PickedDocument?> pick() async {
+    opened++;
+    return doc;
+  }
 }
