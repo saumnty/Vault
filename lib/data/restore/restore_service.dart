@@ -15,7 +15,8 @@ import '../../core/services/app_paths.dart';
 import '../cloud/cloud_storage.dart';
 import '../repositories/vault_database.dart';
 import '../sync/sync_preferences.dart';
-import '../sync/sync_service.dart' show CloudNameKind, CloudNames, md5OfFile;
+import '../sync/sync_service.dart'
+    show CloudNameInfo, CloudNameKind, CloudNames, md5OfFile;
 
 /// Qué se encontró en la cuenta de Google al buscar un respaldo.
 enum RestoreProbeResult {
@@ -165,9 +166,28 @@ class RestoreService {
   /// S-14: tope de una miniatura cifrada (~256 px JPEG, decenas de KiB).
   static const int maxThumbBytes = 8 * 1024 * 1024;
 
-  String? _backupJson;
-  CloudFile? _snapshotMeta;
+  /// Respaldos encontrados por [probe], en el orden en que se prueban.
+  List<_BackupCandidate> _candidates = const [];
+
+  /// Mayor generación con un conjunto principal completo (respaldo +
+  /// snapshot) en la cuenta.
+  int _latestGen = 1;
+
+  /// El que abrió el código ([verifyCode]).
+  _BackupCandidate? _chosen;
   RecoveryCandidate? _candidate;
+
+  /// Qué abrió el último código correcto (M8: aviso si es un estado anterior
+  /// al más reciente), o `null`.
+  RestoreCodeMatch? get lastMatch {
+    final c = _chosen;
+    if (c == null) return null;
+    return RestoreCodeMatch(
+      gen: c.gen,
+      viaBridge: c.bridge,
+      latestGen: _latestGen,
+    );
+  }
 
   String get _dbPath => _dbPathOverride ?? VaultDatabase.defaultDbPath;
 
@@ -192,43 +212,83 @@ class RestoreService {
 
   /// Busca el respaldo en la cuenta conectada. Lanza [CloudException] si no
   /// hay red/sesión.
+  ///
+  /// D61: tras una rotación de la DEK puede haber respaldos de varias
+  /// generaciones (`recovery_backup[.kN].json`), el puente
+  /// (`recovery_backup.bridge.kF.json`) y duplicados (M1). Se recogen TODOS
+  /// los válidos y se emparejan con el snapshot de SU generación (el puente,
+  /// con el de la generación que abre). Orden en que se prueban: principales
+  /// de la mayor generación, puentes y principales menores.
   Future<RestoreProbeResult> probe() async {
     _forget();
-    final keyMeta = await cloud.findByName(CloudNames.recoveryBackup);
-    if (keyMeta == null) return RestoreProbeResult.noBackup;
-    final snapshot = await cloud.findByName(CloudNames.dbSnapshot);
-    // S-14: el respaldo real mide ~1 KiB; se rechaza por tamaño declarado y
-    // por bytes recibidos ANTES de decodificar ni parsear nada.
-    if (keyMeta.size > maxRecoveryBackupBytes) {
-      return RestoreProbeResult.invalid;
-    }
-    final String json;
-    try {
-      final bytes = await cloud.downloadBytes(
-        keyMeta.id,
-        maxBytes: maxRecoveryBackupBytes,
-      );
-      if (bytes.length > maxRecoveryBackupBytes) {
-        return RestoreProbeResult.invalid;
+    final all = await cloud.list();
+    final backups = <(CloudFile, CloudNameInfo)>[
+      for (final f in all)
+        if (CloudNames.parse(f.name) case final info?
+            when info.kind == CloudNameKind.recoveryBackup ||
+                info.kind == CloudNameKind.bridgeBackup)
+          (f, info),
+    ];
+    if (backups.isEmpty) return RestoreProbeResult.noBackup;
+    final snapshots = <int, CloudFile?>{};
+    Future<CloudFile?> snapshotFor(int gen) async => snapshots.containsKey(gen)
+        ? snapshots[gen]
+        : snapshots[gen] = await cloud.findByName(
+            CloudNames.dbSnapshotFor(gen),
+          );
+    final valid = <_BackupCandidate>[];
+    for (final (meta, info) in backups) {
+      // S-14: el respaldo real mide ~1 KiB; se rechaza por tamaño declarado y
+      // por bytes recibidos ANTES de decodificar ni parsear nada.
+      if (meta.size > maxRecoveryBackupBytes) continue;
+      final String json;
+      try {
+        final bytes = await cloud.downloadBytes(
+          meta.id,
+          maxBytes: maxRecoveryBackupBytes,
+        );
+        if (bytes.length > maxRecoveryBackupBytes) continue;
+        json = utf8.decode(bytes);
+        RecoveryBackup.parse(json);
+      } on CloudTooLargeException {
+        continue;
+      } on FormatException {
+        continue;
       }
-      json = utf8.decode(bytes);
-      RecoveryBackup.parse(json);
-    } on CloudTooLargeException {
-      return RestoreProbeResult.invalid;
-    } on FormatException {
-      return RestoreProbeResult.invalid;
+      valid.add(
+        _BackupCandidate(
+          json: json,
+          gen: info.gen,
+          bridge: info.kind == CloudNameKind.bridgeBackup,
+          snapshot: await snapshotFor(info.gen),
+        ),
+      );
     }
-    _backupJson = json;
-    if (snapshot == null) return RestoreProbeResult.incomplete;
-    _snapshotMeta = snapshot;
+    if (valid.isEmpty) return RestoreProbeResult.invalid;
+    final complete = [
+      for (final c in valid)
+        if (c.snapshot != null) c,
+    ];
+    if (complete.isEmpty) return RestoreProbeResult.incomplete;
+    final mains = complete.where((c) => !c.bridge).toList()
+      ..sort((a, b) => b.gen.compareTo(a.gen));
+    final bridges = complete.where((c) => c.bridge).toList()
+      ..sort((a, b) => b.gen.compareTo(a.gen));
+    _latestGen = mains.isEmpty ? bridges.first.gen : mains.first.gen;
+    _candidates = [
+      ...mains.where((c) => c.gen == _latestGen),
+      ...bridges,
+      ...mains.where((c) => c.gen != _latestGen),
+    ];
     return RestoreProbeResult.found;
   }
 
   void _forget() {
     _candidate?.destroy();
     _candidate = null;
-    _backupJson = null;
-    _snapshotMeta = null;
+    _candidates = const [];
+    _chosen = null;
+    _latestGen = 1;
   }
 
   /// Libera llaves en memoria (al salir del flujo sin restaurar).
@@ -242,16 +302,23 @@ class RestoreService {
   /// Verifica el código de recuperación. `true` si abre el respaldo; `false`
   /// si es incorrecto (cuenta un intento). Lanza [PinLockedOutException] si
   /// hay que esperar. El código no se guarda ni se registra.
+  ///
+  /// Se prueba contra todos los respaldos de [probe] (cuenta como UN
+  /// intento). Si abre un estado anterior al más reciente, [lastMatch] lo
+  /// dice (aviso M8 en la UI).
   Future<bool> verifyCode(String code) async {
-    final json = _backupJson;
-    if (json == null) throw StateError('Falta buscar el respaldo (probe)');
-    final candidate = await auth.verifyRecoveryCode(
+    final candidates = _candidates;
+    if (candidates.isEmpty) {
+      throw StateError('Falta buscar el respaldo (probe)');
+    }
+    final match = await auth.verifyRecoveryCodeAny(
       recoveryCode: code,
-      recoveryBackupJson: json,
+      recoveryBackupJsons: [for (final c in candidates) c.json],
     );
-    if (candidate == null) return false;
+    if (match == null) return false;
     _candidate?.destroy();
-    _candidate = candidate;
+    _candidate = match.$2;
+    _chosen = candidates[match.$1];
     return true;
   }
 
@@ -265,11 +332,13 @@ class RestoreService {
     CloudCancelToken? cancel,
   }) async {
     final candidate = _candidate;
-    final json = _backupJson;
-    final snapshotMeta = _snapshotMeta;
-    if (candidate == null || json == null || snapshotMeta == null) {
+    final chosen = _chosen;
+    final snapshotMeta = chosen?.snapshot;
+    if (candidate == null || chosen == null || snapshotMeta == null) {
       throw StateError('Falta verificar el código de recuperación');
     }
+    final json = chosen.json;
+    final setGen = chosen.gen;
     if (await auth.hasVault()) {
       throw StateError('Ya existe una bóveda en este dispositivo');
     }
@@ -331,12 +400,19 @@ class RestoreService {
       newPin: newPin,
       stagedDb: stagedDb,
       stagedThumbs: stagedThumbs,
-      thumbIds: [for (final t in summary.thumbs) t.itemId],
+      thumbs: [for (final t in summary.thumbs) (t.itemId, t.keyGen)],
+      keyGen: setGen,
     );
+    // Restaurado con el PUENTE (D61): el respaldo local es el del código
+    // nuevo para la generación vieja; se sube en lugar del de entonces (S-04
+    // borra el que abría el código viejo). Si no, es el mismo de Drive.
     await prefs.setRecoveryUploadedSha(
-      crypto.sha256.convert(utf8.encode(json)).toString(),
+      chosen.bridge ? '' : crypto.sha256.convert(utf8.encode(json)).toString(),
     );
     await prefs.markSnapshotDone(_now());
+    // D61: en una generación > 1 se barren después las anteriores de Drive
+    // (por si el teléfono original no terminó la limpieza).
+    if (setGen > 1) await prefs.setGenerationSweepPending(true);
     await discardStaging();
     _candidate = null; // las llaves pasaron a la sesión
     VaultLog.d('Restauración terminada', category: 'restore');
@@ -581,7 +657,13 @@ class RestoreService {
         // S-15: el id acaba en nombres de archivo locales (`<id>.thumb`): solo
         // se aceptan UUID v4 (nada de `/`, `..`, mayúsculas, etc.).
         if (!AppPaths.isValidItemId(id)) throw const RestoreCorruptException();
-        final file = remote[CloudNames.file(id)];
+        // D60: los nombres en Drive llevan la generación de llave del item
+        // (snapshots anteriores a v10: generación 1).
+        final keyGen = (r['keyGen'] as int?) ?? 1;
+        if (keyGen < 1 || keyGen > AppPaths.maxKeyGen) {
+          throw const RestoreCorruptException();
+        }
+        final file = remote[CloudNames.file(id, gen: keyGen)];
         final md5 = r['cloudMd5'] as String?;
         final size = r['cloudSize'] as int?;
         final hasRecord = md5 != null && size != null;
@@ -614,12 +696,18 @@ class RestoreService {
           );
         }
         if (r['thumbPath'] != null) {
-          final thumb = remote[CloudNames.thumb(id)];
+          final thumb = remote[CloudNames.thumb(id, gen: keyGen)];
           if (thumb != null) {
-            thumbs.add(_ThumbJob(id, thumb, r['thumbFileId'] as String?));
+            thumbs.add(
+              _ThumbJob(id, thumb, r['thumbFileId'] as String?, keyGen),
+            );
             batch.update(
               'vault_items',
-              {'thumbDriveFileId': thumb.id},
+              {
+                'thumbDriveFileId': thumb.id,
+                // Donde se instala (misma generación que su `.vault`).
+                'thumbPath': AppPaths.thumbRelativePath(id, gen: keyGen),
+              },
               where: 'id = ?',
               whereArgs: [id],
             );
@@ -668,7 +756,8 @@ class RestoreService {
     required String newPin,
     required File stagedDb,
     required Directory stagedThumbs,
-    required List<String> thumbIds,
+    required List<(String, int)> thumbs,
+    required int keyGen,
   }) async {
     final target = File(_dbPath);
     if (!target.parent.existsSync()) target.parent.createSync(recursive: true);
@@ -679,17 +768,19 @@ class RestoreService {
         if (f.existsSync()) await f.delete();
       }
       AppPaths.thumbsDir.createSync(recursive: true);
-      for (final id in thumbIds) {
+      for (final (id, gen) in thumbs) {
         final src = File(p.join(stagedThumbs.path, '$id.thumb'));
         if (!src.existsSync()) continue; // 404 durante la descarga
-        final dst = AppPaths.resolve(AppPaths.thumbRelativePath(id));
+        final dst = AppPaths.resolve(AppPaths.thumbRelativePath(id, gen: gen));
         if (dst.existsSync()) await dst.delete();
         await src.rename(dst.path);
         moved.add(dst);
       }
       await stagedDb.rename(target.path);
       moved.add(target);
-      await auth.commitRestore(candidate, newPin);
+      // D60: la generación del conjunto restaurado (la del nombre del
+      // respaldo; con el puente, la que abre).
+      await auth.commitRestore(candidate, newPin, keyGen: keyGen);
     } catch (e) {
       // Deshace todo lo local de la restauración para poder reintentar.
       for (final f in moved) {
@@ -714,12 +805,55 @@ class RestoreService {
 }
 
 class _ThumbJob {
-  const _ThumbJob(this.itemId, this.remote, this.expectedFileId);
+  const _ThumbJob(this.itemId, this.remote, this.expectedFileId, this.keyGen);
 
   /// S-09: fileId registrado en el snapshot para esta miniatura.
   final String? expectedFileId;
   final String itemId;
   final CloudFile remote;
+
+  /// D60: generación de llave del item (nombre local de la miniatura).
+  final int keyGen;
+}
+
+/// Un respaldo de llaves encontrado en Drive con el snapshot de SU conjunto.
+class _BackupCandidate {
+  const _BackupCandidate({
+    required this.json,
+    required this.gen,
+    required this.bridge,
+    required this.snapshot,
+  });
+
+  final String json;
+
+  /// Generación del conjunto que abre (en el puente, la VIEJA).
+  final int gen;
+  final bool bridge;
+  final CloudFile? snapshot;
+}
+
+/// Qué abrió el código de recuperación (M8).
+class RestoreCodeMatch {
+  const RestoreCodeMatch({
+    required this.gen,
+    required this.viaBridge,
+    required this.latestGen,
+  });
+
+  /// Generación del conjunto que se restaurará.
+  final int gen;
+
+  /// Se abrió con el respaldo PUENTE de una rotación (código nuevo, estado
+  /// de antes de la rotación).
+  final bool viaBridge;
+
+  /// Mayor generación completa que hay en la cuenta.
+  final int latestGen;
+
+  /// Restaura un estado anterior al más reciente de la cuenta: la UI pide
+  /// confirmación (M8).
+  bool get olderThanLatest => viaBridge || gen < latestGen;
 }
 
 class _Reconciled {

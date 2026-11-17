@@ -404,6 +404,67 @@ class VaultDataRepository {
     expectPath: expectPath,
   );
 
+  /// Rotación de la DEK (§5.6, M4): pasa el item, YA re-cifrado, de
+  /// [fromGen] a [toGen] en UNA transacción condicional. Solo si la fila
+  /// sigue en [fromGen] con [fromPath]: nueva generación, rutas y `fileId`,
+  /// referencias a la nube a NULL y `pendiente`; en la misma transacción se
+  /// rehacen sus trabajos `file`/`thumb` de la cola (nunca `delete_remote`).
+  /// Devuelve `false` (sin cambiar nada) si la fila cambió o ya no existe.
+  Future<bool> swapItemGeneration(
+    String id, {
+    required int fromGen,
+    required String fromPath,
+    required int toGen,
+    required String encryptedPath,
+    required String fileId,
+    required String? thumbPath,
+    required String? thumbFileId,
+    required int nowMs,
+  }) async {
+    AppPaths.validateRelative(encryptedPath);
+    if (thumbPath != null) AppPaths.validateRelative(thumbPath);
+    final db = await _dbProvider();
+    final ok = await db.transaction((txn) async {
+      final n = await txn.update(
+        'vault_items',
+        {
+          'keyGen': toGen,
+          'encryptedPath': encryptedPath,
+          'fileId': fileId,
+          'thumbPath': thumbPath,
+          'thumbFileId': thumbFileId,
+          'driveFileId': null,
+          'cloudMd5': null,
+          'cloudSize': null,
+          'thumbDriveFileId': null,
+          'syncStatus': SyncStatus.pendiente.dbValue,
+        },
+        where: 'id = ? AND keyGen = ? AND encryptedPath = ?',
+        whereArgs: [id, fromGen, fromPath],
+      );
+      if (n == 0) return false;
+      // Valores de `SyncJobKind.file/thumb` (sync_queue_repository.dart).
+      await txn.delete(
+        'sync_queue',
+        where: "itemId = ? AND kind IN ('file', 'thumb')",
+        whereArgs: [id],
+      );
+      for (final kind in ['file', if (thumbPath != null) 'thumb']) {
+        await txn.insert('sync_queue', {
+          'itemId': id,
+          'kind': kind,
+          'state': 'pendiente',
+          'attempts': 0,
+          'nextAttemptAt': 0,
+          'createdAt': nowMs,
+        });
+      }
+      return true;
+    });
+    if (ok) _changed();
+    return ok;
+  }
+
   /// Items cifrados con la generación de llave [gen] (D60), los más antiguos
   /// primero. [includeTrashed] = true incluye la Papelera (la rotación de la
   /// DEK también la re-cifra).

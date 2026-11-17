@@ -48,6 +48,12 @@ class ScriptedRestoreService extends RestoreService {
   int restoreCalls = 0;
   String? pinUsed;
 
+  /// Lo que "abrió" el código (M8); `null` = el conjunto más reciente.
+  RestoreCodeMatch? match;
+
+  @override
+  RestoreCodeMatch? get lastMatch => match;
+
   @override
   String? get accountEmail => signedIn ? email : null;
 

@@ -19,6 +19,14 @@ import 'widgets/recovery_code_field.dart';
 /// Pasos de la restauración.
 enum RestoreStep { start, noBackup, code, working, done }
 
+/// Texto del aviso M8 (DISENO_ROTACION.md §8): el código abre un estado
+/// anterior al más reciente de la cuenta.
+String restoreOlderStateMessage(RestoreCodeMatch match) => match.viaBridge
+    ? 'Esto restaura el estado de antes del cambio de llave maestra que '
+          'estaba en curso. Después, vuelve a rotar la llave.'
+    : 'Este es un código ANTERIOR. Hay una copia más reciente que abre tu '
+          'código nuevo. ¿Restaurar igualmente el estado antiguo?';
+
 /// Restaurar una bóveda existente (F9): Google -> código de recuperación ->
 /// PIN nuevo -> descarga -> listo. Ver [RestoreService] para lo que ocurre
 /// por debajo (nada se instala hasta el final).
@@ -149,6 +157,12 @@ class _RestoreFlowState extends State<RestoreFlow> {
         return;
       }
       setState(() => _busy = false);
+      // M8 (D61): el código abre un estado ANTERIOR al más reciente.
+      final match = _svc.lastMatch;
+      if (match != null && match.olderThanLatest) {
+        if (!await _confirmOlderState(match)) return;
+        if (!mounted) return;
+      }
       await _askPin();
     } on PinLockedOutException catch (e) {
       if (mounted) {
@@ -170,6 +184,27 @@ class _RestoreFlowState extends State<RestoreFlow> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<bool> _confirmOlderState(RestoreCodeMatch match) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Estado anterior'),
+        content: Text(restoreOlderStateMessage(match)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Restaurar igualmente'),
+          ),
+        ],
+      ),
+    );
+    return ok ?? false;
   }
 
   // --------------------------------------------------------------- PIN

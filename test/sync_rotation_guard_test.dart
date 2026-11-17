@@ -321,6 +321,42 @@ void main() {
     expect(cloud.names.toList(), ['otro.vault']);
   });
 
+  test(
+    'D61: tras restaurar en gen 2, la sync barre la gen 1 una vez',
+    () async {
+      keyGen = 2;
+      recoveryJson = (await KeyRecoveryService(kdfParams: fastKdf).createBackup(
+        List.filled(32, 9),
+        RecoveryCode.generate(),
+      )).toJsonString();
+      final bytes = Uint8List.fromList(recoveryJson!.codeUnits);
+      for (final (n, b) in [
+        ('recovery_backup.k2.json', bytes),
+        ('vault_db.k2.snapshot', Uint8List.fromList([1])),
+        ('recovery_backup.json', Uint8List.fromList([2])),
+        ('vault_db.snapshot', Uint8List.fromList([3])),
+        ('a.vault', Uint8List.fromList([4])),
+        ('a.k2.vault', Uint8List.fromList([5])),
+      ]) {
+        await cloud.uploadBytes(bytes: b, name: n);
+      }
+      await prefs.setGenerationSweepPending(true);
+      // Con una rotación en curso no se barre.
+      guard.active = true;
+      await sync.run(manual: true);
+      expect(cloud.byName('recovery_backup.json'), isNotNull);
+      expect(await prefs.getGenerationSweepPending(), isTrue);
+      guard.active = false;
+      await sync.run(manual: true);
+      expect(cloud.names.toSet(), {
+        'recovery_backup.k2.json',
+        'vault_db.k2.snapshot',
+        'a.k2.vault',
+      });
+      expect(await prefs.getGenerationSweepPending(), isFalse);
+    },
+  );
+
   test('StoreRotationGuard sigue al registro y sus fases', () async {
     final store = RotationKeyStore(InMemorySecureStore());
     final g = StoreRotationGuard(store);

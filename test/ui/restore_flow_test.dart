@@ -230,6 +230,38 @@ void main() {
       expect(find.text('Código incorrecto'), findsNothing);
     });
 
+    for (final bridge in [false, true]) {
+      testWidgets('M8: un código que abre un estado anterior pide confirmación '
+          '(puente: $bridge)', (tester) async {
+        usePhoneSize(tester);
+        final match = RestoreCodeMatch(
+          gen: 1,
+          viaBridge: bridge,
+          latestGen: bridge ? 1 : 2,
+        );
+        final svc = ScriptedRestoreService()..match = match;
+        final h = _Harness(svc);
+        await tester.pumpWidget(h.flow());
+        await tester.tap(find.text('Iniciar sesión con Google'));
+        await _settle(tester);
+        await _type(tester, _typed);
+        await tester.tap(find.widgetWithText(FilledButton, 'Continuar'));
+        await _settle(tester);
+        expect(find.text('Estado anterior'), findsOneWidget);
+        expect(find.text(restoreOlderStateMessage(match)), findsOneWidget);
+        // Cancelar: se queda en el código, sin pedir PIN.
+        await tester.tap(find.text('Cancelar'));
+        await _settle(tester);
+        expect(find.text('Elige un PIN nuevo'), findsNothing);
+        // Aceptar: sigue al PIN.
+        await tester.tap(find.widgetWithText(FilledButton, 'Continuar'));
+        await _settle(tester);
+        await tester.tap(find.text('Restaurar igualmente'));
+        await _settle(tester);
+        expect(find.text('Elige un PIN nuevo'), findsOneWidget);
+      });
+    }
+
     testWidgets('límite de intentos: avisa y bloquea el envío', (tester) async {
       usePhoneSize(tester);
       final svc = ScriptedRestoreService()

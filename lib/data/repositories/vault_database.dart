@@ -10,6 +10,18 @@ import '../../core/crypto/key_hierarchy.dart';
 import '../../core/crypto/secure_kv_store.dart';
 import '../../core/services/app_paths.dart';
 import '../../core/session/vault_session.dart';
+import 'db_rekeyer.dart';
+
+export 'db_rekeyer.dart';
+
+/// La copia re-cifrada de la BD no superó la verificación (§6.1): la BD
+/// original queda intacta y la copia se borra.
+class VaultRekeyVerificationException implements Exception {
+  const VaultRekeyVerificationException(this.detail);
+  final String detail;
+  @override
+  String toString() => 'VaultRekeyVerificationException: $detail';
+}
 
 /// C1 (D62): la BD de una bóveda que YA existió no está en disco. No se crea
 /// una vacía en su lugar (se subiría a Drive como si fuera la verdad); hay que
@@ -359,6 +371,7 @@ class VaultDatabase {
     opener: openSqlCipherDatabase,
     useSqlCipher: true,
     markerStore: FlutterSecureKeyValueStore(),
+    rekeyer: const SqlCipherExportRekeyer(),
   );
 
   factory VaultDatabase() => _instance;
@@ -377,12 +390,14 @@ class VaultDatabase {
     String? dbPath,
     bool useSqlCipher = false,
     SecureKeyValueStore? markerStore,
+    DbRekeyer? rekeyer,
   }) : this._(
          session: session,
          opener: opener,
          dbPath: dbPath,
          useSqlCipher: useSqlCipher,
          markerStore: markerStore,
+         rekeyer: rekeyer ?? const SqlCipherExportRekeyer(),
        );
 
   VaultDatabase._({
@@ -391,11 +406,13 @@ class VaultDatabase {
     String? dbPath,
     required bool useSqlCipher,
     SecureKeyValueStore? markerStore,
+    required DbRekeyer rekeyer,
   }) : _session = session,
        _opener = opener,
        _dbPathOverride = dbPath,
        _useSqlCipher = useSqlCipher,
-       _markerStore = markerStore {
+       _markerStore = markerStore,
+       _rekeyer = rekeyer {
     // Al bloquear la bóveda se cierra la conexión.
     _session.addOnClear(() => unawaited(close()));
   }
@@ -405,11 +422,19 @@ class VaultDatabase {
   final String? _dbPathOverride;
   final bool _useSqlCipher;
   final SecureKeyValueStore? _markerStore;
+  final DbRekeyer _rekeyer;
 
   Database? _db;
   String? _openPassword;
   int? _openedGen;
   Future<Database>? _opening;
+
+  /// Puerta exclusiva del re-cifrado (§6.1): mientras exista, [database]
+  /// espera (la BD mide pocos MiB: < 1 s).
+  Completer<void>? _rekeying;
+
+  /// `true` mientras [rekeyTo] trabaja.
+  bool get isRekeying => _rekeying != null;
 
   bool get isOpen => _db != null;
 
@@ -450,6 +475,10 @@ class VaultDatabase {
   /// Conexión abierta; la abre (o reabre si cambió la llave). Lanza
   /// [StateError] si la bóveda está bloqueada.
   Future<Database> get database async {
+    // Durante un re-cifrado (§6.1) se espera a que termine.
+    while (_rekeying != null) {
+      await _rekeying!.future;
+    }
     final candidates = _candidatesFromSession();
     // Espera una apertura en curso antes de decidir.
     final pending = _opening;
@@ -478,12 +507,16 @@ class VaultDatabase {
     if (_dbPathOverride == null) await AppPaths.init();
     final file = File(_dbPath);
     final markers = _markerStore;
-    final existed = file.existsSync();
-    // C1: la BD ya existió y falta el archivo -> nunca se crea una vacía.
+    var existed = file.existsSync();
+    // C1: la BD ya existió y falta el archivo -> nunca se crea una vacía. Si
+    // quedan restos de un re-cifrado (§6.2), se intenta repararla con ellos.
     if (!existed &&
         markers != null &&
         await markers.read(AuthController.dbCreatedKey) == 'true') {
-      throw const VaultDatabaseMissingException();
+      if (!await _repairFromRekeyLeftovers(candidates)) {
+        throw const VaultDatabaseMissingException();
+      }
+      existed = true;
     }
     if (!file.parent.existsSync()) file.parent.createSync(recursive: true);
     // Una BD NUEVA se crea con la llave actual (la última candidata). Con una
@@ -530,9 +563,9 @@ class VaultDatabase {
 
   /// Abre con [password] y, con SQLCipher, comprueba que la llave abre el
   /// archivo (una llave equivocada falla al leer el esquema).
-  Future<Database> _openWith(String password) async {
+  Future<Database> _openWith(String password, {String? path}) async {
     final db = await _opener(
-      _dbPath,
+      path ?? _dbPath,
       password: _useSqlCipher ? password : null,
       options: OpenDatabaseOptions(
         version: VaultSchema.version,
@@ -555,6 +588,289 @@ class VaultDatabase {
       }
     }
     return db;
+  }
+
+  // ------------------------------------------------------------ re-cifrado
+
+  /// Copia de trabajo de un re-cifrado hacia la generación [gen].
+  String rekeyTmpPath(int gen) => '$_dbPath.k$gen.tmp';
+
+  /// Copia de seguridad (cifrada con la llave vieja) de la generación [gen]
+  /// mientras dura el re-cifrado; se borra en `switchingLocal`.
+  String rekeyBackupPath(int gen) => '$_dbPath.k$gen';
+
+  /// Tablas cuyas filas deben ser idénticas en la copia re-cifrada.
+  static const List<String> _rekeyTables = [
+    'vault_items',
+    'folders',
+    'sync_queue',
+    'migration_state',
+    'migration_items',
+    'tags',
+    'item_tags',
+    'rotation_state',
+    'rotation_old_files',
+  ];
+
+  /// Re-cifra la BD de la llave de la generación [fromGen] ([from]) a la de
+  /// [toGen] ([to]) POR COPIA (§6.1, C1, D62):
+  ///
+  /// 1. Puerta exclusiva: [database] espera; la conexión se cierra.
+  /// 2. Cuentas de todas las tablas, triggers y `user_version`; checkpoint.
+  /// 3. `sqlcipher_export` a `db.kN.tmp` con la llave nueva ([DbRekeyer]).
+  /// 4. Verificación de la copia: abre con la nueva, `integrity_check`,
+  ///    `cipher_integrity_check`, mismas cuentas, triggers y versión; con la
+  ///    llave vieja NO abre ([VaultRekeyVerificationException]).
+  /// 5. COPIA (no mueve) la BD original a `db.k<fromGen>`.
+  /// 6. `rename(tmp → db)`: reemplazo atómico. NUNCA hay un instante sin BD.
+  ///
+  /// Las llaves se copian al empezar (L6): un bloqueo a mitad no las pone a
+  /// cero bajo el código. Si se bloquea antes del paso 6, aborta sin tocar la
+  /// BD ([StateError]); el `rename` ya no se interrumpe. Idempotente: si la BD
+  /// ya abre con la llave nueva, no hace nada.
+  Future<void> rekeyTo({
+    required int fromGen,
+    required KeyHierarchy from,
+    required int toGen,
+    required KeyHierarchy to,
+  }) async {
+    if (!_useSqlCipher) {
+      throw StateError('El re-cifrado exige SQLCipher');
+    }
+    if (_rekeying != null) throw StateError('Ya hay un re-cifrado en curso');
+    final gate = Completer<void>();
+    _rekeying = gate;
+    // L6: copias propias (String inmutables) de las dos llaves.
+    final oldPw = passwordFor(from);
+    final newPw = passwordFor(to);
+    final dbFile = File(_dbPath);
+    final tmp = File(rekeyTmpPath(toGen));
+    final backup = File(rekeyBackupPath(fromGen));
+    var renamed = false;
+    try {
+      await _closeConnection();
+      if (await tmp.exists()) await tmp.delete();
+      if (!dbFile.existsSync()) throw const VaultDatabaseMissingException();
+      // ¿Ya re-cifrada (corte tras el rename)?
+      if (await _opensWith(_dbPath, newPw)) return;
+
+      final src = await _openWith(oldPw);
+      final int version;
+      final Map<String, int> counts;
+      final Set<String> triggers;
+      try {
+        version = await _userVersion(src);
+        counts = await _tableCounts(src);
+        triggers = await _triggerNames(src);
+        try {
+          await src.rawQuery('PRAGMA wal_checkpoint(TRUNCATE)');
+        } catch (_) {
+          // Modo journal normal: no hay WAL que vaciar.
+        }
+        await _rekeyer.exportTo(src, tmp.path, newPw, userVersion: version);
+      } finally {
+        await src.close();
+      }
+      _requireUnlocked();
+
+      await _verifyRekeyed(
+        tmp.path,
+        newPw: newPw,
+        oldPw: oldPw,
+        version: version,
+        counts: counts,
+        triggers: triggers,
+      );
+      _requireUnlocked();
+
+      if (await backup.exists()) await backup.delete();
+      await dbFile.copy(backup.path);
+      final raf = await backup.open(mode: FileMode.append);
+      try {
+        await raf.flush();
+      } finally {
+        await raf.close();
+      }
+      _requireUnlocked(); // último punto de aborto
+
+      // Restos de diario de la BD vieja: no deben aplicarse a la nueva.
+      for (final suffix in const ['-wal', '-shm', '-journal']) {
+        final f = File('$_dbPath$suffix');
+        if (f.existsSync()) await f.delete();
+      }
+      await tmp.rename(_dbPath);
+      renamed = true;
+    } catch (_) {
+      if (!renamed) {
+        try {
+          if (await tmp.exists()) await tmp.delete();
+          if (await backup.exists()) await backup.delete();
+        } on FileSystemException {
+          // se barren al reintentar
+        }
+      }
+      rethrow;
+    } finally {
+      _rekeying = null;
+      gate.complete();
+    }
+  }
+
+  /// Borra la copia de seguridad cifrada con la llave vieja (`db.k<gen>`) y
+  /// cualquier copia de trabajo (`db.kN.tmp`).
+  Future<void> deleteRekeyLeftovers(int fromGen) async {
+    final dir = File(_dbPath).parent;
+    final base = p.basename(_dbPath);
+    final pattern = RegExp('^${RegExp.escape(base)}\\.k[0-9]+\\.tmp\$');
+    final backup = File(rekeyBackupPath(fromGen));
+    if (await backup.exists()) await backup.delete();
+    if (!dir.existsSync()) return;
+    for (final e in dir.listSync()) {
+      if (e is File && pattern.hasMatch(p.basename(e.path))) await e.delete();
+    }
+  }
+
+  void _requireUnlocked() {
+    if (!_session.isUnlocked) {
+      throw StateError('La bóveda se bloqueó durante el re-cifrado de la BD');
+    }
+  }
+
+  Future<void> _closeConnection() async {
+    final pending = _opening;
+    if (pending != null) {
+      try {
+        await pending;
+      } catch (_) {}
+    }
+    final db = _db;
+    _db = null;
+    _openPassword = null;
+    _openedGen = null;
+    if (db != null && db.isOpen) await db.close();
+  }
+
+  Future<bool> _opensWith(String path, String password) async {
+    if (!File(path).existsSync()) return false;
+    try {
+      final db = await _openWith(password, path: path);
+      await db.close();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<int> _userVersion(Database db) async =>
+      (await db.rawQuery('PRAGMA user_version')).first.values.first as int;
+
+  static Future<Map<String, int>> _tableCounts(Database db) async {
+    final existing = (await db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type = 'table'",
+    )).map((r) => r['name']).toSet();
+    return {
+      for (final t in _rekeyTables)
+        if (existing.contains(t))
+          t:
+              (await db.rawQuery('SELECT COUNT(*) AS n FROM $t')).first['n']
+                  as int,
+    };
+  }
+
+  static Future<Set<String>> _triggerNames(Database db) async =>
+      (await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger'",
+      )).map((r) => r['name'] as String).toSet();
+
+  Future<void> _verifyRekeyed(
+    String path, {
+    required String newPw,
+    required String oldPw,
+    required int version,
+    required Map<String, int> counts,
+    required Set<String> triggers,
+  }) async {
+    Database copy;
+    try {
+      copy = await _openWith(newPw, path: path);
+    } catch (_) {
+      throw const VaultRekeyVerificationException('no abre con la llave nueva');
+    }
+    try {
+      final integrity = await copy.rawQuery('PRAGMA integrity_check');
+      if (integrity.length != 1 || integrity.first.values.first != 'ok') {
+        throw const VaultRekeyVerificationException('integrity_check');
+      }
+      List<Map<String, Object?>> cipher;
+      try {
+        cipher = await copy.rawQuery('PRAGMA cipher_integrity_check');
+      } catch (_) {
+        cipher = const [];
+      }
+      if (cipher.isNotEmpty) {
+        throw const VaultRekeyVerificationException('cipher_integrity_check');
+      }
+      if (await _userVersion(copy) != version) {
+        throw const VaultRekeyVerificationException('user_version');
+      }
+      final got = await _tableCounts(copy);
+      if (got.length != counts.length ||
+          counts.entries.any((e) => got[e.key] != e.value)) {
+        throw const VaultRekeyVerificationException('cantidad de filas');
+      }
+      final gotTriggers = await _triggerNames(copy);
+      if (gotTriggers.length != triggers.length ||
+          !gotTriggers.containsAll(triggers)) {
+        throw const VaultRekeyVerificationException('triggers');
+      }
+    } finally {
+      await copy.close();
+    }
+    if (await _opensWith(path, oldPw)) {
+      throw const VaultRekeyVerificationException('abre con la llave vieja');
+    }
+  }
+
+  /// §6.2: falta la BD pero quedan restos de un re-cifrado. Se usa la copia
+  /// de trabajo si abre con una llave de la sesión y verifica; si no, la
+  /// copia de seguridad (`db.kN`) si abre. `true` si la BD quedó en su sitio.
+  Future<bool> _repairFromRekeyLeftovers(List<(int, String)> candidates) async {
+    final dir = File(_dbPath).parent;
+    if (!dir.existsSync()) return false;
+    final base = p.basename(_dbPath);
+    final tmpRe = RegExp('^${RegExp.escape(base)}\\.k[0-9]+\\.tmp\$');
+    final bakRe = RegExp('^${RegExp.escape(base)}\\.k[0-9]+\$');
+    final files = dir.listSync().whereType<File>().toList();
+    Future<bool> usable(File f) async {
+      for (final (_, pw) in candidates) {
+        try {
+          final db = await _openWith(pw, path: f.path);
+          try {
+            final r = await db.rawQuery('PRAGMA integrity_check');
+            if (r.length == 1 && r.first.values.first == 'ok') return true;
+          } finally {
+            await db.close();
+          }
+        } catch (_) {
+          // otra llave
+        }
+      }
+      return false;
+    }
+
+    for (final f in files.where((f) => tmpRe.hasMatch(p.basename(f.path)))) {
+      if (await usable(f)) {
+        await f.rename(_dbPath);
+        return true;
+      }
+    }
+    for (final f in files.where((f) => bakRe.hasMatch(p.basename(f.path)))) {
+      if (await usable(f)) {
+        await f.copy(_dbPath);
+        return true;
+      }
+    }
+    return false;
   }
 
   /// Cierra la conexión (idempotente). Se llama al bloquear la bóveda.

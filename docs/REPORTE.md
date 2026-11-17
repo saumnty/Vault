@@ -512,3 +512,6 @@ Etiquetas por archivo (crear, renombrar, borrar en Ajustes > Etiquetas; asignar 
 
 ## ⚠️ Aviso importante (2026-11-17): no instalar builds viejos
 La revisión del diseño de la fase 1 encontró que las versiones anteriores, al abrir una BD creada por una versión más nueva, la **borraban y recreaban** (se perdía el índice local; Drive conserva los archivos y se podría restaurar con el código). Corregido desde este commit (D59), pero un build viejo sigue teniendo el defecto: en el iPhone instala siempre el build más reciente de `dev-claude`, nunca uno anterior.
+
+## Nota de pruebas (2026-11-17): los tests de integración borran la app del emulador
+`flutter test integration_test/... -d emulator-5554` reinstala la app (mismo paquete) y se lleva las llaves del almacén seguro: la bóveda de pruebas del emulador queda sin llaves (la app vuelve al onboarding). No afecta al iPhone ni a ningún build real. Para pruebas manuales de la bóveda en el emulador, correr los tests de integración ANTES y crear/restaurar la bóveda de pruebas después.

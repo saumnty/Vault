@@ -632,6 +632,36 @@ class AuthController {
     });
   }
 
+  /// Como [verifyRecoveryCode] pero contra VARIOS respaldos (D61: tras una
+  /// rotación puede haber respaldos de varias generaciones y el puente). Se
+  /// prueban en el orden dado y cuenta como UN solo intento. Devuelve el
+  /// índice del respaldo que abrió y sus llaves, o `null`.
+  Future<(int, RecoveryCandidate)?> verifyRecoveryCodeAny({
+    required String recoveryCode,
+    required List<String> recoveryBackupJsons,
+  }) async {
+    final backups = [
+      for (final j in recoveryBackupJsons) RecoveryBackup.parse(j),
+    ];
+    if (RecoveryCode.normalize(recoveryCode) == null) return null;
+    return _serialized(() async {
+      await _restoreLimiter.ensureNotLocked();
+      await _restoreLimiter.registerFailure();
+      for (var i = 0; i < backups.length; i++) {
+        final dek = await _recovery.recoverDek(recoveryCode, backups[i]);
+        if (dek == null) continue;
+        try {
+          final keys = await KeyHierarchy.fromDek(dek);
+          await _restoreLimiter.reset();
+          return (i, RecoveryCandidate._(keys, recoveryBackupJsons[i]));
+        } finally {
+          dek.fillRange(0, dek.length, 0);
+        }
+      }
+      return null;
+    });
+  }
+
   /// F9, paso final: consolida [candidate] como la bóveda de este
   /// dispositivo con [newPin] (envoltura nueva, la biometría vieja se
   /// descarta) y deja la sesión desbloqueada. Si falla, no queda estado.

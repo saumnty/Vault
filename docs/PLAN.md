@@ -45,7 +45,7 @@ Reglas: una fase a la vez; migraciones de BD incrementales (v7 → v8…), nunca
 | 8 | Bóveda señuelo: variante elegida por el usuario (2026-11-17) = AMBAS: segundo PIN que abre otra bóveda + negable (disco y Drive no revelan cuántas bóvedas hay). Diseño con Opus + revisión independiente antes de codificar | Opus | ⬜ |
 | 11 | Kern: nombre visible e ícono | Haiku | ⬜ |
 
-Dónde retomar: Fase 1, paso 7 (`rekeyTo`) de docs/DISENO_ROTACION.md §11; al terminar la fase PARAR y dar el simulacro de restauración.
+Dónde retomar: Fase 1, paso 10 (`KeyRotationService`) de docs/DISENO_ROTACION.md §11; al terminar la fase PARAR y dar el simulacro de restauración.
 
 ### Fase 1 · pasos (ver docs/DISENO_ROTACION.md §11)
 | Paso | Qué | Estado |
@@ -56,9 +56,9 @@ Dónde retomar: Fase 1, paso 7 (`rekeyTo`) de docs/DISENO_ROTACION.md §11; al t
 | 4 | `VaultKeyring`, lectores por generación, escrituras condicionales | ✅🧪 |
 | 5 | Sincronización consciente de la rotación (C2, A1, M7) | ✅🧪 |
 | 6 | Llaves de rotación en `AuthController` (puente, PIN, biometría) | ✅🧪 suite 917 verde; emulador gen 1: foto, video en streaming, sync OK |
-| 7 | Re-cifrado de la BD por copia (`rekeyTo`) | ⬜ |
-| 8 | `ItemReencryptor` | ⬜ |
-| 9 | Restauración multi-generación + puente + barrido por lista | ⬜ |
+| 7 | Re-cifrado de la BD por copia (`rekeyTo`) | ✅🧪 SQLCipher real en emulador OK |
+| 8 | `ItemReencryptor` | ✅🧪 |
+| 9 | Restauración multi-generación + puente + barrido por lista | ✅🧪 suite 953 verde |
 | 10 | `KeyRotationService` con inyección de cortes | ⬜ |
 | 11 | UI de rotación | ⬜ |
 | 12 | Punta a punta en emulador + docs; PARAR: simulacro de restauración | ⬜ |

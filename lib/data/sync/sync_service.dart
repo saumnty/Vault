@@ -13,6 +13,7 @@ import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
 import '../repositories/vault_data_repository.dart';
 import '../repositories/vault_database.dart' show SnapshotCopy;
+import '../restore/generation_sweeper.dart';
 import 'network_monitor.dart';
 import 'sync_preferences.dart';
 import 'sync_queue_repository.dart';
@@ -456,6 +457,9 @@ class SyncService {
         await _maybeEnqueueSnapshot();
         phase = await _drain(token);
       }
+      if (phase == SyncPhase.running && !token.isCancelled) {
+        await _maybeSweepGenerations();
+      }
       await _finish(token.isCancelled ? SyncPhase.idle : _idleIf(phase));
       if (!token.isCancelled && phase == SyncPhase.running) {
         unawaited(refreshQuota());
@@ -593,6 +597,28 @@ class SyncService {
         SyncJobKind.dbSnapshot,
         now: _now(),
       );
+    }
+  }
+
+  /// D61: tras restaurar en una generación > 1, borra de Drive (por lista y
+  /// con la guarda de [GenerationSweeper]) las generaciones anteriores. Solo
+  /// sin rotación en curso; un fallo deja la marca para la próxima pasada.
+  Future<void> _maybeSweepGenerations() async {
+    if (rotation.active) return;
+    if (!await prefs.getGenerationSweepPending()) return;
+    final gen = await currentKeyGen();
+    final local = await recoveryBackupProvider();
+    if (gen <= 1 || local == null) {
+      await prefs.setGenerationSweepPending(false);
+      return;
+    }
+    try {
+      final r = await GenerationSweeper(
+        cloud: cloud,
+      ).sweep(currentGen: gen, localRecoveryBackupJson: local);
+      if (r == SweepResult.done) await prefs.setGenerationSweepPending(false);
+    } on CloudException catch (e) {
+      VaultLog.e('Barrido de generaciones pendiente', e, 'sync');
     }
   }
 

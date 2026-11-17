@@ -30,6 +30,16 @@ class SyncPreferences {
   Future<void> setWifiOnly(bool value) =>
       _store.write(wifiOnlyKey, value ? 'true' : 'false');
 
+  /// D61: hay que barrer de Drive las generaciones de llave anteriores (se
+  /// marca al restaurar en una generación > 1; ver `GenerationSweeper`).
+  static const String generationSweepPendingKey = 'sync.v1.gen_sweep_pending';
+
+  Future<bool> getGenerationSweepPending() async =>
+      (await _store.read(generationSweepPendingKey)) == 'true';
+  Future<void> setGenerationSweepPending(bool value) => value
+      ? _store.write(generationSweepPendingKey, 'true')
+      : _store.delete(generationSweepPendingKey);
+
   Future<String?> getOldAccountKept() => _store.read(oldAccountKeptKey);
   Future<void> setOldAccountKept(String email) =>
       _store.write(oldAccountKeptKey, email);

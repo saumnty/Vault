@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sqflite_sqlcipher/sqflite.dart';
+import 'package:vault/core/crypto/aes_gcm_backend.dart';
 import 'package:vault/core/crypto/key_hierarchy.dart';
 import 'package:vault/core/services/app_paths.dart';
 import 'package:vault/core/session/vault_session.dart';
@@ -16,6 +17,8 @@ import 'package:vault/data/repositories/vault_database.dart';
 ///   flutter test integration_test/vault_database_sqlcipher_test.dart -d ID_DISPOSITIVO
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  // Igual que la app (main.dart): HMAC/HKDF en Dart.
+  setUpAll(configureCryptography);
 
   testWidgets('SQLCipher abre con la llave derivada, rechaza otra y cierra al bloquear', (
     tester,
@@ -35,16 +38,16 @@ void main() {
     await repo.insertItem(
       const VaultItemModel(
         keyGen: 1,
-        id: 'it1',
+        id: '0b6c3c2e-6a4f-4f7e-9d2a-1c3b5e7f9a01',
         name: 'foto.jpg',
-        encryptedPath: 'vault/it1.vault',
+        encryptedPath: 'vault/0b6c3c2e-6a4f-4f7e-9d2a-1c3b5e7f9a01.vault',
         fileSize: 3,
         mimeType: 'image/jpeg',
         createdAt: '2026-01-01T00:00:00',
         syncStatus: SyncStatus.pendiente,
       ),
     );
-    expect((await repo.getItem('it1'))!.name, 'foto.jpg');
+    expect((await repo.getItem('0b6c3c2e-6a4f-4f7e-9d2a-1c3b5e7f9a01'))!.name, 'foto.jpg');
 
     // Bloquear cierra la conexión.
     session.clear();
@@ -58,7 +61,7 @@ void main() {
         Uint8List.fromList(List.generate(32, (i) => i + 1)),
       ),
     );
-    expect((await repo.getItem('it1'))!.syncStatus, SyncStatus.pendiente);
+    expect((await repo.getItem('0b6c3c2e-6a4f-4f7e-9d2a-1c3b5e7f9a01'))!.syncStatus, SyncStatus.pendiente);
     await vdb.close();
 
     // Con otra llave el archivo no se puede leer (está cifrado).
