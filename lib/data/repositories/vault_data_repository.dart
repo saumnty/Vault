@@ -52,7 +52,9 @@ class VaultDataRepository {
     final db = await _dbProvider();
     final rows = await db.query(
       'folders',
-      where: parentId == null ? 'parentId IS NULL' : 'parentId = ?',
+      where: parentId == null
+          ? 'parentId IS NULL AND deletedAt IS NULL'
+          : 'parentId = ? AND deletedAt IS NULL',
       whereArgs: parentId == null ? null : [parentId],
       orderBy: 'createdAt DESC',
     );
@@ -197,18 +199,28 @@ class VaultDataRepository {
     final db = await _dbProvider();
     final rows = await db.query(
       'vault_items',
-      where: folderId == null ? 'folderId IS NULL' : 'folderId = ?',
+      where: folderId == null
+          ? 'folderId IS NULL AND deletedAt IS NULL'
+          : 'folderId = ? AND deletedAt IS NULL',
       whereArgs: folderId == null ? null : [folderId],
       orderBy: 'createdAt DESC',
     );
     return rows.map(VaultItemModel.fromMap).toList();
   }
 
-  Future<List<VaultItemModel>> getItemsBySyncStatus(SyncStatus status) async {
+  /// [includeTrashed] = false deja fuera lo que está en la papelera (p. ej.
+  /// candidatos a borrar originales: algo que el usuario ya tiró no debe
+  /// provocar que se borre además su original de la galería).
+  Future<List<VaultItemModel>> getItemsBySyncStatus(
+    SyncStatus status, {
+    bool includeTrashed = true,
+  }) async {
     final db = await _dbProvider();
     final rows = await db.query(
       'vault_items',
-      where: 'syncStatus = ?',
+      where: includeTrashed
+          ? 'syncStatus = ?'
+          : 'syncStatus = ? AND deletedAt IS NULL',
       whereArgs: [status.dbValue],
       orderBy: 'createdAt ASC',
     );
@@ -266,7 +278,7 @@ class VaultDataRepository {
     final db = await _dbProvider();
     final rows = await db.query(
       'vault_items',
-      where: 'syncStatus = ?',
+      where: 'syncStatus = ? AND deletedAt IS NULL',
       whereArgs: [SyncStatus.enCache.dbValue],
       orderBy: 'lastAccessedAt ASC',
     );
@@ -275,7 +287,8 @@ class VaultDataRepository {
 
   /// Items con copia verificada en la nube (driveFileId + MD5 + tamaño) en
   /// estado `en_nube`, `en_cache` o `sin_conexion`: los únicos que se pueden
-  /// descargar de nuevo sin perder datos. (Tras subir, un item queda `en_nube`
+  /// descargar de nuevo sin perder datos. Excluye la papelera (su copia local
+  /// ni se purga ni se vuelve a descargar). (Tras subir, un item queda `en_nube`
   /// CON copia local; tras purgar, `en_nube` SIN ella.)
   Future<List<VaultItemModel>> getCloudVerifiedItems() async {
     final db = await _dbProvider();
@@ -283,7 +296,8 @@ class VaultDataRepository {
       'vault_items',
       where:
           'driveFileId IS NOT NULL AND cloudMd5 IS NOT NULL AND '
-          'cloudSize IS NOT NULL AND syncStatus IN (?, ?, ?)',
+          'cloudSize IS NOT NULL AND syncStatus IN (?, ?, ?) AND '
+          'deletedAt IS NULL',
       whereArgs: [
         SyncStatus.enNube.dbValue,
         SyncStatus.enCache.dbValue,

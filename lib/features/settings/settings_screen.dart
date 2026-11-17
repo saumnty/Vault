@@ -23,6 +23,7 @@ import '../vault/vault_services.dart';
 import 'account_migration_screen.dart';
 import 'diagnostics_screen.dart';
 import 'pin_flows.dart';
+import 'trash_screen.dart';
 import 'settings_environment.dart';
 import 'widgets/settings_widgets.dart';
 
@@ -730,6 +731,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               SettingsSection(
                                 title: 'Almacenamiento',
                                 children: _storageTiles(),
+                              ),
+                            if (widget.services.trash != null)
+                              SettingsSection(
+                                title: 'Papelera',
+                                children: [
+                                  SettingsTile(
+                                    icon: Icons.delete_outline,
+                                    title: 'Papelera',
+                                    subtitle:
+                                        'Restaura o elimina lo que borraste '
+                                        '(se vacía sola a los 30 días)',
+                                    onTap: () => Navigator.of(context).push(
+                                      MaterialPageRoute<void>(
+                                        builder: (_) => TrashScreen(
+                                          service: widget.services.trash!,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             if (_sync != null) _syncSection(_sync!),
                             SettingsSection(

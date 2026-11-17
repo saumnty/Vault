@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../services/trash_service.dart';
+
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_radii.dart';
 import '../../../core/theme/app_spacing.dart';
@@ -118,32 +120,47 @@ class _NewFolderContentState extends State<NewFolderContent> {
   }
 }
 
-/// Confirma la eliminación. `true` si el usuario acepta.
+/// Confirma la eliminación. `true` si el usuario acepta. Con [toTrash] el
+/// texto es el de la papelera (restaurable 30 días); sin ella, el del borrado
+/// directo (permanente, también en Drive).
 Future<bool> showConfirmDeleteSheet(
   BuildContext context, {
   required int count,
   required bool includesFolders,
+  bool toTrash = false,
 }) async {
+  final String title;
+  final String message;
+  if (toTrash) {
+    title = count == 1
+        ? '¿Mover 1 elemento a la Papelera?'
+        : '¿Mover $count elementos a la Papelera?';
+    message =
+        '${includesFolders ? 'Las carpetas van con todo su contenido. ' : ''}'
+        'Podrás restaurarlo desde Ajustes > Papelera durante '
+        '$kTrashRetentionDays días. Después se eliminará de forma '
+        'permanente, también de la nube (Google Drive).';
+  } else {
+    title = count == 1
+        ? '¿Eliminar 1 elemento?'
+        : '¿Eliminar $count elementos?';
+    message = includesFolders
+        ? 'Las carpetas se eliminan con todo su contenido. También se '
+              'eliminará de la nube (Google Drive). Esta acción no se '
+              'puede deshacer.'
+        : 'También se eliminará de la nube (Google Drive). Esta '
+              'acción no se puede deshacer.';
+  }
   final result = await showBlurSheet<bool>(
     context,
     builder: (context) => Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SheetHeader(
-          title: count == 1
-              ? '¿Eliminar 1 elemento?'
-              : '¿Eliminar $count elementos?',
-          message: includesFolders
-              ? 'Las carpetas se eliminan con todo su contenido. También se '
-                    'eliminará de la nube (Google Drive). Esta acción no se '
-                    'puede deshacer.'
-              : 'También se eliminará de la nube (Google Drive). Esta '
-                    'acción no se puede deshacer.',
-        ),
+        SheetHeader(title: title, message: message),
         AppFilledButton(
-          label: 'Eliminar',
+          label: toTrash ? 'Mover a la Papelera' : 'Eliminar',
           icon: Icons.delete_outline,
-          destructive: true,
+          destructive: !toTrash,
           onPressed: () => Navigator.of(context).pop(true),
         ),
         const SizedBox(height: AppSpacing.sm),

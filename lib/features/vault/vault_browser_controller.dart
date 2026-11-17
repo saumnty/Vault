@@ -196,10 +196,20 @@ class VaultBrowserController extends ChangeNotifier {
     return ok;
   }
 
-  /// Elimina las entradas (carpetas en cascada): fila de BD, archivos locales
+  /// Manda las entradas a la papelera (carpetas con todo su contenido). Sin
+  /// papelera (pruebas) elimina directo: fila de BD, archivos locales
   /// y, si hay nube, encola el borrado de la copia en Drive con los ids
   /// leídos ANTES de borrar la fila (ver `SyncJobKind.deleteRemote`).
   Future<void> delete(Iterable<BrowserEntry> targets) async {
+    final trash = services.trash;
+    if (trash != null) {
+      // v2 fase 5: a la papelera (restaurable); el borrado real y el de Drive
+      // ocurren al vaciar/vencer (TrashService).
+      await trash.trash(targets.toList());
+      _selection.clear();
+      await load();
+      return;
+    }
     final repo = services.repository;
     final itemIds = <String>[];
     final remote = <RemoteDeleteTarget>[];

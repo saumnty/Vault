@@ -230,11 +230,16 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
   void _openSettings() {
     final env = widget.settings;
     if (env == null) return;
-    Navigator.of(context).push(
-      AppPageRoute<void>(
-        builder: (_) => SettingsScreen(env: env, services: _services),
-      ),
-    );
+    Navigator.of(context)
+        .push(
+          AppPageRoute<void>(
+            builder: (_) => SettingsScreen(env: env, services: _services),
+          ),
+        )
+        // Ajustes puede cambiar el contenido (restaurar de la Papelera).
+        .then((_) {
+          if (mounted) _controller.load(silent: true);
+        });
   }
 
   void _onCrumbTap(Crumb crumb) {
@@ -252,6 +257,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
       context,
       count: targets.length,
       includesFolders: targets.any((e) => e is FolderEntry),
+      toTrash: _services.trash != null,
     );
     if (!ok || !mounted) return;
     AppHaptics.destructive();

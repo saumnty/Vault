@@ -546,7 +546,10 @@ class GalleryImportService {
   /// Items cuyo original PODRÍA borrarse: `en_nube`, con `driveFileId`,
   /// `contentHash` y `sourceAssetId`. No borra nada.
   Future<List<VaultItemModel>> deleteOriginalCandidates() async {
-    final inCloud = await repository.getItemsBySyncStatus(SyncStatus.enNube);
+    final inCloud = await repository.getItemsBySyncStatus(
+      SyncStatus.enNube,
+      includeTrashed: false,
+    );
     return [
       for (final i in inCloud)
         if (i.driveFileId != null &&

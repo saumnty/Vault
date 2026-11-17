@@ -9,8 +9,8 @@ import '../../core/crypto/key_hierarchy.dart';
 import '../../core/services/app_paths.dart';
 import '../../core/session/vault_session.dart';
 
-/// Esquema de la BD. SIN MIGRACIONES (aún no hay datos reales): al cambiar
-/// [version] se borran todas las tablas y se recrean (ver [recreate]).
+/// Esquema de la BD. Desde v6 se actualiza de forma incremental; antes de v6
+/// se recreaba (ver [upgrade] y [recreate]).
 ///
 /// Historial: v2 = esquema anterior (rutas absolutas); v3 = F3 (rutas
 /// relativas, syncStatus, driveFileId, thumbPath, lastAccessedAt,
@@ -20,12 +20,14 @@ import '../../core/session/vault_session.dart';
 /// v6 = S-09 (vault_items.fileId y thumbFileId: UUID del encabezado del
 /// `.vault`/`.thumb`, comprobado al abrir/descargar);
 /// v7 = cambio de cuenta de Google (tablas `migration_state` y
-/// `migration_items`). DESDE v6 la actualización es INCREMENTAL (conserva los
-/// datos: ya hay bóvedas reales en iPhone); versiones anteriores se recrean. Sin migración: al subir de versión se recrea todo.
+/// `migration_items`);
+/// v8 = papelera (v2 fase 5: `deletedAt` y `trashRoot` en `vault_items` y
+/// `folders`). DESDE v6 la actualización es INCREMENTAL (conserva los datos:
+/// ya hay bóvedas reales en iPhone); versiones anteriores se recrean.
 class VaultSchema {
   VaultSchema._();
 
-  static const int version = 7;
+  static const int version = 8;
 
   /// Primera versión que se actualiza sin perder datos (y que un snapshot de
   /// Drive puede traer al restaurar).
@@ -39,6 +41,7 @@ class VaultSchema {
     'idx_items_drive',
     'idx_folders_parent',
     'idx_sync_queue_due',
+    'idx_items_deleted',
   ];
 
   static Future<void> create(DatabaseExecutor db) async {
@@ -48,7 +51,9 @@ class VaultSchema {
         name TEXT NOT NULL,
         parentId TEXT,
         createdAt TEXT NOT NULL,
-        isOffline INTEGER NOT NULL DEFAULT 0
+        isOffline INTEGER NOT NULL DEFAULT 0,
+        deletedAt INTEGER,
+        trashRoot TEXT
       )
     ''');
     await db.execute('''
@@ -73,7 +78,9 @@ class VaultSchema {
         cloudSize INTEGER,
         thumbDriveFileId TEXT,
         fileId TEXT,
-        thumbFileId TEXT
+        thumbFileId TEXT,
+        deletedAt INTEGER,
+        trashRoot TEXT
       )
     ''');
     // Cola de sincronización persistente (F5). Una fila por (itemId, kind);
@@ -105,6 +112,9 @@ class VaultSchema {
       'CREATE INDEX idx_items_drive ON vault_items(driveFileId)',
     );
     await db.execute('CREATE INDEX idx_folders_parent ON folders(parentId)');
+    await db.execute(
+      'CREATE INDEX idx_items_deleted ON vault_items(deletedAt)',
+    );
     await createMigrationTables(db);
   }
 
@@ -146,7 +156,29 @@ class VaultSchema {
       return;
     }
     // v6 -> v7: tablas del cambio de cuenta.
-    await createMigrationTables(db);
+    if (from < 7) await createMigrationTables(db);
+    // v7 -> v8: papelera.
+    if (from < 8) await addTrashColumns(db);
+  }
+
+  /// v8: `deletedAt` (epoch ms en que entró a la papelera) y `trashRoot` (id
+  /// del elemento que se borró: una carpeta arrastra a sus hijos con su id).
+  /// Idempotente: no falla si las columnas ya existen. NO toca datos.
+  static Future<void> addTrashColumns(DatabaseExecutor db) async {
+    for (final table in const ['vault_items', 'folders']) {
+      final cols = (await db.rawQuery(
+        'PRAGMA table_info($table)',
+      )).map((r) => r['name']).toSet();
+      if (!cols.contains('deletedAt')) {
+        await db.execute('ALTER TABLE $table ADD COLUMN deletedAt INTEGER');
+      }
+      if (!cols.contains('trashRoot')) {
+        await db.execute('ALTER TABLE $table ADD COLUMN trashRoot TEXT');
+      }
+    }
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_items_deleted ON vault_items(deletedAt)',
+    );
   }
 
   /// Borra todo y recrea (sustituye a una migración).

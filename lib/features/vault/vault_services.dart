@@ -38,6 +38,8 @@ import '../../data/repositories/vault_data_repository.dart';
 import '../../data/services/vault_import_service.dart';
 import '../gallery/gallery_deps.dart';
 import 'services/thumbnail_loader.dart';
+import 'services/trash_service.dart';
+import '../../data/trash/trash_repository.dart';
 import '../../data/gallery/photo_saver.dart';
 import 'viewer/media_exporter.dart';
 import 'viewer/media_opener.dart';
@@ -105,6 +107,7 @@ class VaultServices {
     required this.offlineToggler,
     this.mediaOpener = const UnavailableMediaOpener(),
     this.mediaExporter,
+    this.trash,
     this.folderOfflineToggler,
     this.remoteDeleter,
     this.downloadProgress,
@@ -132,6 +135,9 @@ class VaultServices {
 
   /// "Guardar en Fotos" (`null` = no disponible).
   final MediaExporter? mediaExporter;
+
+  /// Papelera (`null` = borrado directo, p. ej. pruebas de la cuadrícula).
+  final TrashService? trash;
 
   /// Por defecto `repository.setFolderOffline`.
   final FolderOfflineToggler? folderOfflineToggler;
@@ -177,6 +183,45 @@ class VaultServices {
     final importer = VaultImportService();
     final core = _core ??= _createCore(repository);
     final sync = core.sync;
+    Future<void> cleaner(Iterable<String> ids) async {
+      await AppPaths.init();
+      for (final id in ids) {
+        for (final rel in [
+          AppPaths.vaultRelativePath(id),
+          AppPaths.thumbRelativePath(id),
+        ]) {
+          try {
+            final file = AppPaths.resolve(rel);
+            if (await file.exists()) await file.delete();
+          } on FileSystemException {
+            // Se reintentará en la limpieza de huérfanos.
+          }
+        }
+        try {
+          // Quita subidas pendientes del item (NO sus borrados remotos).
+          await sync.queue.removeForItem(id);
+        } on StateError {
+          // bloqueada
+        }
+      }
+    }
+
+    Future<void> remoteDeleter(List<RemoteDeleteTarget> targets) async {
+      for (final t in targets) {
+        await sync.enqueueRemoteDelete(
+          t.itemId,
+          driveFileId: t.driveFileId,
+          thumbDriveFileId: t.thumbDriveFileId,
+        );
+      }
+      unawaited(sync.run(manual: true));
+    }
+
+    final trash = TrashService(
+      repository: TrashRepository(),
+      fileCleaner: cleaner,
+      remoteDeleter: remoteDeleter,
+    );
     return VaultServices(
       repository: repository,
       importFile: ({required folderId, required deleteOriginal}) =>
@@ -192,38 +237,9 @@ class VaultServices {
         opener: core.opener,
         saver: PhotoManagerPhotoSaver(),
       ),
-      fileCleaner: (ids) async {
-        await AppPaths.init();
-        for (final id in ids) {
-          for (final rel in [
-            AppPaths.vaultRelativePath(id),
-            AppPaths.thumbRelativePath(id),
-          ]) {
-            try {
-              final file = AppPaths.resolve(rel);
-              if (await file.exists()) await file.delete();
-            } on FileSystemException {
-              // Se reintentará en la limpieza de huérfanos.
-            }
-          }
-          try {
-            // Quita subidas pendientes del item (NO sus borrados remotos).
-            await sync.queue.removeForItem(id);
-          } on StateError {
-            // bloqueada
-          }
-        }
-      },
-      remoteDeleter: (targets) async {
-        for (final t in targets) {
-          await sync.enqueueRemoteDelete(
-            t.itemId,
-            driveFileId: t.driveFileId,
-            thumbDriveFileId: t.thumbDriveFileId,
-          );
-        }
-        unawaited(sync.run(manual: true));
-      },
+      fileCleaner: cleaner,
+      remoteDeleter: remoteDeleter,
+      trash: trash,
       offlineToggler: core.offline.setItemOffline,
       folderOfflineToggler: core.offline.setFolderOffline,
       downloadProgress: core.offline.progress,
@@ -234,6 +250,8 @@ class VaultServices {
       beforeLock: sync.flushSnapshotBeforeLock,
       onUnlocked: () async {
         await core.temp.sweep();
+        // Papelera: lo que lleva 30 días o más se elimina (y su copia de Drive).
+        await trash.purgeExpired();
         await core.offline.reconcile();
         await core.cache.enforce();
         // Miniaturas que faltan (p. ej. videos importados sin miniatura):
