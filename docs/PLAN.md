@@ -42,7 +42,7 @@ Reglas: una fase a la vez; migraciones de BD incrementales (v7 → v8…), nunca
 | 9 | Etiquetas, filtros y búsqueda (BD v9) | Sonnet | 🧪 BD v9 incremental, `TagRepository`, filtros globales, hoja de etiquetas, Ajustes > Etiquetas; tests + emulador |
 | 6 | Selector de archivos propio (sin file_picker; S-02 residual, S-18) | Sonnet | 🧪 canal `vault/picker` (Kotlin probado en emulador; Swift sin compilar), `encryptSource`, `file_picker` fuera; tests |
 | 1 | Rotar la DEK (S-11), diseño revisado por Opus; PARAR al terminar | Opus | 🔧 diseño final revisado (`docs/DISENO_ROTACION.md`); implementación por pasos (abajo) |
-| 8 | Bóveda señuelo: PREGUNTAR variante (disimulo / negable) antes | Opus | ⬜ |
+| 8 | Bóveda señuelo: variante elegida por el usuario (2026-11-17) = AMBAS: segundo PIN que abre otra bóveda + negable (disco y Drive no revelan cuántas bóvedas hay). Diseño con Opus + revisión independiente antes de codificar | Opus | ⬜ |
 | 11 | Kern: nombre visible e ícono | Haiku | ⬜ |
 
 Dónde retomar: Fase 1, paso 4 (`VaultKeyring`) de docs/DISENO_ROTACION.md §11; al terminar la fase PARAR y dar el simulacro de restauración.
