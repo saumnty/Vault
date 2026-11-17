@@ -41,8 +41,25 @@ Reglas: una fase a la vez; migraciones de BD incrementales (v7 → v8…), nunca
 | 5 | Papelera (30 días, BD v8) | Sonnet | 🧪 BD v8 incremental, `TrashRepository`/`TrashService`, pantalla Ajustes > Papelera, 23 tests |
 | 9 | Etiquetas, filtros y búsqueda (BD v9) | Sonnet | 🧪 BD v9 incremental, `TagRepository`, filtros globales, hoja de etiquetas, Ajustes > Etiquetas; tests + emulador |
 | 6 | Selector de archivos propio (sin file_picker; S-02 residual, S-18) | Sonnet | 🧪 canal `vault/picker` (Kotlin probado en emulador; Swift sin compilar), `encryptSource`, `file_picker` fuera; tests |
-| 1 | Rotar la DEK (S-11), diseño revisado por Opus; PARAR al terminar | Opus | ⬜ |
+| 1 | Rotar la DEK (S-11), diseño revisado por Opus; PARAR al terminar | Opus | 🔧 diseño final revisado (`docs/DISENO_ROTACION.md`); implementación por pasos (abajo) |
 | 8 | Bóveda señuelo: PREGUNTAR variante (disimulo / negable) antes | Opus | ⬜ |
 | 11 | Kern: nombre visible e ícono | Haiku | ⬜ |
 
 Dónde retomar: Fase 1 (rotar la DEK, S-11): diseño revisado por Opus antes de codificar; al terminar PARAR y dar el simulacro de restauración.
+
+### Fase 1 · pasos (ver docs/DISENO_ROTACION.md §11)
+| Paso | Qué | Estado |
+|---|---|---|
+| 1 | Nombres por generación (`.kN`) | ⬜ |
+| 2 | Guarda "nunca una BD vacía" (C1) + `VaultBootstrap` | ⬜ |
+| 3 | Esquema v10 (`keyGen`, `rotation_state`, `rotation_old_files`) | ⬜ |
+| 4 | `VaultKeyring`, lectores por generación, escrituras condicionales | ⬜ |
+| 5 | Sincronización consciente de la rotación (C2, A1, M7) | ⬜ |
+| 6 | Llaves de rotación en `AuthController` (puente, PIN, biometría) | ⬜ |
+| 7 | Re-cifrado de la BD por copia (`rekeyTo`) | ⬜ |
+| 8 | `ItemReencryptor` | ⬜ |
+| 9 | Restauración multi-generación + puente + barrido por lista | ⬜ |
+| 10 | `KeyRotationService` con inyección de cortes | ⬜ |
+| 11 | UI de rotación | ⬜ |
+| 12 | Punta a punta en emulador + docs; PARAR: simulacro de restauración | ⬜ |
+
