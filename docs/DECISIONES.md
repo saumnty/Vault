@@ -282,3 +282,6 @@ Reconocimiento propio de toques (`VideoGestureLayer`) en lugar de `onDoubleTap`:
 * iOS (sin compilar ni probar, `// iOS: sin probar`): `UIDocumentPickerViewController` en modo abrir (`asCopy: false`; iOS 13 con `documentTypes:in: .open`), `startAccessingSecurityScopedResource`, `FileHandle` por trozos (`read(upToCount:)` en 13.4+), `stopAccessing…` al cerrar. Vive en `AppDelegate.swift` para no tocar el proyecto de Xcode.
 * Dart: `PickedDocument` es un `VaultByteSource`; `VaultFileFormat.encryptSource` cifra desde la fuente con el MISMO formato `.vault` v2 (`encryptFile` ahora delega en él) y el SHA-256 se calcula en la misma pasada. El tamaño registrado es el de los bytes leídos. Sin logs de nombres ni rutas. El selector va dentro de `AutoLockSuspension`.
 * Se conserva `PlainResidue.sweepAtStartup` para barrer copias que hayan dejado versiones anteriores de la app.
+
+## D59 · Nunca recrear la BD al bajar de versión (hallazgo M9 de la revisión de la fase 1)
+`onDowngrade` llamaba a `VaultSchema.recreate`: instalar un build MÁS VIEJO que el que creó la BD borraba todo el índice local. Ahora lanza `VaultSchemaTooNewException` y no toca el archivo (test `test/m9_downgrade_test.dart`). Los builds viejos ya compilados conservan el comportamiento peligroso: **no instalar en el iPhone un build anterior al último instalado**.

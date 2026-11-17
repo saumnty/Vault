@@ -25,6 +25,19 @@ import '../../core/session/vault_session.dart';
 /// `folders`). DESDE v6 la actualización es INCREMENTAL (conserva los datos:
 /// ya hay bóvedas reales en iPhone); versiones anteriores se recrean.
 /// v9 = etiquetas (v2 fase 9: tablas `tags` e `item_tags`).
+/// La BD la creó una versión MÁS NUEVA de la app. No se toca: hay que
+/// instalar una versión igual o más reciente.
+class VaultSchemaTooNewException implements Exception {
+  const VaultSchemaTooNewException(this.found, this.supported);
+  final int found;
+  final int supported;
+
+  @override
+  String toString() =>
+      'La bóveda la creó una versión más nueva de la app (esquema $found > '
+      '$supported). Instala la versión más reciente.';
+}
+
 class VaultSchema {
   VaultSchema._();
 
@@ -366,9 +379,11 @@ class VaultDatabase {
       options: OpenDatabaseOptions(
         version: VaultSchema.version,
         onCreate: (db, v) => VaultSchema.create(db),
-        // Sin datos reales: cualquier cambio de versión recrea el esquema.
+        // Desde v6: actualización incremental (conserva los datos).
         onUpgrade: (db, o, n) => VaultSchema.upgrade(db, o, n),
-        onDowngrade: (db, o, n) => VaultSchema.recreate(db),
+        // BD más NUEVA que la app (se instaló una versión anterior): NUNCA se
+        // recrea (antes se borraba todo). Se niega a abrir sin tocar nada.
+        onDowngrade: (db, o, n) => throw VaultSchemaTooNewException(o, n),
       ),
     );
     _db = db;
