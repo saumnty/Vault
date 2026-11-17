@@ -36,8 +36,8 @@ Reglas: una fase a la vez; migraciones de BD incrementales (v7 → v8…), nunca
 | Fase | Tema | Modelo | Estado |
 |---|---|---|---|
 | 7 | S-17: ventana de llaves en memoria al bloquear ≤ 1 s | Opus | 🧪 `lockWithFlush` (1 s), 5 tests |
-| 4 | Guardar en Fotos (visor, foto y video) | Sonnet | ⬜ |
-| 10 | Gestos en video (doble toque ±10 s, zoom 1x–4x) | Sonnet | ⬜ |
+| 4 | Guardar en Fotos (visor, foto y video) | Sonnet | 🧪 `VaultMediaExporter` + `PhotoManagerPhotoSaver` (photo_manager 3.12.0 ya fijado, sin paquete nuevo), 10 tests, emulador Android OK; 📝 iOS (permiso solo-agregar) sin probar |
+| 10 | Gestos en video (doble toque ±10 s, zoom 1x–4x) | Sonnet | 🧪 `video_gestures.dart`, 14 tests, emulador: −10 s y controles OK; pellizco solo en tests (adb no hace multitoque) |
 | 5 | Papelera (30 días, BD v8) | Sonnet | ⬜ |
 | 9 | Etiquetas, filtros y búsqueda (BD v9) | Sonnet | ⬜ |
 | 6 | Selector de archivos propio (sin file_picker; S-02 residual, S-18) | Sonnet | ⬜ |
@@ -45,4 +45,4 @@ Reglas: una fase a la vez; migraciones de BD incrementales (v7 → v8…), nunca
 | 8 | Bóveda señuelo: PREGUNTAR variante (disimulo / negable) antes | Opus | ⬜ |
 | 11 | Kern: nombre visible e ícono | Haiku | ⬜ |
 
-Dónde retomar: Fase 7.
+Dónde retomar: Fase 5 (Papelera).

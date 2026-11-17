@@ -253,3 +253,9 @@ Fecha base de las primeras entradas: 2026-11-14/15.
 
 ## D53 · S-17: ventana de llaves al bloquear ≤ 1 s (v2 fase 7)
 La subida del snapshot ya no esperaba la red (solo la copia local cifrada), pero el tope era 3 s. `lockWithFlush` (lib/core/security/lock_flush.dart) bloquea a más tardar 1 s después, pase lo que pase con el flush (colgado o con error); el flush tardío no vuelve a bloquear. Si el snapshot no se tomó, la marca "sucio" sigue y se toma al desbloquear: no se pierde ningún cambio, solo se retrasa el respaldo.
+
+## D54 · Guardar en Fotos (v2 fase 4)
+Sin paquete nuevo: `photo_manager` 3.12.0 (ya fijado para importar) trae `saveImageWithPath`/`saveVideo` y el permiso iOS de solo-agregar (`IosAccessLevel.addOnly`, `NSPhotoLibraryAddUsageDescription` ya estaba en Info.plist). Flujo: diálogo "La copia quedará SIN cifrar…" → permiso (con `AutoLockSuspension`) → descifrado por bloques a un temporal de `tmp_plain/` (se verifica el `fileId` y se aborta si se bloquea) → guardar → borrar el temporal en `finally`. Android 10+ no necesita permiso para escribir en MediaStore; en Android 7-9 (minSdk 24) puede fallar y se informa "No se pudo guardar" (no se pide almacenamiento). Las copias guardadas quedan fuera del control de Vault: no se borran al borrar el archivo.
+
+## D55 · Gestos de video (v2 fase 10)
+Reconocimiento propio de toques (`VideoGestureLayer`) en lugar de `onDoubleTap`: así los toques SIGUIENTES a un doble toque suman sin esperar otro doble (+10, +20, +30; racha de 700 ms; cambiar de lado la reinicia desde la posición actual). El toque simple espera 300 ms (`kVideoDoubleTap`) para distinguirse del primero de un doble. Los saltos se acotan a [0, duración] y no se cuentan en los extremos. El zoom (1x–4x) es un `InteractiveViewer` bajo la capa de gestos; con >1x el visor deshabilita paginar y cerrar deslizando (`onZoomChanged`), y se reinicia si el video se libera con zoom. El doble toque NO hace zoom en video (sí en fotos).

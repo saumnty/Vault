@@ -121,7 +121,9 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     } on Object {
       n = 0; // bóveda bloqueada u otro fallo: sin aviso
     }
-    if (mounted && n != _pendingOriginals) setState(() => _pendingOriginals = n);
+    if (mounted && n != _pendingOriginals) {
+      setState(() => _pendingOriginals = n);
+    }
   }
 
   /// Mismo flujo de Ajustes: lista verificada + confirmación del sistema.
@@ -211,6 +213,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                   items: files,
                   initialIndex: files.indexWhere((i) => i.id == e.item.id),
                   mediaOpener: _services.mediaOpener,
+                  mediaExporter: _services.mediaExporter,
                   thumbnailLoader: _services.thumbnailLoader,
                 ),
               ),

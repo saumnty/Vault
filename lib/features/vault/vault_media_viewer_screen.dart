@@ -14,6 +14,7 @@ import '../../shared/widgets/app_buttons.dart';
 import '../../shared/widgets/blur_sheet.dart';
 import 'models/browser_entry.dart';
 import 'vault_services.dart';
+import 'viewer/media_exporter.dart';
 import 'viewer/media_opener.dart';
 import 'viewer/photo_page.dart';
 import 'viewer/video_page.dart';
@@ -33,6 +34,7 @@ class VaultMediaViewerScreen extends StatefulWidget {
     required this.items,
     required this.initialIndex,
     required this.mediaOpener,
+    this.mediaExporter,
     this.thumbnailLoader,
     this.session,
   }) : assert(items.length > 0);
@@ -41,6 +43,9 @@ class VaultMediaViewerScreen extends StatefulWidget {
   final List<VaultItemModel> items;
   final int initialIndex;
   final MediaOpener mediaOpener;
+
+  /// "Guardar en Fotos" (`null` = sin la acción, p. ej. pruebas).
+  final MediaExporter? mediaExporter;
   final ThumbnailLoader? thumbnailLoader;
 
   /// Sesión a vigilar (por defecto la global; inyectable en pruebas).
@@ -105,6 +110,58 @@ class _VaultMediaViewerScreenState extends State<VaultMediaViewerScreen> {
     });
   }
 
+  bool _exporting = false;
+
+  Future<void> _saveToPhotos() async {
+    final exporter = widget.mediaExporter;
+    if (exporter == null || _exporting) return;
+    final item = _item;
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Guardar en Fotos'),
+        content: const Text(
+          'La copia quedará SIN cifrar en tu galería: cualquier app con '
+          'acceso a Fotos podrá verla, y seguirá ahí aunque borres el archivo '
+          'de Vault.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            key: const ValueKey('export-confirm'),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Guardar sin cifrar'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    _exporting = true;
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('Guardando en Fotos…'),
+        duration: Duration(seconds: 30),
+      ),
+    );
+    final outcome = await exporter.export(item);
+    _exporting = false;
+    messenger.hideCurrentSnackBar();
+    if (outcome == ExportOutcome.cancelledByLock) return;
+    final text = switch (outcome) {
+      ExportOutcome.saved => 'Guardado en Fotos (sin cifrar).',
+      ExportOutcome.permissionDenied =>
+        'Sin permiso para guardar en Fotos. Puedes darlo en Ajustes del sistema.',
+      ExportOutcome.unsupported =>
+        'Solo se pueden guardar fotos y videos en Fotos.',
+      _ => 'No se pudo guardar en Fotos.',
+    };
+    messenger.showSnackBar(SnackBar(content: Text(text)));
+  }
+
   Future<void> _showInfo() async {
     await showBlurSheet<void>(
       context,
@@ -151,7 +208,15 @@ class _VaultMediaViewerScreenState extends State<VaultMediaViewerScreen> {
                     alignment: Alignment.topCenter,
                     child: _fade(
                       showBars,
-                      _TopBar(item: _item, onInfo: _showInfo),
+                      _TopBar(
+                        item: _item,
+                        onInfo: _showInfo,
+                        onSave:
+                            widget.mediaExporter != null &&
+                                MediaExporter.canExport(_item)
+                            ? _saveToPhotos
+                            : null,
+                      ),
                     ),
                   ),
                   Align(
@@ -192,7 +257,7 @@ class _VaultMediaViewerScreenState extends State<VaultMediaViewerScreen> {
         thumbnailLoader: widget.thumbnailLoader,
         onTap: _toggleChrome,
         onZoomChanged: (z) {
-          if (item.id == _item.id && z != _zoomed) {
+          if (mounted && item.id == _item.id && z != _zoomed) {
             setState(() {
               _zoomed = z;
               if (z) _chrome = false;
@@ -209,6 +274,14 @@ class _VaultMediaViewerScreenState extends State<VaultMediaViewerScreen> {
         chromeVisible: _chrome,
         onTap: _toggleChrome,
         onFullscreenChanged: (v) => setState(() => _fullscreen = v),
+        onZoomChanged: (z) {
+          if (mounted && item.id == _item.id && z != _zoomed) {
+            setState(() {
+              _zoomed = z;
+              if (z) _chrome = false;
+            });
+          }
+        },
       ),
       _ => Hero(
         tag: tag,
@@ -228,10 +301,11 @@ class _VaultMediaViewerScreenState extends State<VaultMediaViewerScreen> {
 }
 
 class _TopBar extends StatelessWidget {
-  const _TopBar({required this.item, required this.onInfo});
+  const _TopBar({required this.item, required this.onInfo, this.onSave});
 
   final VaultItemModel item;
   final VoidCallback onInfo;
+  final VoidCallback? onSave;
 
   @override
   Widget build(BuildContext context) {
@@ -263,6 +337,12 @@ class _TopBar extends StatelessWidget {
                   style: AppTypography.titleSmall,
                 ),
               ),
+              if (onSave != null)
+                AppIconButton(
+                  icon: Icons.save_alt,
+                  label: 'Guardar en Fotos',
+                  onPressed: onSave!,
+                ),
               AppIconButton(
                 icon: Icons.info_outline,
                 label: 'Información del archivo',

@@ -38,6 +38,8 @@ import '../../data/repositories/vault_data_repository.dart';
 import '../../data/services/vault_import_service.dart';
 import '../gallery/gallery_deps.dart';
 import 'services/thumbnail_loader.dart';
+import '../../data/gallery/photo_saver.dart';
+import 'viewer/media_exporter.dart';
 import 'viewer/media_opener.dart';
 
 /// Carga la miniatura descifrada de un item (`null` si no hay).
@@ -102,6 +104,7 @@ class VaultServices {
     required this.fileCleaner,
     required this.offlineToggler,
     this.mediaOpener = const UnavailableMediaOpener(),
+    this.mediaExporter,
     this.folderOfflineToggler,
     this.remoteDeleter,
     this.downloadProgress,
@@ -126,6 +129,9 @@ class VaultServices {
 
   /// Abre fotos (en memoria) y videos (origen [VideoSource]) para el visor.
   final MediaOpener mediaOpener;
+
+  /// "Guardar en Fotos" (`null` = no disponible).
+  final MediaExporter? mediaExporter;
 
   /// Por defecto `repository.setFolderOffline`.
   final FolderOfflineToggler? folderOfflineToggler;
@@ -182,6 +188,10 @@ class VaultServices {
       // Miniaturas: descifra thumbs/<id>.thumb con la subllave "thumbs" (LRU).
       thumbnailLoader: thumbs.call,
       mediaOpener: core.opener,
+      mediaExporter: VaultMediaExporter(
+        opener: core.opener,
+        saver: PhotoManagerPhotoSaver(),
+      ),
       fileCleaner: (ids) async {
         await AppPaths.init();
         for (final id in ids) {

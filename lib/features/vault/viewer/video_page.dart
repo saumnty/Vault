@@ -14,6 +14,7 @@ import '../../../data/models/vault_item_model.dart';
 import '../vault_services.dart';
 import 'media_opener.dart';
 import 'photo_page.dart';
+import 'video_gestures.dart';
 import 'viewer_dismiss.dart';
 
 /// "1:05" / "1:02:03".
@@ -47,6 +48,7 @@ class VideoPage extends StatefulWidget {
     required this.onTap,
     this.thumbnailLoader,
     this.onFullscreenChanged,
+    this.onZoomChanged,
   });
 
   final VaultItemModel item;
@@ -58,6 +60,9 @@ class VideoPage extends StatefulWidget {
 
   /// Pantalla completa del reproductor (el visor oculta su barra).
   final ValueChanged<bool>? onFullscreenChanged;
+
+  /// El video está ampliado (>1x): el visor no pagina ni cierra deslizando.
+  final ValueChanged<bool>? onZoomChanged;
 
   @override
   State<VideoPage> createState() => _VideoPageState();
@@ -327,42 +332,45 @@ class _VideoPageState extends State<VideoPage> with WidgetsBindingObserver {
 
   Widget _player() {
     final c = _controller!;
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: widget.onTap,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Center(
-            child: AspectRatio(
-              aspectRatio: c.value.aspectRatio == 0
-                  ? 16 / 9
-                  : c.value.aspectRatio,
-              child: VideoPlayer(c),
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        VideoGestureLayer(
+          controller: c,
+          onTap: widget.onTap,
+          child: ZoomableVideo(
+            onZoomChanged: (z) => widget.onZoomChanged?.call(z),
+            child: Center(
+              child: AspectRatio(
+                aspectRatio: c.value.aspectRatio == 0
+                    ? 16 / 9
+                    : c.value.aspectRatio,
+                child: VideoPlayer(c),
+              ),
             ),
           ),
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: SafeArea(
-              child: AnimatedOpacity(
-                duration: AppMotion.fast,
-                opacity: widget.chromeVisible ? 1 : 0,
-                child: IgnorePointer(
-                  ignoring: !widget.chromeVisible,
-                  // Sobre los controles el arrastre vertical no cierra.
-                  child: ViewerDismissBlocker(
-                    child: VideoControls(
-                      controller: c,
-                      fullscreen: _fullscreen,
-                      onToggleFullscreen: _toggleFullscreen,
-                    ),
+        ),
+        Align(
+          alignment: Alignment.bottomCenter,
+          child: SafeArea(
+            child: AnimatedOpacity(
+              duration: AppMotion.fast,
+              opacity: widget.chromeVisible ? 1 : 0,
+              child: IgnorePointer(
+                ignoring: !widget.chromeVisible,
+                // Sobre los controles el arrastre vertical no cierra.
+                child: ViewerDismissBlocker(
+                  child: VideoControls(
+                    controller: c,
+                    fullscreen: _fullscreen,
+                    onToggleFullscreen: _toggleFullscreen,
                   ),
                 ),
               ),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

@@ -472,3 +472,18 @@ Decisiones nuevas: D49 (solo Google Drive y una cuenta; iCloud y varias cuentas 
 - **Compartir** en Diagnóstico: descartado por decisión del usuario (basta Copiar; no se añade `share_plus`).
 - La prueba de humo de la migración en el emulador Android solo cubre lo que se puede hacer con UNA cuenta (hoja previa, elegir la misma cuenta, cancelar); el flujo completo con dos cuentas reales queda para tu iPhone o para cuando agregues una segunda cuenta de prueba.
 - Swift sin compilar ni probar: `videoThumbnail`, `freeSpace` y (de antes) `monotonic` en `ios/Runner/AppDelegate.swift`.
+
+## v2 · Fase 4 — Guardar en Fotos (2026-11-17)
+Visor > ícono "Guardar en Fotos" (foto y video; no aparece en otros tipos). Diálogo previo con "La copia quedará SIN cifrar en tu galería…". `VaultMediaExporter` (lib/features/vault/viewer/media_exporter.dart) descifra por bloques a `tmp_plain/`, entrega a `PhotoManagerPhotoSaver` (photo_manager 3.12.0) y borra el temporal en `finally` (también si se bloquea a mitad). iOS: permiso de solo-agregar con `AutoLockSuspension`. Detalle en D54.
+- Tests: `test/f4_export_test.dart` (10: bytes exactos, video, permiso denegado, fallo al guardar, bloqueo, tipo no soportado, diálogo, cancelar, aviso, sin exportador).
+- Emulador Android: smoke.mp4 guardado en Movies/ (mismo tamaño, 204 852 B); `tmp_plain/` vacío después; el bloqueo vuelve al PIN.
+- Pendiente iPhone: ver "Pruebas de iPhone (v2)" al final.
+
+## v2 · Fase 10 — Gestos en video (2026-11-17)
+Doble toque izquierda/derecha = −/+10 s con racha acumulada (indicador animado + háptica), pellizco 1x–4x, a >1x el arrastre mueve la imagen sin cerrar ni paginar, toque simple muestra/oculta controles, la barra y los botones siguen funcionando, el doble toque no hace zoom. Detalle en D55.
+- Tests: `test/ui/video_gestures_test.dart` (14: destino acotado, ±10 s, racha +10/+20/+30 con háptica, cambio de lado, inicio y final, toque simple a los 300 ms, sin zoom con doble toque, controles, pellizco ≤4x, zoom sin cerrar/paginar, 1x normal, liberar con zoom).
+- Emulador Android (video de prueba con reloj incrustado): doble toque izquierda desde 0:25 → 0:15; doble toque derecha al final no hace nada; el toque simple muestra los controles. El pellizco NO se probó en el emulador (adb `input` no genera multitoque): solo en tests de widgets.
+
+## Pruebas de iPhone (v2) — se irá ampliando por fase
+1. **Guardar en Fotos**: abrir una foto y un video > "Guardar en Fotos" > confirmar. iOS pide permiso de SOLO agregar; deben aparecer en Fotos y abrirse. Denegar el permiso debe mostrar el aviso. Con "Face ID/autobloqueo" corto, el diálogo del permiso no debe bloquear la app.
+2. **Gestos de video**: doble toque a ambos lados (±10 s), varios toques seguidos (acumulan), cerca del inicio/fin, toque simple (controles), pellizco hasta 4x y arrastrar con zoom (no debe cerrar ni cambiar de archivo), volver a 1x y cerrar deslizando.

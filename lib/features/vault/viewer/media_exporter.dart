@@ -1,0 +1,105 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:path/path.dart' as p;
+
+import '../../../data/gallery/photo_saver.dart';
+import '../../../data/models/vault_item_model.dart';
+import '../models/browser_entry.dart';
+import 'media_opener.dart';
+
+enum ExportOutcome {
+  saved,
+  permissionDenied,
+  failed,
+  unsupported,
+  cancelledByLock,
+}
+
+/// "Guardar en Fotos" (interfaz para el visor; la real es [VaultMediaExporter]).
+abstract interface class MediaExporter {
+  /// Solo fotos y videos se pueden guardar en la fototeca.
+  static bool canExport(VaultItemModel item) {
+    final k = fileKindOf(item);
+    return k == FileKind.image || k == FileKind.video;
+  }
+
+  Future<ExportOutcome> export(
+    VaultItemModel item, {
+    MediaProgressCallback? onProgress,
+  });
+}
+
+/// Descifra el archivo a un temporal en claro, lo entrega
+/// a la fototeca y BORRA el temporal en `finally`. Es la única vía por la que
+/// el usuario saca una copia sin cifrar de la bóveda (diálogo previo en la UI).
+class VaultMediaExporter implements MediaExporter {
+  VaultMediaExporter({required this.opener, required this.saver});
+
+  final VaultMediaOpener opener;
+  final PhotoSaver saver;
+
+  @override
+  Future<ExportOutcome> export(
+    VaultItemModel item, {
+    MediaProgressCallback? onProgress,
+  }) async {
+    if (!MediaExporter.canExport(item)) return ExportOutcome.unsupported;
+    final isVideo = fileKindOf(item) == FileKind.video;
+    if (!await saver.requestAddPermission()) {
+      return ExportOutcome.permissionDenied;
+    }
+    File? plain;
+    try {
+      final local = await opener.fetcher.ensureLocal(
+        item,
+        onProgress: (got, total) => onProgress?.call(
+          MediaProgress(
+            MediaPhase.downloading,
+            total <= 0 ? null : got / total,
+          ),
+        ),
+      );
+      final key = opener.requireKey();
+      final ext = p.extension(item.name);
+      plain = opener.temp.newTempFile(
+        extension: ext.isEmpty ? (isVideo ? '.mp4' : '.jpg') : ext,
+      );
+      final reader = await opener.crypto.openReader(
+        local,
+        key,
+        expectedFileId: item.fileId,
+      );
+      RandomAccessFile? out;
+      try {
+        out = await plain.open(mode: FileMode.write);
+        final total = reader.blockCount;
+        for (var i = 0; i < total; i++) {
+          // Si se bloquea durante la copia, requireKey() lanza y se aborta.
+          opener.requireKey();
+          await out.writeFrom(await reader.decryptBlock(i));
+          onProgress?.call(
+            MediaProgress(MediaPhase.decrypting, (i + 1) / total),
+          );
+        }
+        await out.flush();
+      } finally {
+        await out?.close();
+        await reader.close();
+      }
+      opener.requireKey();
+      if (isVideo) {
+        await saver.saveVideo(plain, filename: item.name);
+      } else {
+        await saver.saveImage(plain, filename: item.name);
+      }
+      return ExportOutcome.saved;
+    } on StateError {
+      return ExportOutcome.cancelledByLock;
+    } on Object {
+      return ExportOutcome.failed;
+    } finally {
+      if (plain != null) await opener.temp.release(plain);
+    }
+  }
+}

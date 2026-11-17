@@ -11,6 +11,9 @@ import 'package:video_player_platform_interface/video_player_platform_interface.
 class FakeVideoPlayerPlatform extends VideoPlayerPlatform
     with MockPlatformInterfaceMixin {
   final List<String> calls = [];
+
+  /// Destinos de cada `seekTo`, en orden.
+  final List<Duration> seeks = [];
   final Map<int, StreamController<VideoEvent>> _events = {};
   final Map<int, Duration> _position = {};
   int _next = 1;
@@ -86,6 +89,7 @@ class FakeVideoPlayerPlatform extends VideoPlayerPlatform
   @override
   Future<void> seekTo(int playerId, Duration position) async {
     calls.add('seek');
+    seeks.add(position);
     _position[playerId] = position;
   }
 
