@@ -250,3 +250,6 @@ Fecha base de las primeras entradas: 2026-11-14/15.
 - Cancelar (en cualquier fase antes de terminar) restaura las referencias antiguas y vuelve a iniciar sesión con la cuenta vieja; lo ya subido a la nueva no se borra.
 - **Limitación aceptada:** la cuota de la cuenta nueva solo se puede leer después de iniciar sesión en ella (hay una sola sesión de Google a la vez), así que se comprueba justo después de elegirla y ANTES de subir; la hoja previa muestra cuánto ocupará y comprueba el espacio local (nativo `freeSpace`; si no se puede saber, no bloquea). Borrar la cuenta vieja o cancelar tras cambiar exige un selector de cuenta más.
 - Cambiar de cuenta SIN migrar (cerrar sesión + otra cuenta) ahora avisa de lo que implica y "Cerrar sesión" se desactiva mientras hay una migración en curso.
+
+## D53 · S-17: ventana de llaves al bloquear ≤ 1 s (v2 fase 7)
+La subida del snapshot ya no esperaba la red (solo la copia local cifrada), pero el tope era 3 s. `lockWithFlush` (lib/core/security/lock_flush.dart) bloquea a más tardar 1 s después, pase lo que pase con el flush (colgado o con error); el flush tardío no vuelve a bloquear. Si el snapshot no se tomó, la marca "sucio" sigue y se toma al desbloquear: no se pierde ningún cambio, solo se retrasa el respaldo.

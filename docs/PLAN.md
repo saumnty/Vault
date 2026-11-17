@@ -29,3 +29,20 @@ Rama de trabajo: `dev-claude` (no se hace push ni se toca main sin petición).
 
 ## Ronda 2
 - Argon2id nativo (sodium_libs 3.4.6+4) en isolate ✅🧪; SQLCipher llave cruda ✅🧪; Fase 1 en emulador ✅🧪 (PIN, bloqueo persistente, huella); recuperación en grupos ✅🧪; F4 en emulador ✅🧪.
+
+## v2
+Reglas: una fase a la vez; migraciones de BD incrementales (v7 → v8…), nunca recrear tablas ni borrar datos sin confirmar; al cerrar cada fase: analyze + test + build apk --debug + prueba en emulador + commit en `dev-claude` (sin push) + PLAN/CONTEXTO/REPORTE (sección por fase y "Pruebas de iPhone"). Orden pedido: 7 → 4 → 10 → 5 → 9 → 6 → 1 (parar y dar simulacro de restauración) → 8 (preguntar variante antes) → 11.
+
+| Fase | Tema | Modelo | Estado |
+|---|---|---|---|
+| 7 | S-17: ventana de llaves en memoria al bloquear ≤ 1 s | Opus | 🧪 `lockWithFlush` (1 s), 5 tests |
+| 4 | Guardar en Fotos (visor, foto y video) | Sonnet | ⬜ |
+| 10 | Gestos en video (doble toque ±10 s, zoom 1x–4x) | Sonnet | ⬜ |
+| 5 | Papelera (30 días, BD v8) | Sonnet | ⬜ |
+| 9 | Etiquetas, filtros y búsqueda (BD v9) | Sonnet | ⬜ |
+| 6 | Selector de archivos propio (sin file_picker; S-02 residual, S-18) | Sonnet | ⬜ |
+| 1 | Rotar la DEK (S-11), diseño revisado por Opus; PARAR al terminar | Opus | ⬜ |
+| 8 | Bóveda señuelo: PREGUNTAR variante (disimulo / negable) antes | Opus | ⬜ |
+| 11 | Kern: nombre visible e ícono | Haiku | ⬜ |
+
+Dónde retomar: Fase 7.

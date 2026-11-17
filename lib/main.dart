@@ -9,6 +9,7 @@ import 'core/crypto/auth_controller.dart';
 import 'core/crypto/secure_kv_store.dart';
 import 'core/logging/vault_log.dart';
 import 'core/security/auto_lock.dart';
+import 'core/security/lock_flush.dart';
 import 'core/security/platform_security.dart';
 import 'core/security/security_preferences.dart';
 import 'core/services/app_paths.dart';
@@ -268,16 +269,7 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
     final flush = _phase == _Phase.vault && _authController.isUnlocked
         ? _services.beforeLock
         : null;
-    if (flush == null) {
-      _authController.lock();
-    } else {
-      unawaited(
-        flush()
-            .timeout(const Duration(seconds: 3))
-            .catchError((Object _) {})
-            .whenComplete(_authController.lock),
-      );
-    }
+    lockWithFlush(flush: flush, lock: _authController.lock);
     if (!mounted) return;
     final inVault = _phase == _Phase.vault;
     // En el onboarding SIN bóveda todavía no hay nada que bloquear.
