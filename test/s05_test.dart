@@ -53,6 +53,7 @@ void main() {
         resolve: (_) => f,
       );
       final item = VaultItemModel(
+        keyGen: 1,
         id: 'i1',
         name: 'n',
         encryptedPath: 'vault/i1.vault',

@@ -30,6 +30,7 @@ VaultItemModel _item(
   bool offline = false,
   SyncStatus status = SyncStatus.pendiente,
 }) => VaultItemModel(
+  keyGen: 1,
   id: id,
   name: 'n$id',
   folderId: folderId,
@@ -189,6 +190,7 @@ void main() {
       await expectLater(
         repo.insertItem(
           const VaultItemModel(
+            keyGen: 1,
             id: '2',
             name: 'a',
             encryptedPath: '/data/user/0/app/vault/2.vault',

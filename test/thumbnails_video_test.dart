@@ -197,6 +197,7 @@ void main() {
       if (!keepVault) AppPaths.resolve(rel).deleteSync();
       await repo.insertItem(
         VaultItemModel(
+          keyGen: 1,
           id: id,
           name: '$id.mov',
           encryptedPath: rel,
@@ -346,6 +347,7 @@ void main() {
     test('los que no son foto/video no cuentan', () async {
       await repo.insertItem(
         const VaultItemModel(
+          keyGen: 1,
           id: 'doc1',
           name: 'notas.pdf',
           encryptedPath: 'vault/doc1.vault',
@@ -373,6 +375,7 @@ void main() {
       await t.pumpWidget(
         host(
           const VaultItemModel(
+            keyGen: 1,
             id: 'v',
             name: 'clip.mov',
             encryptedPath: 'vault/v.vault',
@@ -392,6 +395,7 @@ void main() {
       await t.pumpWidget(
         host(
           const VaultItemModel(
+            keyGen: 1,
             id: 'p',
             name: 'foto.jpg',
             encryptedPath: 'vault/p.vault',

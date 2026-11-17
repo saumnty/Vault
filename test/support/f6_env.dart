@@ -162,6 +162,7 @@ class F6Env {
     }
     await items.insertItem(
       VaultItemModel(
+        keyGen: 1,
         id: id,
         name: name,
         folderId: folderId,

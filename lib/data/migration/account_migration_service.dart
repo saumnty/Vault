@@ -5,7 +5,6 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../../core/logging/vault_log.dart';
-import '../../core/services/app_paths.dart';
 import '../cloud/cloud_storage.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
@@ -760,21 +759,10 @@ class AccountMigrationService {
     unawaited(sync.run(manual: true));
   }
 
-  /// Solo los nombres que usa Vault: respaldo, snapshot y `<id>.vault` /
-  /// `<id>.thumb` con id válido (UUID v4). Nada más se toca.
-  static bool _isVaultFile(String name) {
-    if (name == CloudNames.recoveryBackup || name == CloudNames.dbSnapshot) {
-      return true;
-    }
-    for (final ext in const ['.vault', '.thumb']) {
-      if (name.endsWith(ext)) {
-        return AppPaths.isValidItemId(
-          name.substring(0, name.length - ext.length),
-        );
-      }
-    }
-    return false;
-  }
+  /// Solo los nombres que usa Vault, de cualquier generación de llave (D60):
+  /// respaldos, snapshots y `<id>[.kN].vault` / `<id>[.kN].thumb` con id
+  /// válido (UUID v4). Nada más se toca.
+  static bool _isVaultFile(String name) => CloudNames.parse(name) != null;
 
   // ------------------------------------------------------------ cancelación
 

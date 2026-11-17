@@ -8,6 +8,7 @@ import 'package:vault/shared/widgets/blur_sheet.dart';
 import '../support/ui_helpers.dart';
 
 VaultItemModel _item(String id, String name, int size) => VaultItemModel(
+  keyGen: 1,
   id: id,
   name: name,
   encryptedPath: 'vault/$id.vault',

@@ -144,6 +144,7 @@ void main() {
           resolve: (_) => f,
         );
         VaultItemModel item(String thumbFileId) => VaultItemModel(
+          keyGen: 1,
           id: 'i1',
           name: 'n',
           encryptedPath: 'vault/i1.vault',

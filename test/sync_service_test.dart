@@ -131,6 +131,7 @@ class Env {
       ).writeAsBytes(List.generate(3000, (i) => (i + id.length) & 0xff));
     }
     final item = VaultItemModel(
+      keyGen: 1,
       id: id,
       name: 'foto $id.jpg',
       encryptedPath: AppPaths.vaultRelativePath(id),
@@ -535,7 +536,7 @@ void main() {
           'createdAt',
         ]),
       );
-      expect(VaultSchema.version, 9);
+      expect(VaultSchema.version, 10);
     });
 
     test('items borrados mientras están en cola se descartan', () async {

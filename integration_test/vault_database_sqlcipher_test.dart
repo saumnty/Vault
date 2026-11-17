@@ -34,6 +34,7 @@ void main() {
     final repo = VaultDataRepository();
     await repo.insertItem(
       const VaultItemModel(
+        keyGen: 1,
         id: 'it1',
         name: 'foto.jpg',
         encryptedPath: 'vault/it1.vault',

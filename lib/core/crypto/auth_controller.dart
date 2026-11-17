@@ -114,6 +114,11 @@ class AuthController {
   /// códigos sin conexión (ver D37).
   static const String restoreAttemptsKey = 'vault.v1.restore_attempts';
 
+  /// C1 (D62): la BD de esta bóveda ya se creó. Con la marca escrita,
+  /// `VaultDatabase` se niega a crear una BD vacía si falta el archivo. Se
+  /// borra al crear o restaurar una bóveda y con [discardLocalKeys].
+  static const String dbCreatedKey = 'vault.v1.db_created';
+
   /// Mínimo para DESBLOQUEAR (acepta PIN de 4 dígitos de bóvedas creadas antes
   /// de S-06). Un PIN NUEVO exige [minNewPinLength].
   static const int minPinLength = 4;
@@ -179,6 +184,8 @@ class AuthController {
       await _storage.write(recoveryBackupKey, backupJson);
       await _storage.write(keyCheckKey, keys.keyCheck);
       await _storage.delete(biometricEnabledKey);
+      // Una marca de una bóveda anterior impediría crear la BD de ésta.
+      await _storage.delete(dbCreatedKey);
       await _safeDeleteBiometricKey();
       await _limiter.reset();
       if (onboardingPending) {
@@ -212,11 +219,16 @@ class AuthController {
       onboardingPendingKey,
       PinAttemptLimiter.storageKey,
       restoreAttemptsKey,
+      dbCreatedKey,
     ]) {
       await _storage.delete(k);
     }
     await _safeDeleteBiometricKey();
   }
+
+  /// C1 (D62): la BD de esta bóveda ya está en disco (restauración instalada).
+  /// Desde aquí, si el archivo faltara, no se crearía una BD vacía.
+  Future<void> markDatabaseCreated() => _storage.write(dbCreatedKey, 'true');
 
   /// `true` si falta confirmar el código de recuperación (ver
   /// [onboardingPendingKey]).
@@ -486,6 +498,9 @@ class AuthController {
       // La copia biométrica podría ser de otra DEK: se descarta.
       await _storage.delete(biometricEnabledKey);
       await _storage.delete(onboardingPendingKey);
+      // Marca de una bóveda anterior: la de ésta la escribe la instalación
+      // (RestoreService) o la primera apertura de su BD.
+      await _storage.delete(dbCreatedKey);
       await _safeDeleteBiometricKey();
       await _limiter.reset();
       await _storage.write(pinEnvelopeKey, envelope.encode());

@@ -50,7 +50,14 @@ class VaultItemModel {
   final String? fileId;
   final String? thumbFileId;
 
+  /// D60: generación de la llave (DEK) con la que están cifrados el `.vault`
+  /// y la `.thumb` de este item. La bóveda original es la generación 1 (sin
+  /// sufijo en los nombres); una rotación de la DEK la sube. Es obligatoria
+  /// para que ningún sitio que crea items la olvide.
+  final int keyGen;
+
   const VaultItemModel({
+    required this.keyGen,
     required this.id,
     required this.name,
     this.folderId,
@@ -99,6 +106,7 @@ class VaultItemModel {
     'thumbDriveFileId': thumbDriveFileId,
     'fileId': fileId,
     'thumbFileId': thumbFileId,
+    'keyGen': keyGen,
   };
 
   factory VaultItemModel.fromMap(Map<String, dynamic> map) => VaultItemModel(
@@ -123,5 +131,7 @@ class VaultItemModel {
     thumbDriveFileId: map['thumbDriveFileId'] as String?,
     fileId: map['fileId'] as String?,
     thumbFileId: map['thumbFileId'] as String?,
+    // Filas anteriores a v10 (snapshots viejos en memoria): generación 1.
+    keyGen: (map['keyGen'] as int?) ?? 1,
   );
 }

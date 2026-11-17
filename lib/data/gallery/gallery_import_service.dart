@@ -468,6 +468,9 @@ class GalleryImportService {
           asset.title ?? p.basename(origin.file.path).replaceAll('\\', '/');
       await repository.insertItem(
         VaultItemModel(
+          // D60: cifrado con la llave de la sesión, que hoy es siempre la de
+          // la generación 1 (el keyring por generación llega con la rotación).
+          keyGen: 1,
           id: itemId,
           name: name,
           folderId: options.folderId,

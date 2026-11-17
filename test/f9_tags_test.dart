@@ -29,7 +29,8 @@ void main() {
   test(
     'BD v8 -> v9 conserva los datos y agrega las tablas de etiquetas',
     () async {
-      expect(VaultSchema.version, 9);
+      // v10 (rotación de la DEK) llegó después; el paso v8 -> v9 sigue igual.
+      expect(VaultSchema.version, greaterThanOrEqualTo(9));
       final dir = await Directory.systemTemp.createTemp('tags_up');
       addTearDown(() => dir.delete(recursive: true));
       final path = p.join(dir.path, 'v8.db');

@@ -5,9 +5,35 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_sqlcipher/sqflite.dart';
 
+import '../../core/crypto/auth_controller.dart' show AuthController;
 import '../../core/crypto/key_hierarchy.dart';
+import '../../core/crypto/secure_kv_store.dart';
 import '../../core/services/app_paths.dart';
 import '../../core/session/vault_session.dart';
+
+/// C1 (D62): la BD de una bóveda que YA existió no está en disco. No se crea
+/// una vacía en su lugar (se subiría a Drive como si fuera la verdad); hay que
+/// reparar o restaurar.
+class VaultDatabaseMissingException implements Exception {
+  const VaultDatabaseMissingException();
+
+  @override
+  String toString() =>
+      'Falta la base de datos de la bóveda; no se crea una vacía.';
+}
+
+/// La BD la creó una versión MÁS NUEVA de la app. No se toca: hay que
+/// instalar una versión igual o más reciente.
+class VaultSchemaTooNewException implements Exception {
+  const VaultSchemaTooNewException(this.found, this.supported);
+  final int found;
+  final int supported;
+
+  @override
+  String toString() =>
+      'La bóveda la creó una versión más nueva de la app (esquema $found > '
+      '$supported). Instala la versión más reciente.';
+}
 
 /// Esquema de la BD. Desde v6 se actualiza de forma incremental; antes de v6
 /// se recreaba (ver [upgrade] y [recreate]).
@@ -25,23 +51,22 @@ import '../../core/session/vault_session.dart';
 /// `folders`). DESDE v6 la actualización es INCREMENTAL (conserva los datos:
 /// ya hay bóvedas reales en iPhone); versiones anteriores se recrean.
 /// v9 = etiquetas (v2 fase 9: tablas `tags` e `item_tags`).
-/// La BD la creó una versión MÁS NUEVA de la app. No se toca: hay que
-/// instalar una versión igual o más reciente.
-class VaultSchemaTooNewException implements Exception {
-  const VaultSchemaTooNewException(this.found, this.supported);
-  final int found;
-  final int supported;
-
-  @override
-  String toString() =>
-      'La bóveda la creó una versión más nueva de la app (esquema $found > '
-      '$supported). Instala la versión más reciente.';
-}
-
+/// v10 = rotación de la DEK (D60: `vault_items.keyGen`, por defecto 1; tablas
+/// `rotation_state` y `rotation_old_files`, vacías fuera de una rotación).
 class VaultSchema {
   VaultSchema._();
 
-  static const int version = 9;
+  static const int version = 10;
+
+  /// Triggers de cardinalidad de una rotación en curso (D62). Se crean al
+  /// congelar el conjunto viejo y se quitan al terminar; un snapshot que los
+  /// traiga los pierde al restaurar.
+  static const List<String> rotationTriggerNames = [
+    'rot_items_ins',
+    'rot_items_del',
+    'rot_folders_ins',
+    'rot_folders_del',
+  ];
 
   /// Primera versión que se actualiza sin perder datos (y que un snapshot de
   /// Drive puede traer al restaurar).
@@ -57,6 +82,7 @@ class VaultSchema {
     'idx_sync_queue_due',
     'idx_items_deleted',
     'idx_item_tags_tag',
+    'idx_items_keygen',
   ];
 
   static Future<void> create(DatabaseExecutor db) async {
@@ -95,7 +121,8 @@ class VaultSchema {
         fileId TEXT,
         thumbFileId TEXT,
         deletedAt INTEGER,
-        trashRoot TEXT
+        trashRoot TEXT,
+        keyGen INTEGER NOT NULL DEFAULT 1
       )
     ''');
     // Cola de sincronización persistente (F5). Una fila por (itemId, kind);
@@ -132,6 +159,55 @@ class VaultSchema {
     );
     await createMigrationTables(db);
     await createTagTables(db);
+    await addRotationSchema(db);
+  }
+
+  /// v10 (D60/D62): generación de llave por item y tablas de la rotación de
+  /// la DEK. Idempotente: no falla si ya existe nada de ello. NO toca datos
+  /// (las filas existentes quedan en `keyGen = 1`, la bóveda actual).
+  static Future<void> addRotationSchema(DatabaseExecutor db) async {
+    final cols = (await db.rawQuery(
+      'PRAGMA table_info(vault_items)',
+    )).map((r) => r['name']).toSet();
+    if (!cols.contains('keyGen')) {
+      await db.execute(
+        'ALTER TABLE vault_items ADD COLUMN keyGen INTEGER NOT NULL DEFAULT 1',
+      );
+    }
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_items_keygen ON vault_items(keyGen)',
+    );
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS rotation_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        rotationId TEXT NOT NULL,
+        fromGen INTEGER NOT NULL,
+        toGen INTEGER NOT NULL,
+        frozenAt INTEGER NOT NULL,
+        frozenItems INTEGER NOT NULL,
+        frozenFolders INTEGER NOT NULL,
+        itemsInserted INTEGER NOT NULL DEFAULT 0,
+        itemsDeleted INTEGER NOT NULL DEFAULT 0,
+        foldersInserted INTEGER NOT NULL DEFAULT 0,
+        foldersDeleted INTEGER NOT NULL DEFAULT 0,
+        oldBackupDriveId TEXT,
+        oldBackupMd5 TEXT,
+        oldSnapshotDriveId TEXT,
+        oldSnapshotMd5 TEXT,
+        bridgeDriveId TEXT
+      )
+    ''');
+    // A5: lista exacta del conjunto viejo de Drive (lo único que se borra).
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS rotation_old_files (
+        driveId TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        md5 TEXT,
+        itemId TEXT,
+        kind TEXT NOT NULL,
+        quarantine INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
   }
 
   /// Cambio de cuenta de Google (v7). Una sola fila de estado (`id = 1`) y,
@@ -177,6 +253,8 @@ class VaultSchema {
     if (from < 8) await addTrashColumns(db);
     // v8 -> v9: etiquetas.
     if (from < 9) await createTagTables(db);
+    // v9 -> v10: generación de llave por item y tablas de la rotación.
+    if (from < 10 && to >= 10) await addRotationSchema(db);
   }
 
   /// v9: etiquetas. `tags.name` es único sin distinguir mayúsculas. Idempotente.
@@ -222,6 +300,11 @@ class VaultSchema {
 
   /// Borra todo y recrea (sustituye a una migración).
   static Future<void> recreate(Database db) async {
+    for (final t in rotationTriggerNames) {
+      await db.execute('DROP TRIGGER IF EXISTS $t');
+    }
+    await db.execute('DROP TABLE IF EXISTS rotation_old_files');
+    await db.execute('DROP TABLE IF EXISTS rotation_state');
     await db.execute('DROP TABLE IF EXISTS item_tags');
     await db.execute('DROP TABLE IF EXISTS tags');
     await db.execute('DROP TABLE IF EXISTS migration_items');
@@ -264,11 +347,18 @@ Future<Database> openSqlCipherDatabase(
 /// * Al bloquear la bóveda (`VaultSession.clear`) la conexión se cierra.
 /// * Si hay una conexión abierta con otra llave, se cierra y se reabre.
 /// * El archivo vive en `AppPaths.dbDir` (documents/db/vault_secure.db).
+///
+/// C1 (D62): con la marca [AuthController.dbCreatedKey] escrita, la BD de
+/// esta bóveda ya existió; si el archivo falta, [database] lanza
+/// [VaultDatabaseMissingException] y NUNCA crea una BD vacía (que después se
+/// tomaría como la verdad y se subiría a Drive). Solo se crea con la marca
+/// ausente (primer uso tras `createVault`).
 class VaultDatabase {
   static final VaultDatabase _instance = VaultDatabase._(
     session: VaultSession(),
     opener: openSqlCipherDatabase,
     useSqlCipher: true,
+    markerStore: FlutterSecureKeyValueStore(),
   );
 
   factory VaultDatabase() => _instance;
@@ -278,17 +368,21 @@ class VaultDatabase {
 
   /// Instancia independiente para pruebas: [opener] (p. ej. sqflite_common_ffi,
   /// sin SQLCipher) y [dbPath] absoluta explícita (si no, usa `AppPaths`).
+  /// Sin [markerStore] no se aplica la guarda de "BD ausente" (pruebas
+  /// históricas).
   @visibleForTesting
   VaultDatabase.forTesting({
     required VaultSession session,
     required DatabaseOpener opener,
     String? dbPath,
     bool useSqlCipher = false,
+    SecureKeyValueStore? markerStore,
   }) : this._(
          session: session,
          opener: opener,
          dbPath: dbPath,
          useSqlCipher: useSqlCipher,
+         markerStore: markerStore,
        );
 
   VaultDatabase._({
@@ -296,10 +390,12 @@ class VaultDatabase {
     required DatabaseOpener opener,
     String? dbPath,
     required bool useSqlCipher,
+    SecureKeyValueStore? markerStore,
   }) : _session = session,
        _opener = opener,
        _dbPathOverride = dbPath,
-       _useSqlCipher = useSqlCipher {
+       _useSqlCipher = useSqlCipher,
+       _markerStore = markerStore {
     // Al bloquear la bóveda se cierra la conexión.
     _session.addOnClear(() => unawaited(close()));
   }
@@ -308,6 +404,7 @@ class VaultDatabase {
   final DatabaseOpener _opener;
   final String? _dbPathOverride;
   final bool _useSqlCipher;
+  final SecureKeyValueStore? _markerStore;
 
   Database? _db;
   String? _openPassword;
@@ -372,6 +469,14 @@ class VaultDatabase {
   Future<Database> _open(String password) async {
     if (_dbPathOverride == null) await AppPaths.init();
     final file = File(_dbPath);
+    final markers = _markerStore;
+    final existed = file.existsSync();
+    // C1: la BD ya existió y falta el archivo -> nunca se crea una vacía.
+    if (!existed &&
+        markers != null &&
+        await markers.read(AuthController.dbCreatedKey) == 'true') {
+      throw const VaultDatabaseMissingException();
+    }
     if (!file.parent.existsSync()) file.parent.createSync(recursive: true);
     final db = await _opener(
       _dbPath,
@@ -386,6 +491,17 @@ class VaultDatabase {
         onDowngrade: (db, o, n) => throw VaultSchemaTooNewException(o, n),
       ),
     );
+    // Creada ahora, o ya existente de una versión sin la marca (bóvedas
+    // anteriores a C1): desde aquí la BD de esta bóveda "existe".
+    if (markers != null &&
+        await markers.read(AuthController.dbCreatedKey) != 'true') {
+      try {
+        await markers.write(AuthController.dbCreatedKey, 'true');
+      } catch (_) {
+        // Almacén seguro no disponible: la marca se escribe en la próxima
+        // apertura (hasta entonces la guarda no está activa, como antes).
+      }
+    }
     _db = db;
     _openPassword = password;
     return db;

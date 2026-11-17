@@ -15,7 +15,7 @@ import '../../core/services/app_paths.dart';
 import '../cloud/cloud_storage.dart';
 import '../repositories/vault_database.dart';
 import '../sync/sync_preferences.dart';
-import '../sync/sync_service.dart' show CloudNames, md5OfFile;
+import '../sync/sync_service.dart' show CloudNameKind, CloudNames, md5OfFile;
 
 /// Qué se encontró en la cuenta de Google al buscar un respaldo.
 enum RestoreProbeResult {
@@ -350,8 +350,14 @@ class RestoreService {
     );
   }
 
-  static bool _isMeta(String name) =>
-      name == CloudNames.recoveryBackup || name == CloudNames.dbSnapshot;
+  /// Respaldos de llaves (de cualquier generación, también los puente) y
+  /// snapshots: no son archivos de items.
+  static bool _isMeta(String name) => switch (CloudNames.parse(name)?.kind) {
+    CloudNameKind.recoveryBackup ||
+    CloudNameKind.bridgeBackup ||
+    CloudNameKind.dbSnapshot => true,
+    _ => false,
+  };
 
   /// Borra la zona de preparación (al abandonar la restauración).
   static Future<void> discardStaging() async {
@@ -561,6 +567,15 @@ class RestoreService {
         batch.delete('migration_items');
         batch.delete('migration_state');
       }
+      // Lo mismo con una rotación de la DEK a medias (v10, D62): ni su estado
+      // ni sus triggers de cardinalidad pasan al teléfono restaurado.
+      for (final t in VaultSchema.rotationTriggerNames) {
+        batch.execute('DROP TRIGGER IF EXISTS $t');
+      }
+      if (version >= 10) {
+        batch.delete('rotation_old_files');
+        batch.delete('rotation_state');
+      }
       for (final r in rows) {
         final id = r['id'] as String;
         // S-15: el id acaba en nombres de archivo locales (`<id>.thumb`): solo
@@ -686,6 +701,14 @@ class RestoreService {
       }
       if (kDebugMode) debugPrint('[restore] instalación revertida: $e');
       rethrow;
+    }
+    // C1 (D62): la BD instalada es la de esta bóveda; si faltara después, no
+    // se crea una vacía. Mejor esfuerzo: si falla, la marca la escribe la
+    // primera apertura de la BD.
+    try {
+      await auth.markDatabaseCreated();
+    } on Object catch (e) {
+      if (kDebugMode) debugPrint('[restore] marca de BD pendiente: $e');
     }
   }
 }

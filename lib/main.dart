@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io' show File, Platform;
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:flutter/material.dart';
@@ -22,8 +22,8 @@ import 'data/gallery/import_preferences.dart';
 import 'data/gallery/photo_manager_gallery_source.dart';
 import 'data/gallery/video_compress_plugin.dart';
 import 'data/gallery/video_compressor.dart';
-import 'data/repositories/vault_database.dart';
 import 'data/restore/restore_service.dart';
+import 'data/restore/vault_bootstrap.dart';
 import 'data/sync/sync_preferences.dart';
 import 'features/auth/pin_screen.dart';
 import 'features/onboarding/onboarding_flow.dart';
@@ -231,21 +231,14 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
   /// Sin bóveda -> onboarding; con bóveda -> PIN (y, si el onboarding quedó a
   /// medias, tras el PIN se vuelve al paso del código).
   Future<void> _bootstrap() async {
-    var hasVault = await _authController.hasVault();
-    // F9 (iOS): llaves en el Keychain de una instalación anterior, sin BD.
-    if (Platform.isIOS &&
-        hasVault &&
-        AppPaths.isInitialized &&
-        !await _authController.isOnboardingPending() &&
-        !File(VaultDatabase.defaultDbPath).existsSync()) {
-      await _authController.discardLocalKeys();
-      hasVault = false;
-    }
-    // F9: sin bóveda no puede haber BD ni miniaturas válidas (restos de una
-    // restauración interrumpida durante la instalación).
-    if (!hasVault && widget.restoreService == null) {
-      await RestoreService.sweepOrphans();
-    }
+    // F9 (iOS): llaves del Keychain de una instalación anterior sin BD se
+    // descartan (salvo restos de una rotación, C1); sin bóveda se barren
+    // restos de una restauración interrumpida.
+    final hasVault = await VaultBootstrap.decide(
+      auth: _authController,
+      isIOS: Platform.isIOS,
+      sweepOrphans: widget.restoreService == null,
+    );
     if (!mounted) return;
     setState(() {
       _vaultExists = hasVault;

@@ -140,6 +140,91 @@ void main() {
     });
 
     test(
+      'snapshot v10 con una rotación a medias: no se heredan su estado ni sus '
+      'triggers, y keyGen se conserva',
+      () async {
+        a = await _phoneA();
+        final dbA = await a.vdb.database;
+        await dbA.insert('rotation_state', {
+          'id': 1,
+          'rotationId': 'r1',
+          'fromGen': 1,
+          'toGen': 2,
+          'frozenAt': 1,
+          'frozenItems': 4,
+          'frozenFolders': 2,
+        });
+        await dbA.insert('rotation_old_files', {
+          'driveId': 'd1',
+          'name': 'x.vault',
+          'kind': 'file',
+        });
+        await dbA.execute(
+          'CREATE TRIGGER rot_items_del AFTER DELETE ON vault_items BEGIN '
+          'UPDATE rotation_state SET itemsDeleted = itemsDeleted + 1 '
+          'WHERE id = 1; END',
+        );
+        await a.republishSnapshot();
+
+        b = await newB();
+        await verified(b);
+        final result = await b.service.restore(newPin: '654321');
+        expect(result.items, 4);
+        expect(result.lostItems, 0);
+        final vdb = b.openDb();
+        addTearDown(vdb.close);
+        final db = await vdb.database;
+        expect(
+          (await db.rawQuery('PRAGMA user_version')).single.values.first,
+          VaultSchema.version,
+        );
+        expect(await db.query('rotation_state'), isEmpty);
+        expect(await db.query('rotation_old_files'), isEmpty);
+        expect(
+          await db.rawQuery(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger'",
+          ),
+          isEmpty,
+        );
+        expect(
+          (await db.query('vault_items')).map((r) => r['keyGen']).toSet(),
+          {1},
+        );
+      },
+    );
+
+    test('snapshot v9 (el de la bóveda real de hoy): se restaura y sube a v10 '
+        'con keyGen = 1', () async {
+      a = await _phoneA();
+      final dbA = await a.vdb.database;
+      // Deja la BD de A exactamente con la forma de v9.
+      await dbA.execute('DROP INDEX idx_items_keygen');
+      await dbA.execute('ALTER TABLE vault_items DROP COLUMN keyGen');
+      await dbA.execute('DROP TABLE rotation_state');
+      await dbA.execute('DROP TABLE rotation_old_files');
+      await dbA.execute('PRAGMA user_version = 9');
+      await a.republishSnapshot();
+
+      b = await newB();
+      await verified(b);
+      final result = await b.service.restore(newPin: '654321');
+      expect(result.items, 4);
+      expect(result.lostItems, 0);
+      final vdb = b.openDb();
+      addTearDown(vdb.close);
+      final repo = _repo(vdb);
+      final all = await repo.getAllItems();
+      expect(all.map((i) => i.id).toSet(), {'i1', 'i2', 'i3', 'i4'});
+      expect(all.map((i) => i.keyGen).toSet(), {1});
+      expect(all.map((i) => i.syncStatus).toSet(), {SyncStatus.enNube});
+      final db = await vdb.database;
+      expect(
+        (await db.rawQuery('PRAGMA user_version')).single.values.first,
+        10,
+      );
+    });
+
+    test(
       'abrir un archivo descarga de Drive y verifica MD5; sync no re-sube',
       () async {
         a = await _phoneA();

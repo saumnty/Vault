@@ -68,6 +68,7 @@ VaultItemModel fakeItem(
   SyncStatus status = SyncStatus.enNube,
   bool withThumb = true,
 }) => VaultItemModel(
+  keyGen: 1,
   id: id,
   name: name ?? 'IMG_$id.jpg',
   folderId: folderId,
@@ -141,6 +142,7 @@ class FakeVaultRepository extends Fake implements VaultDataRepository {
     final i = items.indexWhere((e) => e.id == itemId);
     final old = items[i];
     items[i] = VaultItemModel(
+      keyGen: 1,
       id: old.id,
       name: old.name,
       folderId: folderId,

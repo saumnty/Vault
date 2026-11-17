@@ -61,13 +61,32 @@ class AppPaths {
       Directory(p.join(cacheDir.path, tmpPlainDirName));
   static Directory get dbDir => Directory(p.join(baseDir.path, dbDirName));
 
-  /// Ruta relativa del archivo cifrado de un item: `vault/<id>.vault`.
-  static String vaultRelativePath(String itemId) =>
-      '$vaultDirName/$itemId.vault';
+  /// Mayor generación de llave admitida en nombres de archivo (D60).
+  static const int maxKeyGen = 9999;
 
-  /// Ruta relativa de la miniatura cifrada de un item: `thumbs/<id>.thumb`.
-  static String thumbRelativePath(String itemId) =>
-      '$thumbsDirName/$itemId.thumb';
+  /// Sufijo de generación de llave en nombres de archivo (D60): vacío para la
+  /// generación 1 (los nombres de siempre) y `.kN` para N ≥ 2. Lanza
+  /// [ArgumentError] fuera de 1..[maxKeyGen].
+  static String keyGenSuffix(int gen) {
+    if (gen < 1 || gen > maxKeyGen) {
+      throw ArgumentError.value(
+        gen,
+        'gen',
+        'Generación de llave fuera de rango',
+      );
+    }
+    return gen == 1 ? '' : '.k$gen';
+  }
+
+  /// Ruta relativa del archivo cifrado de un item: `vault/<id>.vault` (gen 1)
+  /// o `vault/<id>.kN.vault` (gen N ≥ 2).
+  static String vaultRelativePath(String itemId, {int gen = 1}) =>
+      '$vaultDirName/$itemId${keyGenSuffix(gen)}.vault';
+
+  /// Ruta relativa de la miniatura cifrada de un item: `thumbs/<id>.thumb`
+  /// (gen 1) o `thumbs/<id>.kN.thumb` (gen N ≥ 2).
+  static String thumbRelativePath(String itemId, {int gen = 1}) =>
+      '$thumbsDirName/$itemId${keyGenSuffix(gen)}.thumb';
 
   /// `true` si [path] es absoluta (POSIX, Windows con unidad o UNC).
   static bool isAbsolutePath(String path) =>
@@ -81,9 +100,18 @@ class AppPaths {
     r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
   );
 
+  /// Sufijo opcional de generación `.kN` con N en 2..9999 sin ceros a la
+  /// izquierda (D60). La generación 1 no lleva sufijo.
+  static const String keyGenSuffixPattern =
+      r'(?:\.k(?:[2-9]|[1-9][0-9]{1,3}))?';
+
   static final RegExp _itemFilePath = RegExp(
-    r'^(?:vault/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.vault'
-    r'|thumbs/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.thumb)$',
+    r'^(?:vault/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
+    '$keyGenSuffixPattern'
+    r'\.vault'
+    r'|thumbs/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
+    '$keyGenSuffixPattern'
+    r'\.thumb)$',
   );
 
   /// Solo pruebas: acepta ids no UUID (`i1`, `a`…) en las rutas de items. Las
@@ -98,8 +126,9 @@ class AppPaths {
           RegExp(r'^[A-Za-z0-9_-]{1,64}$').hasMatch(id));
 
   /// S-15: valida la ruta relativa de un archivo de item. Solo se acepta
-  /// exactamente `vault/<uuid>.vault` o `thumbs/<uuid>.thumb` (UUID v4 en
-  /// minúsculas, sin subcarpetas, `..`, mayúsculas ni barras invertidas).
+  /// exactamente `vault/<uuid>[.kN].vault` o `thumbs/<uuid>[.kN].thumb` (UUID
+  /// v4 en minúsculas, generación opcional N ≥ 2 (D60), sin subcarpetas, `..`,
+  /// mayúsculas ni barras invertidas).
   /// Devuelve la ruta tal cual. Las rutas de otros recursos (caché, tmp, BD)
   /// no pasan por aquí: se construyen con [cacheDir], [tmpPlainDir], [dbDir].
   static String validateRelative(String path) {

@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../core/crypto/key_recovery_service.dart';
 import '../../core/logging/vault_log.dart';
+import '../cloud/cloud_names.dart';
 import '../cloud/cloud_storage.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
@@ -15,13 +16,9 @@ import 'network_monitor.dart';
 import 'sync_preferences.dart';
 import 'sync_queue_repository.dart';
 
-/// Nombres remotos en appDataFolder (sin nombres reales de archivos).
-abstract final class CloudNames {
-  static String file(String itemId) => '$itemId.vault';
-  static String thumb(String itemId) => '$itemId.thumb';
-  static const String recoveryBackup = 'recovery_backup.json';
-  static const String dbSnapshot = 'vault_db.snapshot';
-}
+// Los nombres remotos viven en `cloud_names.dart` (D60); se reexportan para
+// no cambiar los imports existentes.
+export '../cloud/cloud_names.dart';
 
 /// Estado global de la sincronización, para la UI.
 enum SyncPhase { idle, running, offline, waitingWifi, needsSignIn, quotaFull }

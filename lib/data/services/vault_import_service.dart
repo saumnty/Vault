@@ -1,4 +1,3 @@
-
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
@@ -100,6 +99,9 @@ class VaultImportService {
 
       // 5. Registrar en SQLCipher
       final itemModel = VaultItemModel(
+        // D60: cifrado con la llave de la sesión, que hoy es siempre la de
+        // la generación 1 (el keyring por generación llega con la rotación).
+        keyGen: 1,
         id: itemId,
         name: picked.name,
         folderId: targetFolderId,
