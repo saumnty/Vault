@@ -45,7 +45,7 @@ void main() {
     temp = PlainTempManager(dirProvider: () => AppPaths.tmpPlainDir);
     opener = VaultMediaOpener(
       fetcher: env.fetcher,
-      filesKey: () => env.session.filesKey,
+      filesKey: env.session.filesKeyFor,
       temp: temp,
       // Estas pruebas cubren el respaldo completo-primero (F6a); el streaming
       // (por defecto) se prueba en f6b_streaming_test.dart.

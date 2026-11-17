@@ -12,6 +12,7 @@ import '../cloud/cloud_storage.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
 import '../repositories/vault_data_repository.dart';
+import '../repositories/vault_database.dart' show SnapshotCopy;
 import 'network_monitor.dart';
 import 'sync_preferences.dart';
 import 'sync_queue_repository.dart';
@@ -65,6 +66,47 @@ class SyncVerificationException implements Exception {
   String toString() => 'SyncVerificationException: $detail';
 }
 
+/// Una guarda de la rotación de la DEK impidió una subida que rompería un
+/// conjunto de respaldo (C2/D61): p. ej. un snapshot con filas de otra
+/// generación, o un nombre de la generación vieja ya congelada. Es un error
+/// de programa: no se reintenta solo.
+class SyncGuardException implements Exception {
+  const SyncGuardException(this.detail);
+  final String detail;
+  @override
+  String toString() => 'SyncGuardException: $detail';
+}
+
+/// Estado de una rotación de la DEK visto por la sincronización (D61). La
+/// implementación real lee el registro de la rotación; [NoRotationGuard] es
+/// "no hay rotación".
+abstract interface class RotationGuard {
+  /// Hay una rotación registrada (cualquier fase).
+  bool get active;
+
+  /// Entre `freezing` y el corte: el conjunto viejo de Drive (respaldo y
+  /// snapshot de [fromGen]) está congelado y la sincronización normal no
+  /// sube metadatos.
+  bool get freezeMeta;
+
+  /// Generaciones de la rotación (sin rotación, ambas = la vigente).
+  int get fromGen;
+  int get toGen;
+}
+
+/// Sin rotación de la DEK.
+class NoRotationGuard implements RotationGuard {
+  const NoRotationGuard();
+  @override
+  bool get active => false;
+  @override
+  bool get freezeMeta => false;
+  @override
+  int get fromGen => 1;
+  @override
+  int get toGen => 1;
+}
+
 /// Falta el archivo local (no se puede subir; no se reintenta solo).
 class SyncLocalMissingException implements Exception {
   const SyncLocalMissingException(this.path);
@@ -90,6 +132,7 @@ String describeSyncError(Object e) => switch (e) {
   SyncVerificationException(:final detail) =>
     'La copia en la nube no coincide ($detail)',
   SyncLocalMissingException() => 'Falta el archivo cifrado local',
+  SyncGuardException() => 'Subida detenida durante la rotación de la llave',
   _ => 'Error inesperado de sincronización',
 };
 
@@ -175,8 +218,20 @@ class SyncService {
     this.snapshotMaxAge = const Duration(hours: 6),
     this.scheduleWakeups = true,
     this.afterRun,
+    RotationGuard? rotation,
+    Future<int> Function()? currentKeyGen,
   }) : _now = nowMs ?? (() => DateTime.now().millisecondsSinceEpoch),
-       _random = random ?? Random();
+       _random = random ?? Random(),
+       rotation = rotation ?? const NoRotationGuard(),
+       currentKeyGen = currentKeyGen ?? (() async => 1);
+
+  /// Rotación de la DEK en curso (D61): congela los metadatos del conjunto
+  /// viejo y bloquea subidas que lo romperían.
+  final RotationGuard rotation;
+
+  /// Generación de llave vigente (`vault.v1.key_gen`): da nombre al respaldo
+  /// de recuperación (`recovery_backup[.kN].json`).
+  final Future<int> Function() currentKeyGen;
 
   final CloudStorage cloud;
   final SyncQueueRepository queue;
@@ -195,7 +250,7 @@ class SyncService {
 
   /// Copia de la BD cifrada (`VaultDatabase.exportEncryptedSnapshot`). Se
   /// borra tras subirla.
-  final Future<File> Function() snapshotProvider;
+  final Future<SnapshotCopy> Function() snapshotProvider;
 
   final int maxAttempts;
 
@@ -526,6 +581,9 @@ class SyncService {
   ///   copia remota perdida).
   Future<void> _maybeEnqueueSnapshot() async {
     if (_lockFlushRunning) return;
+    // D61: con el conjunto viejo congelado no se publica ningún snapshot (la
+    // marca "sucio" persiste y se sube tras el corte).
+    if (rotation.freezeMeta) return;
     final dirty = await prefs.getDirtyAt() != null;
     final at = await prefs.getSnapshotAt();
     final aged = at != null && _now() - at >= snapshotMaxAge.inMilliseconds;
@@ -563,6 +621,7 @@ class SyncService {
   /// la marca "sucio" persiste y la próxima sesión lo reintenta.
   Future<void> flushSnapshotBeforeLock() async {
     if (_disposed || _lockFlushRunning || !isUnlocked()) return;
+    if (rotation.freezeMeta) return; // D61: conjunto viejo congelado
     try {
       if (await prefs.getDirtyAt() == null) return;
       if (cloud.currentAccountEmail == null) return;
@@ -579,7 +638,14 @@ class SyncService {
     }
   }
 
-  Future<void> _uploadFlushedSnapshot(File snapshot, int takenAt) async {
+  /// `true` mientras una subida de snapshot (del flush al bloquear) sigue en
+  /// vuelo. La rotación espera a que termine antes de congelar (D61).
+  bool get snapshotFlushInFlight => _lockFlushRunning;
+
+  Future<void> _uploadFlushedSnapshot(
+    SnapshotCopy snapshot,
+    int takenAt,
+  ) async {
     try {
       await _uploadSnapshotFile(snapshot, CloudCancelToken(), takenAt);
       if (kDebugMode) debugPrint('[sync] snapshot subido al bloquear');
@@ -675,6 +741,7 @@ class SyncService {
     final attempts = job.attempts + 1;
     final permanent =
         e is SyncLocalMissingException ||
+        e is SyncGuardException ||
         (e is CloudForbiddenException && !e.rateLimited);
     final message = describeSyncError(e);
     if (permanent || attempts >= maxAttempts) {
@@ -700,9 +767,14 @@ class SyncService {
       case SyncJobKind.file:
       case SyncJobKind.thumb:
         return _uploadItemFile(job, token);
+      // D61: con el conjunto viejo congelado, los metadatos no se publican.
+      // El trabajo se da por hecho: la marca "sucio" (snapshot) y el SHA del
+      // respaldo (reconcile) los vuelven a encolar después del corte.
       case SyncJobKind.recoveryBackup:
+        if (rotation.freezeMeta) return true;
         return _uploadRecoveryBackup();
       case SyncJobKind.dbSnapshot:
+        if (rotation.freezeMeta) return true;
         return _uploadSnapshot(token);
       case SyncJobKind.deleteRemote:
         return _deleteRemote(job);
@@ -742,10 +814,27 @@ class SyncService {
     if (item == null) return true; // borrado mientras estaba en cola
     final rel = isThumb ? item.thumbPath : item.encryptedPath;
     if (rel == null) return true;
+    // D61: entre la congelación y el corte NO se crean nombres de la
+    // generación vieja (romperían la lista exacta del conjunto 1).
+    if (rotation.freezeMeta && item.keyGen == rotation.fromGen) {
+      throw SyncGuardException(
+        'archivo de la generación ${item.keyGen} con el conjunto congelado',
+      );
+    }
     final file = resolvePath(rel);
-    if (!await file.exists()) throw SyncLocalMissingException(rel);
+    if (!await file.exists()) {
+      // M4: si la fila cambió entretanto (re-cifrado: otra ruta/generación),
+      // no es un archivo perdido; el trabajo nuevo ya está en la cola.
+      final fresh = await items.getItem(job.itemId);
+      if (fresh == null) return true;
+      final freshRel = isThumb ? fresh.thumbPath : fresh.encryptedPath;
+      if (fresh.keyGen != item.keyGen || freshRel != rel) return true;
+      throw SyncLocalMissingException(rel);
+    }
 
-    final name = isThumb ? CloudNames.thumb(item.id) : CloudNames.file(item.id);
+    final name = isThumb
+        ? CloudNames.thumb(item.id, gen: item.keyGen)
+        : CloudNames.file(item.id, gen: item.keyGen);
     final size = await file.length();
     final md5 = await md5OfFile(file);
     // Idempotente: si ya existe (subida anterior sin confirmar), se reemplaza
@@ -762,24 +851,30 @@ class SyncService {
                 _setProgress(item.id, total == 0 ? 1 : sent / total),
     );
     _verify(remote, size, md5);
-    try {
-      if (isThumb) {
-        await items.setThumbDriveFileId(item.id, remote.id);
-        await prefs.markDirty(_now());
-      } else {
-        await items.markCloudVerified(
-          item.id,
-          driveFileId: remote.id,
-          md5: md5,
-          size: size,
-        );
-        await prefs.addUpload();
-        await prefs.markDirty(_now());
-      }
-    } on StateError catch (e) {
-      // Borrado mientras se subía: nada que marcar. (La bloqueada se propaga.)
-      if (e.message.contains('bloqueada')) rethrow;
+    // M4: solo se registra si la fila sigue siendo la que se subió (misma
+    // generación y ruta). Si cambió o se borró, el trabajo se da por hecho
+    // SIN borrar nada en Drive (ese id puede estar en un conjunto de
+    // respaldo; lo limpia la rotación o el borrado remoto).
+    final bool marked;
+    if (isThumb) {
+      marked = await items.setThumbDriveFileIdIf(
+        item.id,
+        remote.id,
+        expectKeyGen: item.keyGen,
+        expectThumbPath: rel,
+      );
+    } else {
+      marked = await items.markCloudVerifiedIf(
+        item.id,
+        driveFileId: remote.id,
+        md5: md5,
+        size: size,
+        expectKeyGen: item.keyGen,
+        expectPath: rel,
+      );
+      if (marked) await prefs.addUpload();
     }
+    if (marked) await prefs.markDirty(_now());
     return true;
   }
 
@@ -815,12 +910,20 @@ class SyncService {
         if (v is String && v.isNotEmpty) ids.add(v);
       }
     }
-    for (final name in [
-      CloudNames.file(job.itemId),
-      CloudNames.thumb(job.itemId),
-    ]) {
-      final found = await cloud.findByName(name);
-      if (found != null) ids.add(found.id);
+    // D60: los nombres del item en TODAS las generaciones conocidas (y su
+    // cuarentena, D61/M6): un borrado durante o tras una rotación no deja
+    // restos de otra generación.
+    final current = await currentKeyGen();
+    final maxGen = max(current, max(rotation.toGen, rotation.fromGen));
+    for (var gen = 1; gen <= maxGen; gen++) {
+      for (final name in [
+        CloudNames.file(job.itemId, gen: gen),
+        CloudNames.thumb(job.itemId, gen: gen),
+        CloudNames.quarantine(job.itemId, gen),
+      ]) {
+        final found = await cloud.findByName(name);
+        if (found != null) ids.add(found.id);
+      }
     }
     for (final id in ids) {
       try {
@@ -852,14 +955,14 @@ class SyncService {
     // verifica y después se BORRAN (permanente, con sus revisiones) todos los
     // anteriores con ese nombre. Si el borrado falla, el trabajo falla y se
     // reintenta (se vuelve a crear y a borrar todo lo previo).
+    // D60: el nombre es el de la generación vigente (`recovery_backup.json`
+    // en la 1, `recovery_backup.kN.json` después de rotar).
+    final name = CloudNames.recoveryBackupFor(await currentKeyGen());
     final previous = [
       for (final f in await cloud.list())
-        if (f.name == CloudNames.recoveryBackup) f.id,
+        if (f.name == name) f.id,
     ];
-    final remote = await cloud.uploadBytes(
-      bytes: bytes,
-      name: CloudNames.recoveryBackup,
-    );
+    final remote = await cloud.uploadBytes(bytes: bytes, name: name);
     _verify(remote, bytes.length, md5OfBytes(bytes));
     for (final id in previous) {
       if (id == remote.id) continue;
@@ -888,21 +991,39 @@ class SyncService {
     return _uploadSnapshotFile(snapshot, token, takenAt);
   }
 
-  /// Sube [snapshot] (copia ya cifrada de la BD) y la borra al terminar.
+  /// Sube [copy] (copia ya cifrada de la BD) y la borra al terminar.
   /// [takenAt]: instante en que se tomó la copia (ver
   /// [SyncPreferences.markSnapshotDone]).
+  ///
+  /// C2 (D61), guarda en el punto más bajo: el nombre sale de la generación
+  /// de la COPIA (`vault_db[.kN].snapshot`) y se niega
+  /// ([SyncGuardException]) si sus filas no son todas de esa generación, o
+  /// si el conjunto viejo está congelado (rotación) y no lo pide la propia
+  /// rotación ([byRotation]).
   Future<bool> _uploadSnapshotFile(
-    File snapshot,
+    SnapshotCopy copy,
     CloudCancelToken token,
-    int takenAt,
-  ) async {
+    int takenAt, {
+    bool byRotation = false,
+  }) async {
+    final snapshot = copy.file;
     try {
+      if (!copy.isCoherent) {
+        throw SyncGuardException(
+          'snapshot con filas de generaciones ${copy.minKeyGen}..'
+          '${copy.maxKeyGen} y llave de la ${copy.dbGen}',
+        );
+      }
+      if (rotation.freezeMeta && !byRotation) {
+        throw const SyncGuardException('snapshot con el conjunto congelado');
+      }
+      final name = CloudNames.dbSnapshotFor(copy.dbGen);
       final size = await snapshot.length();
       final md5 = await md5OfFile(snapshot);
-      final existing = await cloud.findByName(CloudNames.dbSnapshot);
+      final existing = await cloud.findByName(name);
       final remote = await cloud.uploadFile(
         file: snapshot,
-        name: CloudNames.dbSnapshot,
+        name: name,
         replaceFileId: existing?.id,
         cancel: token,
       );
@@ -925,7 +1046,12 @@ class SyncService {
   /// si el item está `en_nube`, tiene `driveFileId`, MD5 y tamaño verificados
   /// al subir, la copia local (si existe) sigue coincidiendo y la copia
   /// remota existe ahora mismo con el mismo tamaño y MD5.
+  ///
+  /// A1 (D61): durante una rotación de la DEK devuelve SIEMPRE `false`: lo
+  /// importado en la ventana no está en ningún conjunto que se pueda
+  /// restaurar hasta el corte, así que no se borra ningún original.
   Future<bool> cloudVerifier(VaultItemModel item) async {
+    if (rotation.active) return false;
     try {
       final fresh = await items.getItem(item.id);
       if (fresh == null ||

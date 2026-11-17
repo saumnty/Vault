@@ -139,7 +139,7 @@ void main() {
         // Archivo de la miniatura de i1, pero con el contenido de la de i2.
         final f = File('${dir.path}/i1.thumb')..writeAsBytesSync(t2);
         final loader = EncryptedThumbnailLoader(
-          thumbsKey: () => key,
+          thumbsKey: (_) => key,
           crypto: crypto,
           resolve: (_) => f,
         );

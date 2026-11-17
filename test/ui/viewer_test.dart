@@ -601,7 +601,7 @@ void main() {
         };
         final opener = VaultMediaOpener(
           fetcher: env.fetcher,
-          filesKey: () => env.session.filesKey,
+          filesKey: env.session.filesKeyFor,
           temp: temp,
           session: env.session,
         );

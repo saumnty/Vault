@@ -20,11 +20,19 @@ class EncryptedThumbnailLoader {
     this.capacity = 96,
     CryptoService? crypto,
     File Function(String relativePath)? resolve,
+    this.refresh,
   }) : _crypto = crypto ?? CryptoService(),
        _resolve = resolve ?? AppPaths.resolve;
 
-  /// `null` = bóveda bloqueada.
-  final SecretKey? Function() thumbsKey;
+  /// Subllave "thumbs" de la generación de llave del item (D60;
+  /// `VaultSession.thumbsKeyFor`). `null` = bóveda bloqueada.
+  final SecretKey? Function(int keyGen) thumbsKey;
+
+  /// Fila más reciente de un item (o `null`). Si la miniatura no se pudo
+  /// leer y la fila cambió (p. ej. la rotación de la DEK la re-cifró con otra
+  /// generación y otra ruta), se reintenta una vez con la fila nueva. `null`
+  /// = sin reintento.
+  final Future<VaultItemModel?> Function(String id)? refresh;
 
   /// Máximo de miniaturas en memoria.
   final int capacity;
@@ -53,9 +61,7 @@ class EncryptedThumbnailLoader {
       _cache[cacheKey] = hit; // más reciente
       return Future.value(hit);
     }
-    return _inFlight[cacheKey] ??= _decrypt(rel, item.thumbFileId).then((
-      bytes,
-    ) {
+    return _inFlight[cacheKey] ??= _loadWithRetry(item).then((bytes) {
       _inFlight.remove(cacheKey);
       if (bytes != null) {
         _cache[cacheKey] = bytes;
@@ -67,8 +73,35 @@ class EncryptedThumbnailLoader {
     });
   }
 
-  Future<Uint8List?> _decrypt(String rel, String? expectedFileId) async {
-    final key = thumbsKey();
+  Future<Uint8List?> _loadWithRetry(VaultItemModel item) async {
+    final bytes = await _decrypt(
+      item.thumbPath!,
+      item.thumbFileId,
+      item.keyGen,
+    );
+    final r = refresh;
+    if (bytes != null || r == null) return bytes;
+    final VaultItemModel? fresh;
+    try {
+      fresh = await r(item.id);
+    } on Object {
+      return null; // bloqueada o sin BD: ícono por tipo
+    }
+    final rel = fresh?.thumbPath;
+    if (fresh == null ||
+        rel == null ||
+        (rel == item.thumbPath && fresh.keyGen == item.keyGen)) {
+      return null;
+    }
+    return _decrypt(rel, fresh.thumbFileId, fresh.keyGen);
+  }
+
+  Future<Uint8List?> _decrypt(
+    String rel,
+    String? expectedFileId,
+    int keyGen,
+  ) async {
+    final key = thumbsKey(keyGen);
     if (key == null) return null;
     try {
       final file = _resolve(rel);

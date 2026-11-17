@@ -153,7 +153,10 @@ class GalleryImportService {
     this.cloudVerifier,
     this.thumbnailSize = 256,
     VideoThumbnailer? videoThumbnailer,
-  }) : _crypto = crypto ?? CryptoService(),
+    int Function()? keyGen,
+    this.originalsDeletionPaused,
+  }) : _keyGen = keyGen ?? (() => 1),
+       _crypto = crypto ?? CryptoService(),
        _videoThumbs = videoThumbnailer ?? PlatformVideoThumbnailer(),
        _newId = idGenerator ?? (() => const Uuid().v4()),
        _clock = clock ?? DateTime.now,
@@ -163,9 +166,14 @@ class GalleryImportService {
   final VideoCompressor compressor;
   final VaultDataRepository repository;
 
-  /// Subllaves de la sesión (`null` = bóveda bloqueada).
+  /// Subllaves de la sesión para CIFRAR lo nuevo (`null` = bóveda bloqueada).
   final SecretKey? Function() filesKey;
   final SecretKey? Function() thumbsKey;
+
+  /// Generación de llave de [filesKey]/[thumbsKey] (D60;
+  /// `VaultSession.currentGen`). Se lee junto con las llaves al empezar el
+  /// lote: los items nacen con esa `keyGen` y con sus nombres `.kN`.
+  final int Function() _keyGen;
 
   /// Directorio para temporales; se crea bajo demanda.
   final Directory Function() tempDirProvider;
@@ -193,6 +201,11 @@ class GalleryImportService {
   /// Sin verificador no se borra nada.
   final Future<bool> Function(VaultItemModel item)? cloudVerifier;
 
+  /// `true` mientras el borrado de originales está en pausa (A1: rotación de
+  /// la DEK en curso). El verificador ya devuelve `false` entonces; esto
+  /// además apaga el aviso de la cuadrícula.
+  final bool Function()? originalsDeletionPaused;
+
   final CryptoService _crypto;
   final VideoThumbnailer _videoThumbs;
   final String Function() _newId;
@@ -213,6 +226,8 @@ class GalleryImportService {
     ImportOptions options, {
     ImportCancelToken? cancelToken,
   }) async {
+    // Llaves y su generación, leídas juntas (sin `await` en medio).
+    final gen = _keyGen();
     final fKey = filesKey();
     final tKey = thumbsKey();
     if (fKey == null || tKey == null) {
@@ -264,7 +279,15 @@ class GalleryImportService {
         emit(ImportStage.queued);
         ImportItemResult result;
         try {
-          result = await _importOne(asset, options, fKey, tKey, token, emit);
+          result = await _importOne(
+            asset,
+            options,
+            gen,
+            fKey,
+            tKey,
+            token,
+            emit,
+          );
         } on _Cancelled {
           result = ImportItemResult(
             assetId: asset.id,
@@ -310,6 +333,7 @@ class GalleryImportService {
   Future<ImportItemResult> _importOne(
     GalleryAsset asset,
     ImportOptions options,
+    int gen,
     SecretKey fKey,
     SecretKey tKey,
     ImportCancelToken token,
@@ -326,8 +350,8 @@ class GalleryImportService {
     }
 
     final itemId = _newId();
-    final vaultRel = AppPaths.vaultRelativePath(itemId);
-    final thumbRel = AppPaths.thumbRelativePath(itemId);
+    final vaultRel = AppPaths.vaultRelativePath(itemId, gen: gen);
+    final thumbRel = AppPaths.thumbRelativePath(itemId, gen: gen);
     final workDir = Directory(p.join(tempDirProvider().path, itemId));
     final toDelete = <File>[];
     var committed = false;
@@ -468,9 +492,8 @@ class GalleryImportService {
           asset.title ?? p.basename(origin.file.path).replaceAll('\\', '/');
       await repository.insertItem(
         VaultItemModel(
-          // D60: cifrado con la llave de la sesión, que hoy es siempre la de
-          // la generación 1 (el keyring por generación llega con la rotación).
-          keyGen: 1,
+          // D60: la generación de las llaves con que se cifró.
+          keyGen: gen,
           id: itemId,
           name: name,
           folderId: options.folderId,
@@ -565,7 +588,12 @@ class GalleryImportService {
   /// Cuántos originales distintos podrían borrarse (ya en la nube según la BD
   /// local, SIN consultar a Drive). 0 si el borrado está apagado o no hay
   /// verificador. Sirve para el aviso de la cuadrícula; no borra nada.
+  ///
+  /// A1 (D61): durante una rotación de la DEK ([originalsDeletionPaused]) da
+  /// 0: lo importado en la ventana aún no se puede restaurar si se pierde el
+  /// teléfono.
   Future<int> pendingOriginalsCount() async {
+    if (originalsDeletionPaused?.call() ?? false) return 0;
     if (cloudVerifier == null || !await isDeletionEnabled) return 0;
     final all = await deleteOriginalCandidates();
     return {for (final c in all) c.sourceAssetId}.length;

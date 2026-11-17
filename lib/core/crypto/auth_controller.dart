@@ -11,13 +11,28 @@ import 'crypto_debug.dart';
 import 'kdf.dart';
 import 'key_hierarchy.dart';
 import 'key_recovery_service.dart';
+import 'key_rotation_store.dart';
 import 'pin_attempt_limiter.dart';
 import 'secure_kv_store.dart';
 import 'wrapped_key.dart';
 
 export 'biometric_key_store.dart'
     show BiometricAvailability, BiometricCancelledException;
+export 'key_rotation_store.dart'
+    show RotationPhase, RotationReason, RotationRecord, RotationKeyStore;
 export 'pin_attempt_limiter.dart' show PinLockedOutException;
+
+/// La operación no está permitida mientras hay una rotación de la DEK
+/// registrada (p. ej. cambiar el PIN, M2) o la rotación no está en la fase
+/// que la operación exige.
+class RotationInProgressException implements Exception {
+  const RotationInProgressException([
+    this.message = 'Hay un cambio de llave maestra en curso',
+  ]);
+  final String message;
+  @override
+  String toString() => 'RotationInProgressException: $message';
+}
 
 /// Un desbloqueo en curso fue cancelado porque se bloqueó la app ([lock])
 /// mientras se derivaba la llave: la sesión NO se abre.
@@ -83,11 +98,19 @@ class AuthController {
     MonotonicClock? monotonic,
     VaultSession? session,
     Random? random,
+    RotationKeyStore? rotationStore,
   }) : _storage = storage ?? FlutterSecureKeyValueStore(),
        _biometrics = biometricStore ?? SystemBiometricKeyStore(),
        _kdf = kdfParams,
        _session = session ?? VaultSession(),
-       _random = random ?? Random.secure() {
+       _random = random ?? Random.secure(),
+       // La app comparte un solo almacén de rotación (y su `record`); con un
+       // almacén inyectado (pruebas) se crea uno sobre él.
+       _rotation =
+           rotationStore ??
+           (storage == null
+               ? RotationKeyStore.shared
+               : RotationKeyStore(storage)) {
     _limiter = PinAttemptLimiter(_storage, clock: clock, monotonic: monotonic);
     _restoreLimiter = PinAttemptLimiter(
       _storage,
@@ -119,6 +142,9 @@ class AuthController {
   /// borra al crear o restaurar una bóveda y con [discardLocalKeys].
   static const String dbCreatedKey = 'vault.v1.db_created';
 
+  /// D60: generación de la DEK vigente (ausente = 1, la bóveda original).
+  static const String keyGenKey = 'vault.v1.key_gen';
+
   /// Mínimo para DESBLOQUEAR (acepta PIN de 4 dígitos de bóvedas creadas antes
   /// de S-06). Un PIN NUEVO exige [minNewPinLength].
   static const int minPinLength = 4;
@@ -134,8 +160,23 @@ class AuthController {
   late final PinAttemptLimiter _limiter;
   late final PinAttemptLimiter _restoreLimiter;
   late final KeyRecoveryService _recovery;
+  final RotationKeyStore _rotation;
+
+  /// Llaves de la DEK NUEVA mientras la rotación está en `prepared`..
+  /// `freezing` (solo en memoria, nunca en la sesión: hasta congelar, todo lo
+  /// nuevo se sigue cifrando con la vieja). Se obtienen al preparar, al
+  /// confirmar el código o al desbloquear con el PIN; se destruyen al
+  /// bloquear.
+  KeyHierarchy? _nextKeys;
 
   VaultSession get session => _session;
+
+  /// Almacén de la rotación de la DEK (registro y secretos auxiliares).
+  RotationKeyStore get rotationStore => _rotation;
+
+  /// `true` si la DEK nueva de la rotación está en memoria (hace falta para
+  /// pasar a `reencrypting`; si no, hay que desbloquear con el PIN).
+  bool get hasNextKeys => _nextKeys != null && !_nextKeys!.isDestroyed;
   bool get isUnlocked => _session.isUnlocked;
 
   Future<bool> hasVault() async =>
@@ -186,6 +227,10 @@ class AuthController {
       await _storage.delete(biometricEnabledKey);
       // Una marca de una bóveda anterior impediría crear la BD de ésta.
       await _storage.delete(dbCreatedKey);
+      // Restos de otra bóveda en el Keychain (iOS): generación y rotación.
+      await _storage.delete(keyGenKey);
+      await _rotation.clearAll();
+      _dropNextKeys();
       await _safeDeleteBiometricKey();
       await _limiter.reset();
       if (onboardingPending) {
@@ -220,9 +265,14 @@ class AuthController {
       PinAttemptLimiter.storageKey,
       restoreAttemptsKey,
       dbCreatedKey,
+      keyGenKey,
     ]) {
       await _storage.delete(k);
     }
+    // A3: también todo lo de una rotación de la DEK (el registro y la DEK
+    // nueva envuelta con el PIN viejo sobreviven en el Keychain de iOS).
+    await _rotation.clearAll();
+    _dropNextKeys();
     await _safeDeleteBiometricKey();
   }
 
@@ -300,7 +350,7 @@ class AuthController {
         return false;
       }
       try {
-        await _openSession(dek, gen);
+        await _openSession(dek, gen, pin: pin);
         cryptoDebugLog('unlock#$id: fin OK (${sw.elapsedMilliseconds} ms)');
         return true;
       } finally {
@@ -351,12 +401,18 @@ class AuthController {
   /// Cambia el PIN: verifica el viejo y vuelve a envolver la MISMA DEK con un
   /// salt nuevo. No recifra nada. Devuelve `false` si el PIN viejo es
   /// incorrecto. Lanza [PinLockedOutException] si hay que esperar.
+  ///
+  /// M2 (D63): PROHIBIDO mientras exista una rotación de la DEK (lanza
+  /// [RotationInProgressException] sin verificar el PIN ni contar intento):
+  /// hay dos envolturas con el PIN y un corte entre las dos dejaría un PIN
+  /// distinto del que el usuario cree tener.
   Future<bool> changePin({
     required String oldPin,
     required String newPin,
   }) async {
     _checkPin(newPin);
     return _serialized(() async {
+      await _requireNoRotation();
       final dek = await _verifyPin(oldPin, ++_attemptSeq);
       if (dek == null) return false;
       try {
@@ -430,8 +486,12 @@ class AuthController {
   /// Devuelve el código nuevo formateado (grupos de 4) para mostrarlo UNA vez,
   /// o `null` si el PIN es incorrecto. Lanza [PinLockedOutException] si hay
   /// que esperar.
+  ///
+  /// Prohibido durante una rotación de la DEK ([RotationInProgressException]):
+  /// reemplazaría el respaldo local que la rotación gestiona.
   Future<String?> regenerateRecoveryCode(String pin) {
     return _serialized(() async {
+      await _requireNoRotation();
       final dek = await _verifyPin(pin, ++_attemptSeq);
       if (dek == null) return null;
       try {
@@ -489,8 +549,9 @@ class AuthController {
     Uint8List dek,
     KeyHierarchy keys,
     String backupJson,
-    String newPin,
-  ) async {
+    String newPin, {
+    int keyGen = 1,
+  }) async {
     try {
       final envelope = await _wrapWithPin(dek, newPin);
       await _storage.write(recoveryBackupKey, backupJson);
@@ -501,6 +562,11 @@ class AuthController {
       // Marca de una bóveda anterior: la de ésta la escribe la instalación
       // (RestoreService) o la primera apertura de su BD.
       await _storage.delete(dbCreatedKey);
+      // A3: una rotación a medias de otra instalación (Keychain de iOS) no se
+      // hereda; la generación es la del respaldo restaurado.
+      await _rotation.clearAll();
+      _dropNextKeys();
+      await _writeKeyGen(keyGen);
       await _safeDeleteBiometricKey();
       await _limiter.reset();
       await _storage.write(pinEnvelopeKey, envelope.encode());
@@ -510,7 +576,22 @@ class AuthController {
       await _storage.delete(keyCheckKey);
       rethrow;
     }
-    _session.open(keys);
+    _session.open(keys, gen: keyGen);
+  }
+
+  Future<void> _writeKeyGen(int gen) async {
+    if (gen < 1) throw ArgumentError.value(gen, 'gen');
+    if (gen == 1) {
+      await _storage.delete(keyGenKey); // ausente = 1 (la bóveda original)
+    } else {
+      await _storage.write(keyGenKey, '$gen');
+    }
+  }
+
+  /// Generación de la DEK vigente (D60). 1 si nunca se rotó.
+  Future<int> currentKeyGen() async {
+    final v = int.tryParse(await _storage.read(keyGenKey) ?? '');
+    return v == null || v < 1 ? 1 : v;
   }
 
   /// Tiempo de espera restante por códigos de recuperación incorrectos al
@@ -554,7 +635,14 @@ class AuthController {
   /// F9, paso final: consolida [candidate] como la bóveda de este
   /// dispositivo con [newPin] (envoltura nueva, la biometría vieja se
   /// descarta) y deja la sesión desbloqueada. Si falla, no queda estado.
-  Future<void> commitRestore(RecoveryCandidate candidate, String newPin) {
+  ///
+  /// [keyGen] (D60): generación de la DEK del respaldo restaurado (la del
+  /// nombre `recovery_backup[.kN].json`).
+  Future<void> commitRestore(
+    RecoveryCandidate candidate,
+    String newPin, {
+    int keyGen = 1,
+  }) {
     _checkPin(newPin);
     return _serialized(() async {
       if (await hasVault()) {
@@ -562,7 +650,13 @@ class AuthController {
       }
       final dek = candidate.keys.dekBytes();
       try {
-        await _commit(dek, candidate.keys, candidate.backupJson, newPin);
+        await _commit(
+          dek,
+          candidate.keys,
+          candidate.backupJson,
+          newPin,
+          keyGen: keyGen,
+        );
         candidate._committed = true;
       } finally {
         dek.fillRange(0, dek.length, 0);
@@ -585,6 +679,15 @@ class AuthController {
   Future<void> enableBiometricUnlock() async {
     if (await _biometrics.availability() != BiometricAvailability.available) {
       throw StateError('La biometría no está disponible en este dispositivo');
+    }
+    // D63: desde `reencrypting` hasta el final de la rotación la biometría
+    // queda apagada (la envoltura del PIN aún no es la de la DEK nueva).
+    final rec = await _rotation.load();
+    if (rec != null &&
+        rec.effectivePhase.index >= RotationPhase.reencrypting.index) {
+      throw const RotationInProgressException(
+        'La biometría se reactiva al terminar el cambio de llave maestra',
+      );
     }
     final dek = _session.keys.dekBytes();
     try {
@@ -628,7 +731,7 @@ class AuthController {
         await disableBiometricUnlock();
         return false;
       }
-      _openChecked(keys, gen);
+      await _openKeys(keys, gen);
       return true;
     } finally {
       dek.fillRange(0, dek.length, 0);
@@ -636,12 +739,12 @@ class AuthController {
   }
 
   /// Abre la sesión salvo que se haya bloqueado desde que empezó el desbloqueo.
-  void _openChecked(KeyHierarchy keys, int gen) {
+  void _openChecked(VaultKeyring ring, int gen) {
     if (gen != _lockGeneration) {
-      keys.destroy();
+      ring.destroy();
       throw const UnlockCancelledException();
     }
-    _session.open(keys);
+    _session.openKeyring(ring);
   }
 
   Future<void> _safeDeleteBiometricKey() async {
@@ -656,19 +759,455 @@ class AuthController {
   // Sesión
   // ---------------------------------------------------------------------
 
-  Future<void> _openSession(Uint8List dek, int gen) async {
+  Future<void> _openSession(Uint8List dek, int gen, {String? pin}) async {
     final keys = await KeyHierarchy.fromDek(dek);
     // Autorreparación: versiones sin key_check guardado.
     if (await _storage.read(keyCheckKey) == null) {
       await _storage.write(keyCheckKey, keys.keyCheck);
     }
-    _openChecked(keys, gen);
+    await _openKeys(keys, gen, pin: pin);
+  }
+
+  /// Abre la sesión con [keys] (la DEK que dio la envoltura del PIN o la
+  /// biometría), según la rotación de la DEK registrada (§4.2):
+  ///
+  /// * Sin rotación: una sola generación (`vault.v1.key_gen`).
+  /// * [keys] es la DEK NUEVA (ya se cambió la envoltura del PIN): una sola
+  ///   generación, la nueva.
+  /// * [keys] es la DEK VIEJA:
+  ///   - hasta `freezing`: la sesión sigue con la vieja; con [pin] se obtiene
+  ///     además la nueva de `next_pin_envelope` (2.º Argon2id, NO cuenta
+  ///     intento) y se guarda solo en memoria para continuar;
+  ///   - de `reencrypting` en adelante: sesión con las DOS (nueva = actual).
+  /// * [keys] no es ninguna de las dos: el registro no es de esta bóveda
+  ///   (`blockedForeign`, L8) y la sesión abre igualmente.
+  Future<void> _openKeys(KeyHierarchy keys, int gen, {String? pin}) async {
+    await _rotation.sweepOrphans();
+    final rec = await _rotation.load();
+    if (rec == null) {
+      _openChecked(VaultKeyring.single(await currentKeyGen(), keys), gen);
+      return;
+    }
+    if (keys.keyCheck == rec.newKeyCheck) {
+      _dropNextKeys();
+      _openChecked(VaultKeyring.single(rec.toGen, keys), gen);
+      return;
+    }
+    if (keys.keyCheck != rec.oldKeyCheck) {
+      if (rec.phase != RotationPhase.blockedForeign) {
+        await _rotation.save(
+          rec.copyWith(
+            phase: RotationPhase.blockedForeign,
+            resumePhase: rec.effectivePhase,
+            updatedAt: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
+      }
+      _openChecked(VaultKeyring.single(await currentKeyGen(), keys), gen);
+      return;
+    }
+    KeyHierarchy? next = hasNextKeys ? _nextKeys : null;
+    if (next == null && pin != null) {
+      next = await _unwrapNextWithPin(pin, rec);
+    }
+    // Con la DEK vieja, de `reencrypting` en adelante (también si una fase
+    // posterior quedó escrita pero la envoltura del PIN no llegó a cambiar:
+    // se repetirá `switchingLocal`) hacen falta las dos.
+    if (rec.effectivePhase.index <= RotationPhase.freezing.index) {
+      // Hasta congelar, todo lo nuevo se sigue cifrando con la vieja.
+      if (next != null && !identical(next, _nextKeys)) {
+        _dropNextKeys();
+        _nextKeys = next;
+      }
+      _openChecked(VaultKeyring.single(rec.fromGen, keys), gen);
+      return;
+    }
+    if (next == null) {
+      // Falta la DEK nueva (envoltura perdida o dañada): la sesión abre con
+      // la vieja y la rotación espera al código nuevo B (§9).
+      if (pin != null && rec.phase != RotationPhase.blockedCorrupt) {
+        await _rotation.save(
+          rec.copyWith(
+            phase: RotationPhase.blockedCorrupt,
+            resumePhase: rec.effectivePhase,
+            lastError: 'Falta la llave nueva',
+            updatedAt: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
+      }
+      _openChecked(VaultKeyring.single(rec.fromGen, keys), gen);
+      return;
+    }
+    if (identical(next, _nextKeys)) _nextKeys = null; // pasa a la sesión
+    _openChecked(
+      VaultKeyring.dual(
+        currentGen: rec.toGen,
+        current: next,
+        previousGen: rec.fromGen,
+        previous: keys,
+      ),
+      gen,
+    );
+  }
+
+  /// DEK nueva de `next_pin_envelope` con [pin] (ya verificado: no cuenta
+  /// intento), comprobada contra el `newKeyCheck` del registro. `null` si
+  /// falta, no abre o no corresponde.
+  Future<KeyHierarchy?> _unwrapNextWithPin(
+    String pin,
+    RotationRecord rec,
+  ) async {
+    final raw = await _rotation.read(RotationKeyStore.nextPinEnvelopeKey);
+    if (raw == null) return null;
+    final Uint8List? dek;
+    try {
+      dek = await WrappedKey.decode(
+        raw,
+        expectedPurpose: WrapPurpose.pin,
+      ).unwrap(utf8.encode(pin));
+    } on FormatException {
+      return null;
+    }
+    if (dek == null) return null;
+    try {
+      final keys = await KeyHierarchy.fromDek(dek);
+      if (keys.keyCheck != rec.newKeyCheck) {
+        keys.destroy();
+        return null;
+      }
+      return keys;
+    } finally {
+      dek.fillRange(0, dek.length, 0);
+    }
+  }
+
+  void _dropNextKeys() {
+    _nextKeys?.destroy();
+    _nextKeys = null;
   }
 
   /// Bloquea: destruye las llaves en memoria y CANCELA cualquier desbloqueo en
   /// curso (derivación Argon2/biometría): al terminar no abrirá la sesión.
   void lock() {
     _lockGeneration++;
+    _dropNextKeys();
     _session.clear();
+  }
+
+  // ---------------------------------------------------------------------
+  // Rotación de la DEK (S-11, docs/DISENO_ROTACION.md §4)
+  // ---------------------------------------------------------------------
+  //
+  // Material de llaves de una rotación, y qué lo abre:
+  // * next_pin_envelope      = DEK_new con el PIN        (local)
+  // * next_recovery_backup   = DEK_new con el código B   (local; Drive tras el corte)
+  // * bridge_backup (puente) = DEK_old con el código B   (local hasta subirlo)
+  // NADA envuelve la DEK nueva con el código viejo A ni con la DEK vieja.
+
+  /// Registro de la rotación (o `null`).
+  Future<RotationRecord?> rotationRecord() => _rotation.load();
+
+  Future<void> _requireNoRotation() async {
+    if (await _rotation.load() != null) {
+      throw const RotationInProgressException();
+    }
+  }
+
+  /// Empieza una rotación (fase `prepared`): verifica [pin] (cuenta intento),
+  /// crea la DEK nueva, el código nuevo B y sus envolturas LOCALES (PIN y B)
+  /// y, al final, el registro. Devuelve B formateado para mostrarlo una vez,
+  /// o `null` si el PIN es incorrecto.
+  ///
+  /// [toGen]: generación nueva (mayor que la vigente y que cualquiera vista
+  /// en Drive; la calcula el llamador). [accountEmail]: cuenta de Google con
+  /// la que se rota. El llamador comprueba además que no haya un cambio de
+  /// cuenta en curso. Exige la sesión abierta con la DEK vigente.
+  Future<String?> prepareRotation(
+    String pin, {
+    required int toGen,
+    required String accountEmail,
+    RotationReason reason = RotationReason.rotateKey,
+  }) => _serialized(() async {
+    await _requireNoRotation();
+    final fromGen = await currentKeyGen();
+    if (toGen <= fromGen) {
+      throw ArgumentError.value(toGen, 'toGen', 'Debe ser mayor que $fromGen');
+    }
+    final current = _session.keysOrNull;
+    if (current == null || _session.keyring!.isDual) {
+      throw StateError('La bóveda está bloqueada');
+    }
+    final dekOld = await _verifyPin(pin, ++_attemptSeq);
+    if (dekOld == null) return null;
+    final dekNew = randomBytes(32, _random);
+    try {
+      final oldKeys = await KeyHierarchy.fromDek(dekOld);
+      final oldCheck = oldKeys.keyCheck;
+      oldKeys.destroy();
+      if (oldCheck != current.keyCheck) {
+        throw StateError('La sesión no corresponde a la envoltura del PIN');
+      }
+      final code = _recovery.generateRecoveryCode();
+      final nextBackup = await _recovery.createBackup(dekNew, code);
+      final nextPin = await _wrapWithPin(dekNew, pin);
+      final newKeys = await KeyHierarchy.fromDek(dekNew);
+      // Orden: secretos auxiliares primero, el registro AL FINAL.
+      await _rotation.write(
+        RotationKeyStore.nextRecoveryBackupKey,
+        nextBackup.toJsonString(),
+      );
+      await _rotation.write(
+        RotationKeyStore.nextPinEnvelopeKey,
+        nextPin.encode(),
+      );
+      await _rotation.delete(RotationKeyStore.bridgeBackupKey);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await _rotation.save(
+        RotationRecord(
+          id: _newRotationId(),
+          fromGen: fromGen,
+          toGen: toGen,
+          phase: RotationPhase.prepared,
+          reason: reason,
+          oldKeyCheck: oldCheck,
+          newKeyCheck: newKeys.keyCheck,
+          accountEmail: accountEmail,
+          startedAt: now,
+          updatedAt: now,
+        ),
+      );
+      _dropNextKeys();
+      _nextKeys = newKeys;
+      return RecoveryCode.format(code);
+    } finally {
+      dekOld.fillRange(0, dekOld.length, 0);
+      dekNew.fillRange(0, dekNew.length, 0);
+    }
+  });
+
+  String _newRotationId() {
+    final b = randomBytes(16, _random);
+    return b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+  }
+
+  /// M1: genera OTRO código nuevo para la MISMA DEK nueva (p. ej. la app se
+  /// cerró con el código en pantalla sin confirmar). Solo en `prepared`.
+  /// Verifica [pin] (cuenta intento). Devuelve el código o `null` si el PIN
+  /// es incorrecto.
+  Future<String?> regenerateNextRecoveryCode(String pin) =>
+      _serialized(() async {
+        final rec = await _rotation.load();
+        if (rec == null || rec.phase != RotationPhase.prepared) {
+          throw const RotationInProgressException(
+            'Solo se puede generar otro código antes de confirmarlo',
+          );
+        }
+        final dekOld = await _verifyPin(pin, ++_attemptSeq);
+        if (dekOld == null) return null;
+        dekOld.fillRange(0, dekOld.length, 0);
+        final next = await _unwrapNextWithPin(pin, rec);
+        if (next == null) {
+          throw const RotationInProgressException('Falta la llave nueva');
+        }
+        final dekNew = next.dekBytes();
+        try {
+          final code = _recovery.generateRecoveryCode();
+          final backup = await _recovery.createBackup(dekNew, code);
+          await _rotation.write(
+            RotationKeyStore.nextRecoveryBackupKey,
+            backup.toJsonString(),
+          );
+          // Un puente con el código anterior ya no vale.
+          await _rotation.delete(RotationKeyStore.bridgeBackupKey);
+          _dropNextKeys();
+          _nextKeys = next;
+          return RecoveryCode.format(code);
+        } finally {
+          dekNew.fillRange(0, dekNew.length, 0);
+        }
+      });
+
+  /// El usuario confirmó el código nuevo B (`prepared` → `confirmed`).
+  ///
+  /// [code] se comprueba contra `next_recovery_backup` (Argon2id): debe abrir
+  /// la DEK nueva. Con él se crea el RESPALDO PUENTE: la DEK VIEJA envuelta
+  /// con B (salt propio), que se sube en `freezing` para que B restaure el
+  /// conjunto viejo hasta el corte (A2). Devuelve `false` si [code] no es el
+  /// de esta rotación. Exige la sesión abierta con la DEK vieja.
+  Future<bool> confirmRotationCode(String code) => _serialized(() async {
+    final rec = await _rotation.load();
+    if (rec == null) throw const RotationInProgressException('No hay rotación');
+    if (rec.phase == RotationPhase.confirmed &&
+        await _rotation.read(RotationKeyStore.bridgeBackupKey) != null) {
+      return true; // ya confirmado
+    }
+    if (rec.phase != RotationPhase.prepared) {
+      throw const RotationInProgressException(
+        'El código ya no se puede confirmar en esta fase',
+      );
+    }
+    final old = _session.keyring?.forGenOrNull(rec.fromGen);
+    if (old == null || old.isDestroyed || old.keyCheck != rec.oldKeyCheck) {
+      throw StateError('La bóveda está bloqueada');
+    }
+    final raw = await _rotation.read(RotationKeyStore.nextRecoveryBackupKey);
+    if (raw == null) {
+      throw const RotationInProgressException('Falta el respaldo nuevo');
+    }
+    final dekNew = await _recovery.recoverDek(code, RecoveryBackup.parse(raw));
+    if (dekNew == null) return false;
+    final dekOld = old.dekBytes();
+    try {
+      final newKeys = await KeyHierarchy.fromDek(dekNew);
+      if (newKeys.keyCheck != rec.newKeyCheck) {
+        newKeys.destroy();
+        return false;
+      }
+      final bridge = await _recovery.createBackup(dekOld, code);
+      await _rotation.write(
+        RotationKeyStore.bridgeBackupKey,
+        bridge.toJsonString(),
+      );
+      await _rotation.save(
+        rec.copyWith(
+          phase: RotationPhase.confirmed,
+          updatedAt: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+      if (hasNextKeys) {
+        newKeys.destroy();
+      } else {
+        _nextKeys = newKeys;
+      }
+      return true;
+    } finally {
+      dekNew.fillRange(0, dekNew.length, 0);
+      dekOld.fillRange(0, dekOld.length, 0);
+    }
+  });
+
+  /// Respaldo puente pendiente de subir (JSON), o `null`.
+  Future<String?> pendingBridgeBackup() =>
+      _rotation.read(RotationKeyStore.bridgeBackupKey);
+
+  /// El puente ya está en Drive (verificado): se borra la copia local.
+  Future<void> bridgeBackupUploaded() =>
+      _rotation.delete(RotationKeyStore.bridgeBackupKey);
+
+  /// Cancela una rotación que aún no re-cifró nada (hasta `freezing`):
+  /// borra los secretos locales y el registro. Lo de Drive (el puente) y la
+  /// BD (triggers y filas de la rotación) los deshace el servicio de
+  /// rotación ANTES de llamar a esto.
+  Future<void> abandonRotation() => _serialized(() async {
+    final rec = await _rotation.load();
+    if (rec == null) return;
+    if (!rec.isCancellable) {
+      throw const RotationInProgressException(
+        'El cambio de llave ya empezó: solo se puede pausar',
+      );
+    }
+    _dropNextKeys();
+    await _rotation.clearAll();
+  });
+
+  /// Paso a `reencrypting` (desde `freezing`, con el conjunto viejo ya
+  /// congelado): la biometría se desactiva (su archivo guarda la DEK vieja;
+  /// se ofrece reactivarla al terminar) y la sesión pasa a tener las dos
+  /// llaves (lo nuevo se cifra con la nueva). Exige la DEK nueva en memoria
+  /// ([hasNextKeys]); si no, lanza [RotationInProgressException] y hay que
+  /// desbloquear con el PIN.
+  Future<void> enterReencrypting() => _serialized(() async {
+    var rec = await _rotation.load();
+    if (rec == null) throw const RotationInProgressException('No hay rotación');
+    final ring = _session.keyring;
+    if (rec.effectivePhase == RotationPhase.reencrypting &&
+        ring != null &&
+        ring.isDual) {
+      return; // ya hecho
+    }
+    if (rec.phase != RotationPhase.freezing &&
+        rec.phase != RotationPhase.reencrypting) {
+      throw const RotationInProgressException('Fase incorrecta');
+    }
+    final old = ring?.forGenOrNull(rec.fromGen);
+    if (old == null || old.isDestroyed || old.keyCheck != rec.oldKeyCheck) {
+      throw StateError('La bóveda está bloqueada');
+    }
+    final next = _nextKeys;
+    if (next == null || next.isDestroyed) {
+      throw const RotationInProgressException(
+        'Desbloquea con tu PIN para continuar el cambio de llave',
+      );
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (await isBiometricUnlockEnabled()) {
+      rec = rec.copyWith(biometricWasEnabled: true, updatedAt: now);
+      await _rotation.save(rec);
+      await disableBiometricUnlock();
+    }
+    await _rotation.save(
+      rec.copyWith(phase: RotationPhase.reencrypting, updatedAt: now),
+    );
+    _nextKeys = null;
+    _session.openKeyring(
+      VaultKeyring.dual(
+        currentGen: rec.toGen,
+        current: next,
+        previousGen: rec.fromGen,
+        previous: old,
+      ),
+    );
+  });
+
+  /// `switchingLocal` (tras re-cifrar la BD, D63): el respaldo local, el
+  /// `key_check`, la generación y, AL FINAL, la envoltura del PIN pasan a la
+  /// DEK nueva; se borran las envolturas `next_*` y la sesión queda solo con
+  /// la nueva (la vieja se destruye). Idempotente.
+  Future<void> switchPrimary() => _serialized(() async {
+    final rec = await _rotation.load();
+    if (rec == null) throw const RotationInProgressException('No hay rotación');
+    if (rec.effectivePhase != RotationPhase.switchingLocal) {
+      throw const RotationInProgressException('Fase incorrecta');
+    }
+    final current = _session.keysOrNull;
+    if (current == null ||
+        current.isDestroyed ||
+        current.keyCheck != rec.newKeyCheck) {
+      throw StateError('La sesión no tiene la llave nueva');
+    }
+    final nextBackup = await _rotation.read(
+      RotationKeyStore.nextRecoveryBackupKey,
+    );
+    if (nextBackup != null) {
+      await _storage.write(recoveryBackupKey, nextBackup);
+    }
+    await _storage.write(keyCheckKey, rec.newKeyCheck);
+    await _writeKeyGen(rec.toGen);
+    final nextPin = await _rotation.read(RotationKeyStore.nextPinEnvelopeKey);
+    if (nextPin != null) {
+      // La ÚLTIMA escritura que importa: desde aquí el PIN da la DEK nueva.
+      await _storage.write(pinEnvelopeKey, nextPin);
+    }
+    await _rotation.delete(RotationKeyStore.nextPinEnvelopeKey);
+    await _rotation.delete(RotationKeyStore.nextRecoveryBackupKey);
+    _session.openKeyring(VaultKeyring.single(rec.toGen, current));
+  });
+
+  /// "Comprobar mi código" (M1): `true` si [code] abre el respaldo de
+  /// recuperación LOCAL vigente (sin red; cuenta en el límite de intentos
+  /// del código). Lanza [PinLockedOutException] si hay que esperar.
+  Future<bool> verifyLocalRecoveryCode(String code) async {
+    if (RecoveryCode.normalize(code) == null) return false;
+    return _serialized(() async {
+      final raw = await _storage.read(recoveryBackupKey);
+      if (raw == null) return false;
+      await _restoreLimiter.ensureNotLocked();
+      await _restoreLimiter.registerFailure();
+      final dek = await _recovery.recoverDek(code, RecoveryBackup.parse(raw));
+      if (dek == null) return false;
+      dek.fillRange(0, dek.length, 0);
+      await _restoreLimiter.reset();
+      return true;
+    });
   }
 }

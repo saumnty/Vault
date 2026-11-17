@@ -203,7 +203,15 @@ void main() {
       await dbA.execute('DROP TABLE rotation_state');
       await dbA.execute('DROP TABLE rotation_old_files');
       await dbA.execute('PRAGMA user_version = 9');
-      await a.republishSnapshot();
+      // Copia tal cual del archivo v9 (la app actual nunca exporta una BD
+      // v9: la sube a v10 al abrirla).
+      await a.vdb.close();
+      final existing = await a.cloud.findByName(CloudNames.dbSnapshot);
+      await a.cloud.uploadBytes(
+        bytes: File(a.dbPath).readAsBytesSync(),
+        name: CloudNames.dbSnapshot,
+        replaceFileId: existing?.id,
+      );
 
       b = await newB();
       await verified(b);

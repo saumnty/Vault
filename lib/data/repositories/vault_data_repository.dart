@@ -349,6 +349,24 @@ class VaultDataRepository {
     'driveFileId': ?driveFileId,
   }, notify: false);
 
+  /// Como [updateSyncStatus] pero CONDICIONAL (M4, D60): solo cambia la fila
+  /// si sigue en la generación [expectKeyGen] y con la ruta [expectPath] con
+  /// que se hizo el trabajo. Devuelve `false` (sin lanzar) si la fila ya no
+  /// existe o cambió entretanto (p. ej. la rotación la pasó a otra
+  /// generación): el resultado de ese trabajo se descarta.
+  Future<bool> updateSyncStatusIf(
+    String id,
+    SyncStatus status, {
+    required int expectKeyGen,
+    required String expectPath,
+  }) => _updateItemIf(
+    id,
+    {'syncStatus': status.dbValue},
+    expectKeyGen: expectKeyGen,
+    expectPath: expectPath,
+    notify: false,
+  );
+
   /// Marca el item como `en_nube` SOLO tras verificar tamaño y MD5 de la
   /// copia remota (F5). Guarda id, MD5 y tamaño verificados.
   Future<void> markCloudVerified(
@@ -363,6 +381,46 @@ class VaultDataRepository {
     'cloudSize': size,
   });
 
+  /// Como [markCloudVerified] pero CONDICIONAL (M4, D60): solo si la fila
+  /// sigue en [expectKeyGen] y con [expectPath] (el archivo que se subió).
+  /// `false` si no existe o cambió: lo subido no se registra (y NO se borra
+  /// nada en la nube; lo limpia la rotación).
+  Future<bool> markCloudVerifiedIf(
+    String id, {
+    required String driveFileId,
+    required String md5,
+    required int size,
+    required int expectKeyGen,
+    required String expectPath,
+  }) => _updateItemIf(
+    id,
+    {
+      'syncStatus': SyncStatus.enNube.dbValue,
+      'driveFileId': driveFileId,
+      'cloudMd5': md5,
+      'cloudSize': size,
+    },
+    expectKeyGen: expectKeyGen,
+    expectPath: expectPath,
+  );
+
+  /// Items cifrados con la generación de llave [gen] (D60), los más antiguos
+  /// primero. [includeTrashed] = true incluye la Papelera (la rotación de la
+  /// DEK también la re-cifra).
+  Future<List<VaultItemModel>> getItemsByKeyGen(
+    int gen, {
+    bool includeTrashed = true,
+  }) async {
+    final db = await _dbProvider();
+    final rows = await db.query(
+      'vault_items',
+      where: includeTrashed ? 'keyGen = ?' : 'keyGen = ? AND deletedAt IS NULL',
+      whereArgs: [gen],
+      orderBy: 'createdAt ASC',
+    );
+    return rows.map(VaultItemModel.fromMap).toList();
+  }
+
   /// Olvida el id del original en la galería (ya se borró del dispositivo):
   /// el item deja de ser candidato al borrado de originales.
   Future<void> clearSourceAssetId(String id) =>
@@ -370,6 +428,26 @@ class VaultDataRepository {
 
   Future<void> setThumbDriveFileId(String id, String? thumbDriveFileId) =>
       _updateItem(id, {'thumbDriveFileId': thumbDriveFileId});
+
+  /// Como [setThumbDriveFileId] pero CONDICIONAL (M4): solo si la fila sigue
+  /// en [expectKeyGen] y con la miniatura [expectThumbPath]. `false` si no
+  /// existe o cambió.
+  Future<bool> setThumbDriveFileIdIf(
+    String id,
+    String thumbDriveFileId, {
+    required int expectKeyGen,
+    required String expectThumbPath,
+  }) async {
+    final db = await _dbProvider();
+    final n = await db.update(
+      'vault_items',
+      {'thumbDriveFileId': thumbDriveFileId},
+      where: 'id = ? AND keyGen = ? AND thumbPath = ?',
+      whereArgs: [id, expectKeyGen, expectThumbPath],
+    );
+    if (n > 0) _changed();
+    return n > 0;
+  }
 
   Future<void> setDriveFileId(String id, String? driveFileId) =>
       _updateItem(id, {'driveFileId': driveFileId});
@@ -415,6 +493,24 @@ class VaultDataRepository {
     );
     if (n == 0) throw StateError('El item $id no existe');
     if (notify) _changed();
+  }
+
+  Future<bool> _updateItemIf(
+    String id,
+    Map<String, Object?> values, {
+    required int expectKeyGen,
+    required String expectPath,
+    bool notify = true,
+  }) async {
+    final db = await _dbProvider();
+    final n = await db.update(
+      'vault_items',
+      values,
+      where: 'id = ? AND keyGen = ? AND encryptedPath = ?',
+      whereArgs: [id, expectKeyGen, expectPath],
+    );
+    if (n > 0 && notify) _changed();
+    return n > 0;
   }
 
   // ------------------------------------------------------- offline heredado

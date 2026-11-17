@@ -48,7 +48,7 @@ void main() {
           await crypto.encryptBytes(Uint8List.fromList([9, 9, 9, 9]), key),
         );
       final loader = EncryptedThumbnailLoader(
-        thumbsKey: () => key,
+        thumbsKey: (_) => key,
         crypto: crypto,
         resolve: (_) => f,
       );

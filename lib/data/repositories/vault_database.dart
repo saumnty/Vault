@@ -408,23 +408,29 @@ class VaultDatabase {
 
   Database? _db;
   String? _openPassword;
+  int? _openedGen;
   Future<Database>? _opening;
 
   bool get isOpen => _db != null;
 
+  /// Generación de la llave con la que se abrió la conexión actual (D60), o
+  /// `null` si está cerrada. Durante una rotación la BD puede seguir con la
+  /// llave anterior hasta re-cifrarla.
+  int? get openedGen => _db == null ? null : _openedGen;
+
   String get _dbPath =>
       _dbPathOverride ?? p.join(AppPaths.dbDir.path, VaultSchema.dbFileName);
 
-  /// Llave SQLCipher derivada de la sesión, en formato de llave CRUDA
-  /// `x'<64 hex>'`: SQLCipher la usa tal cual y se salta su PBKDF2 interno
-  /// (256 000 iteraciones), que es innecesario porque la subllave HKDF ya es
-  /// de 256 bits de alta entropía.
-  String _passwordFromSession() {
-    final keys = _session.keysOrNull;
-    if (keys == null || keys.isDestroyed) {
+  /// Llaves SQLCipher candidatas de la sesión (generación, llave cruda
+  /// `x'<64 hex>'`), en el orden en que se prueban: SQLCipher usa la llave
+  /// cruda tal cual y se salta su PBKDF2 interno (256 000 iteraciones), que es
+  /// innecesario porque la subllave HKDF ya es de 256 bits de alta entropía.
+  List<(int, String)> _candidatesFromSession() {
+    final candidates = _session.dbCandidates;
+    if (candidates.isEmpty || candidates.any((c) => c.$2.isDestroyed)) {
       throw StateError('La bóveda está bloqueada: no se puede abrir la BD');
     }
-    return passwordFor(keys);
+    return [for (final (gen, keys) in candidates) (gen, passwordFor(keys))];
   }
 
   /// Llave SQLCipher cruda `x'<64 hex>'` de unas llaves ya derivadas (F9: se
@@ -444,7 +450,7 @@ class VaultDatabase {
   /// Conexión abierta; la abre (o reabre si cambió la llave). Lanza
   /// [StateError] si la bóveda está bloqueada.
   Future<Database> get database async {
-    final password = _passwordFromSession();
+    final candidates = _candidatesFromSession();
     // Espera una apertura en curso antes de decidir.
     final pending = _opening;
     if (pending != null) {
@@ -453,11 +459,13 @@ class VaultDatabase {
       } catch (_) {}
     }
     final current = _db;
-    if (current != null && current.isOpen && _openPassword == password) {
+    if (current != null &&
+        current.isOpen &&
+        candidates.any((c) => c.$1 == _openedGen && c.$2 == _openPassword)) {
       return current;
     }
     if (current != null) await close();
-    final future = _open(password);
+    final future = _open(candidates);
     _opening = future;
     try {
       return await future;
@@ -466,7 +474,7 @@ class VaultDatabase {
     }
   }
 
-  Future<Database> _open(String password) async {
+  Future<Database> _open(List<(int, String)> candidates) async {
     if (_dbPathOverride == null) await AppPaths.init();
     final file = File(_dbPath);
     final markers = _markerStore;
@@ -478,6 +486,51 @@ class VaultDatabase {
       throw const VaultDatabaseMissingException();
     }
     if (!file.parent.existsSync()) file.parent.createSync(recursive: true);
+    // Una BD NUEVA se crea con la llave actual (la última candidata). Con una
+    // existente se prueban en orden; sin SQLCipher (pruebas) no hay llave que
+    // probar y vale la primera.
+    final tries = !existed
+        ? [candidates.last]
+        : (_useSqlCipher ? candidates : [candidates.first]);
+    Database? db;
+    late (int, String) used;
+    Object? lastError;
+    StackTrace? lastStack;
+    for (final c in tries) {
+      try {
+        db = await _openWith(c.$2);
+        used = c;
+        break;
+      } on VaultSchemaTooNewException {
+        rethrow; // no es un problema de llave
+      } catch (e, st) {
+        lastError = e;
+        lastStack = st;
+      }
+    }
+    if (db == null) {
+      Error.throwWithStackTrace(lastError!, lastStack!);
+    }
+    // Creada ahora, o ya existente de una versión sin la marca (bóvedas
+    // anteriores a C1): desde aquí la BD de esta bóveda "existe".
+    if (markers != null &&
+        await markers.read(AuthController.dbCreatedKey) != 'true') {
+      try {
+        await markers.write(AuthController.dbCreatedKey, 'true');
+      } catch (_) {
+        // Almacén seguro no disponible: la marca se escribe en la próxima
+        // apertura (hasta entonces la guarda no está activa, como antes).
+      }
+    }
+    _db = db;
+    _openPassword = used.$2;
+    _openedGen = used.$1;
+    return db;
+  }
+
+  /// Abre con [password] y, con SQLCipher, comprueba que la llave abre el
+  /// archivo (una llave equivocada falla al leer el esquema).
+  Future<Database> _openWith(String password) async {
     final db = await _opener(
       _dbPath,
       password: _useSqlCipher ? password : null,
@@ -491,19 +544,16 @@ class VaultDatabase {
         onDowngrade: (db, o, n) => throw VaultSchemaTooNewException(o, n),
       ),
     );
-    // Creada ahora, o ya existente de una versión sin la marca (bóvedas
-    // anteriores a C1): desde aquí la BD de esta bóveda "existe".
-    if (markers != null &&
-        await markers.read(AuthController.dbCreatedKey) != 'true') {
+    if (_useSqlCipher) {
       try {
-        await markers.write(AuthController.dbCreatedKey, 'true');
+        await db.rawQuery('SELECT count(*) FROM sqlite_master');
       } catch (_) {
-        // Almacén seguro no disponible: la marca se escribe en la próxima
-        // apertura (hasta entonces la guarda no está activa, como antes).
+        try {
+          await db.close();
+        } catch (_) {}
+        rethrow;
       }
     }
-    _db = db;
-    _openPassword = password;
     return db;
   }
 
@@ -518,16 +568,23 @@ class VaultDatabase {
     final db = _db;
     _db = null;
     _openPassword = null;
+    _openedGen = null;
     if (db != null && db.isOpen) await db.close();
   }
 
   /// Checkpoint + cierre limpio y copia del archivo .db (ya cifrado por
-  /// SQLCipher) para respaldarlo. Devuelve la copia; el llamador la borra
-  /// tras usarla. La conexión se reabre sola en el siguiente acceso.
+  /// SQLCipher) para respaldarlo. Devuelve la copia con la generación de la
+  /// llave que la cifra y el rango de `keyGen` de sus filas (C2, D61); el
+  /// llamador la borra tras usarla. La conexión se reabre sola en el
+  /// siguiente acceso.
   ///
-  /// F5: `SyncService` lo sube a appDataFolder como `vault_db.snapshot`.
-  Future<File> exportEncryptedSnapshot() async {
+  /// F5: `SyncService` la sube a appDataFolder como `vault_db[.kN].snapshot`.
+  Future<SnapshotCopy> exportEncryptedSnapshot() async {
     final db = await database; // exige sesión desbloqueada
+    final dbGen = openedGen!;
+    final range = await db.rawQuery(
+      'SELECT MIN(keyGen) AS lo, MAX(keyGen) AS hi FROM vault_items',
+    );
     try {
       await db.rawQuery('PRAGMA wal_checkpoint(TRUNCATE)');
     } catch (_) {
@@ -537,6 +594,37 @@ class VaultDatabase {
     final source = File(_dbPath);
     final snapshot = File('$_dbPath.snapshot');
     if (await snapshot.exists()) await snapshot.delete();
-    return source.copy(snapshot.path);
+    return SnapshotCopy(
+      await source.copy(snapshot.path),
+      dbGen: dbGen,
+      minKeyGen: range.first['lo'] as int?,
+      maxKeyGen: range.first['hi'] as int?,
+    );
   }
+}
+
+/// Copia cifrada de la BD para subirla (C2, D61). Su nombre en Drive sale de
+/// [dbGen] (la generación de la llave que la cifra), nunca de una constante.
+class SnapshotCopy {
+  const SnapshotCopy(
+    this.file, {
+    required this.dbGen,
+    this.minKeyGen,
+    this.maxKeyGen,
+  });
+
+  final File file;
+
+  /// Generación de la llave SQLCipher de la copia.
+  final int dbGen;
+
+  /// Menor y mayor `keyGen` de sus filas (`null` = sin items).
+  final int? minKeyGen;
+  final int? maxKeyGen;
+
+  /// `true` si todas sus filas son de la generación de su llave (o no hay
+  /// filas): es un índice coherente que se puede publicar con su nombre.
+  bool get isCoherent =>
+      (minKeyGen == null || minKeyGen == dbGen) &&
+      (maxKeyGen == null || maxKeyGen == dbGen);
 }

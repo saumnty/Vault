@@ -78,7 +78,7 @@ void main() {
 
   VaultMediaOpener makeOpener({Duration? timeout}) => VaultMediaOpener(
     fetcher: env.fetcher,
-    filesKey: () => env.session.filesKey,
+    filesKey: env.session.filesKeyFor,
     temp: temp,
     session: env.session,
     streamInitTimeout: timeout ?? const Duration(seconds: 30),
@@ -107,7 +107,7 @@ void main() {
     expect(makeOpener().videoSource(item), isA<StreamingVideoSource>());
     final legacy = VaultMediaOpener(
       fetcher: env.fetcher,
-      filesKey: () => env.session.filesKey,
+      filesKey: env.session.filesKeyFor,
       streaming: false,
     );
     expect(legacy.videoSource(item), isA<FullDecryptVideoSource>());
@@ -223,7 +223,7 @@ void main() {
       );
       final opener = VaultMediaOpener(
         fetcher: env.fetcher,
-        filesKey: () => env.session.filesKey,
+        filesKey: env.session.filesKeyFor,
         temp: temp,
         session: env.session,
         markInUse: env.cache.markInUse,

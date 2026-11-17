@@ -447,3 +447,7 @@ Decisiones a registrar:
 7. **Bajar de versión**: con D59 un build nuevo ya no destruye la BD, pero un build anterior a D59 sí. No instalar en el iPhone nada anterior al último instalado.
 8. **Rendimiento**: 3 pasadas AES-GCM por archivo (descifrar, cifrar, verificar). Medirlo en el iPhone; `verifyFullPass` permite reducirlo a un muestreo si hace falta.
 9. Todo el código específico de iOS va marcado `// iOS: sin probar` (bootstrap, Keychain, exclusión de respaldo de los archivos nuevos en `vault/`, `thumbs/` y `db/`).
+
+## Nota de implementación (paso 6, 2026-11-17)
+Hueco detectado al implementar: §4.2 abría la sesión solo con la DEK vieja hasta `freezing`, pero entrar en `reencrypting` necesita la DEK nueva, que tras matar la app o desbloquear con huella no estaba disponible. Resuelto sin cambiar garantías: la DEK nueva se mantiene SOLO en memoria en `AuthController` (`hasNextKeys`), obtenida de `prepareRotation`, de `confirmRotationCode` (código B sobre `next_recovery_backup`) o del desbloqueo con PIN en `prepared`/`confirmed`/`freezing` (segundo Argon2id que no cuenta intento). Con huella, `enterReencrypting()` exige el PIN. `lock()` la destruye. En disco solo existe envuelta con el PIN nuevo o con B; nada derivado de A la envuelve (test que recorre todo el almacén seguro).
+

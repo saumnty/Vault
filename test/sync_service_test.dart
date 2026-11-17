@@ -79,7 +79,7 @@ class Env {
       snapshotsTaken++;
       final f = File('$dbPath.snapshot');
       await f.writeAsBytes(List.generate(5000, (i) => (i * 7) & 0xff));
-      return f;
+      return SnapshotCopy(f, dbGen: 1);
     },
     nowMs: () => now,
     random: Random(1),

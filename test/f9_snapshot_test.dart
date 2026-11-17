@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/core/services/app_paths.dart';
 import 'package:vault/data/cloud/cloud_storage.dart';
 import 'package:vault/data/repositories/vault_data_repository.dart';
+import 'package:vault/data/repositories/vault_database.dart';
 import 'package:vault/data/sync/network_monitor.dart';
 import 'package:vault/data/sync/sync_service.dart';
 
@@ -47,7 +48,7 @@ void main() {
             for (final r in rows) {'id': r.id, 'drive': r.driveFileId},
           ]),
         );
-        return f;
+        return SnapshotCopy(f, dbGen: 1);
       },
       nowMs: () => a.now,
       random: Random(1),

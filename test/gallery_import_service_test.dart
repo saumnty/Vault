@@ -700,7 +700,7 @@ void main() {
       ];
       SecretKey? key = keys.thumbs;
       final loader = EncryptedThumbnailLoader(
-        thumbsKey: () => key,
+        thumbsKey: (_) => key,
         capacity: 2,
       );
       final b0 = await loader.load(items[0]);
@@ -723,5 +723,56 @@ void main() {
       key = keys.files; // llave equivocada
       expect(await loader.load(items[2]), isNull);
     });
+  });
+
+  group('rotación de la DEK (D60/D61)', () {
+    test(
+      'los items nacen con la generación de las llaves y sus nombres',
+      () async {
+        final a = source.add('p1', GalleryAssetType.image, 3000);
+        final svc = GalleryImportService(
+          source: source,
+          compressor: compressor,
+          repository: repo,
+          filesKey: () => keys.files,
+          thumbsKey: () => keys.thumbs,
+          keyGen: () => 2,
+          tempDirProvider: () => Directory('${tmp.path}/import_tmp'),
+          isIOS: false,
+        );
+        final res = await svc.importAssets([a], const ImportOptions());
+        final item = (await repo.getItem(res.items.single.itemId!))!;
+        expect(item.keyGen, 2);
+        expect(item.encryptedPath, endsWith('.k2.vault'));
+        expect(item.thumbPath, endsWith('.k2.thumb'));
+        expect(AppPaths.resolve(item.encryptedPath).existsSync(), isTrue);
+      },
+    );
+
+    test(
+      'A1: con el borrado en pausa no se ofrece borrar originales',
+      () async {
+        final a = source.add('p2', GalleryAssetType.image, 3000);
+        var paused = false;
+        final svc = GalleryImportService(
+          source: source,
+          compressor: compressor,
+          repository: repo,
+          filesKey: () => keys.files,
+          thumbsKey: () => keys.thumbs,
+          tempDirProvider: () => Directory('${tmp.path}/import_tmp'),
+          originalDeletionEnabled: true,
+          cloudVerifier: (_) async => true,
+          originalsDeletionPaused: () => paused,
+          isIOS: false,
+        );
+        final res = await svc.importAssets([a], const ImportOptions());
+        final id = res.items.single.itemId!;
+        await repo.markCloudVerified(id, driveFileId: 'd', md5: 'm', size: 1);
+        expect(await svc.pendingOriginalsCount(), 1);
+        paused = true;
+        expect(await svc.pendingOriginalsCount(), 0);
+      },
+    );
   });
 }

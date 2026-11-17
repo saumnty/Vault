@@ -51,8 +51,11 @@ class VaultMediaExporter implements MediaExporter {
     }
     File? plain;
     try {
+      // D60: fila fresca (generación, ruta y fileId actuales).
+      final fresh = await opener.fetcher.refresh(item);
+      final gen = fresh.keyGen;
       final local = await opener.fetcher.ensureLocal(
-        item,
+        fresh,
         onProgress: (got, total) => onProgress?.call(
           MediaProgress(
             MediaPhase.downloading,
@@ -60,7 +63,7 @@ class VaultMediaExporter implements MediaExporter {
           ),
         ),
       );
-      final key = opener.requireKey();
+      final key = opener.requireKey(gen);
       final ext = p.extension(item.name);
       plain = opener.temp.newTempFile(
         extension: ext.isEmpty ? (isVideo ? '.mp4' : '.jpg') : ext,
@@ -68,7 +71,7 @@ class VaultMediaExporter implements MediaExporter {
       final reader = await opener.crypto.openReader(
         local,
         key,
-        expectedFileId: item.fileId,
+        expectedFileId: fresh.fileId,
       );
       RandomAccessFile? out;
       try {
@@ -76,7 +79,7 @@ class VaultMediaExporter implements MediaExporter {
         final total = reader.blockCount;
         for (var i = 0; i < total; i++) {
           // Si se bloquea durante la copia, requireKey() lanza y se aborta.
-          opener.requireKey();
+          opener.requireKey(gen);
           await out.writeFrom(await reader.decryptBlock(i));
           onProgress?.call(
             MediaProgress(MediaPhase.decrypting, (i + 1) / total),
@@ -87,7 +90,7 @@ class VaultMediaExporter implements MediaExporter {
         await out?.close();
         await reader.close();
       }
-      opener.requireKey();
+      opener.requireKey(gen);
       if (isVideo) {
         await saver.saveVideo(plain, filename: item.name);
       } else {

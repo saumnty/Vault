@@ -416,7 +416,13 @@ void main() {
       session.open(await _keys(1));
       final repo = VaultDataRepository(dbProvider: () => vdb.database);
       await repo.insertItem(_item('1'));
-      final snap = await vdb.exportEncryptedSnapshot();
+      final copy0 = await vdb.exportEncryptedSnapshot();
+      // C2 (D61): la copia lleva la generación de su llave y de sus filas.
+      expect(copy0.dbGen, 1);
+      expect(copy0.minKeyGen, 1);
+      expect(copy0.maxKeyGen, 1);
+      expect(copy0.isCoherent, isTrue);
+      final snap = copy0.file;
       expect(snap.existsSync(), isTrue);
       expect(snap.lengthSync(), greaterThan(0));
       expect(vdb.isOpen, isFalse);

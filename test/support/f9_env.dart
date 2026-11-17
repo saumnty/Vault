@@ -189,7 +189,7 @@ class PhoneA {
 
   /// Toma y sube un snapshot AHORA (para fijar un estado concreto).
   Future<void> republishSnapshot() async {
-    final snap = await vdb.exportEncryptedSnapshot();
+    final snap = (await vdb.exportEncryptedSnapshot()).file;
     final existing = await cloud.findByName(CloudNames.dbSnapshot);
     await cloud.uploadBytes(
       bytes: await snap.readAsBytes(),

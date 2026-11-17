@@ -53,6 +53,7 @@ void main() {
     int? freeBytes,
     int maxUploadRounds = 40,
     MigrationRepository? repo,
+    Future<bool> Function()? rotationActive,
   }) {
     final fetcher = VaultFileFetcher(
       cloud: cloud,
@@ -71,6 +72,7 @@ void main() {
       recoveryBackupProvider: a.auth.exportRecoveryBackup,
       resolvePath: AppPaths.resolve,
       setCachePurgeSuspended: (v) => cacheSuspended = v,
+      rotationActive: rotationActive,
       freeSpace: () async => freeBytes,
       nowMs: () => a.now,
       maxUploadRounds: maxUploadRounds,
@@ -163,7 +165,9 @@ void main() {
       expect((await state())!.phase, MigrationPhase.askDeleteOld);
       // El "selector": primero la vieja (para borrar), luego la nueva.
       cloud.signInQueue.addAll([old, nueva]);
+      await a.prefs.setOldAccountKept(old); // de una migración anterior
       await s.deleteOldAccountData();
+      expect(await a.prefs.getOldAccountKept(), isNull);
       expect(cloud.account(old).names, isEmpty);
       expect(cloud.account(nueva).names, isNotEmpty);
       expect(await state(), isNull);
@@ -182,6 +186,18 @@ void main() {
       expect(cloud.account(old).names.toSet(), oldNames);
       expect(await state(), isNull);
       expect(a.sync.pausedForMigration, isFalse);
+      // M7 (D61): se recuerda para avisar al rotar la llave.
+      expect(await a.prefs.getOldAccountKept(), old);
+    });
+
+    test('D61: con una rotación de la llave en curso no arranca', () async {
+      await seed();
+      final s = service(rotationActive: () async => true);
+      await expectLater(
+        s.start(await s.plan()),
+        throwsA(isA<MigrationException>()),
+      );
+      expect(await state(), isNull);
     });
 
     test('borrar pide la cuenta vieja: otra cuenta no borra nada', () async {

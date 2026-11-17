@@ -69,19 +69,25 @@ class VaultFileFetcher {
     return future.whenComplete(() => _inFlight.remove(item.id));
   }
 
+  /// La fila más reciente de [item] (o [item] si ya no existe). La cuadrícula
+  /// puede tener un modelo viejo: la subida pudo terminar después, o una
+  /// rotación de la DEK pudo pasar el item a otra generación (otra ruta,
+  /// otro `fileId`, otra llave; D60).
+  Future<VaultItemModel> refresh(VaultItemModel item) async =>
+      await items.getItem(item.id) ?? item;
+
   Future<File> _ensure(
     VaultItemModel item,
     CloudProgress? onProgress,
     CloudCancelToken? cancel,
   ) async {
-    final target = resolvePath(item.encryptedPath);
+    // Siempre con la fila más reciente (ruta y generación actuales).
+    final fresh = await refresh(item);
+    final target = resolvePath(fresh.encryptedPath);
     if (await target.exists()) {
-      await _touch(item.id);
+      await _touch(fresh.id);
       return target;
     }
-    // Siempre con la fila más reciente (la subida pudo terminar después de
-    // cargar la cuadrícula).
-    final fresh = await items.getItem(item.id) ?? item;
     final driveId = fresh.driveFileId;
     final md5 = fresh.cloudMd5;
     final size = fresh.cloudSize;
@@ -153,7 +159,14 @@ class VaultFileFetcher {
       if (item.syncStatus == SyncStatus.enNube ||
           item.syncStatus == SyncStatus.enCache ||
           item.syncStatus == SyncStatus.sinConexion) {
-        await items.updateSyncStatus(item.id, status);
+        // M4: condicional. Si la fila cambió durante la descarga (otra
+        // generación u otra ruta), no se pisa su estado.
+        await items.updateSyncStatusIf(
+          item.id,
+          status,
+          expectKeyGen: item.keyGen,
+          expectPath: item.encryptedPath,
+        );
       }
       await items.touchLastAccessed(item.id, at: _nowDate());
     } on StateError catch (e) {

@@ -214,8 +214,18 @@ class FakeCloudStorage implements CloudStorage {
     _requireAuth();
     _check('upload');
     uploadedNames.add(name);
-    return _store(name, Uint8List.fromList(bytes), replaceFileId);
+    final corrupt = corruptNextBytesUpload;
+    corruptNextBytesUpload = false;
+    return _store(
+      name,
+      Uint8List.fromList(bytes),
+      replaceFileId,
+      corrupt: corrupt,
+    );
   }
+
+  /// La próxima subida de BYTES (respaldos, puente) guarda un MD5 incorrecto.
+  bool corruptNextBytesUpload = false;
 
   @override
   Future<CloudFile> getMetadata(String fileId) async {

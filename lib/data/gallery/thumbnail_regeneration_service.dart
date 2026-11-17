@@ -52,21 +52,22 @@ class ThumbnailRegenerationService {
     this.thumbnailSize = 256,
     this.maxPerRun = 40,
     this.autoMaxDecryptBytes = 100 * 1024 * 1024,
-    String Function(String id)? thumbRelative,
-  }) : _crypto = crypto ?? CryptoService(),
-       _thumbRelative = thumbRelative ?? AppPaths.thumbRelativePath;
+  }) : _crypto = crypto ?? CryptoService();
 
   final VaultDataRepository repository;
   final GalleryAssetSource source;
   final VideoThumbnailer videoThumbnailer;
-  final SecretKey? Function() filesKey;
-  final SecretKey? Function() thumbsKey;
+
+  /// Subllaves por generación de llave del item (D60): la miniatura se
+  /// escribe con la MISMA generación que su `.vault` (y con su nombre
+  /// `thumbs/<id>[.kN].thumb`). `null` = bóveda bloqueada.
+  final SecretKey? Function(int keyGen) filesKey;
+  final SecretKey? Function(int keyGen) thumbsKey;
   final Directory Function() tempDirProvider;
   final int thumbnailSize;
   final int maxPerRun;
   final int autoMaxDecryptBytes;
   final CryptoService _crypto;
-  final String Function(String id) _thumbRelative;
 
   final Set<String> _failedThisSession = {};
   bool _running = false;
@@ -109,17 +110,18 @@ class ThumbnailRegenerationService {
     var failed = 0;
     var candidates = 0;
     try {
-      final tKey = thumbsKey();
-      final fKey = filesKey();
-      if (tKey == null || fKey == null) {
+      await AppPaths.init();
+      List<VaultItemModel> list;
+      try {
+        list = await _candidates();
+      } on StateError {
+        // Bóveda bloqueada: nada que hacer.
         return const ThumbnailRegenerationResult(
           candidates: 0,
           regenerated: 0,
           failed: 0,
         );
       }
-      await AppPaths.init();
-      var list = await _candidates();
       if (!manual) {
         list = [
           for (final i in list)
@@ -138,7 +140,13 @@ class ThumbnailRegenerationService {
       for (final item in list) {
         if (isCancelled?.call() ?? false) break;
         // Si se bloqueó la bóveda a mitad, se corta.
-        if (thumbsKey() == null || filesKey() == null) break;
+        final tKey = thumbsKey(item.keyGen);
+        final fKey = filesKey(item.keyGen);
+        if (tKey == null || fKey == null) {
+          // Bloqueada antes de empezar: la pasada no tuvo candidatos.
+          if (done == 0) candidates = 0;
+          break;
+        }
         try {
           final ok = await _one(item, tKey, fKey, manual: manual);
           if (ok) {
@@ -194,7 +202,7 @@ class ThumbnailRegenerationService {
     }
     if (bytes == null || bytes.isEmpty) return false;
     final enc = await _crypto.encryptBytes(bytes, tKey);
-    final rel = _thumbRelative(item.id);
+    final rel = AppPaths.thumbRelativePath(item.id, gen: item.keyGen);
     await AppPaths.resolve(rel).writeAsBytes(enc, flush: true);
     await repository.setThumb(
       item.id,

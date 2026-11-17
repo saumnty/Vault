@@ -26,6 +26,7 @@ import '../../data/migration/account_migration_service.dart';
 import '../../data/migration/free_space.dart';
 import '../../data/migration/migration_repository.dart';
 import '../../data/repositories/vault_database.dart';
+import '../../data/rotation/rotation_guard.dart';
 import '../../data/sync/network_monitor.dart';
 import '../../data/sync/offline_service.dart';
 import '../../data/sync/sync_preferences.dart';
@@ -190,10 +191,15 @@ class VaultServices {
     final sync = core.sync;
     Future<void> cleaner(Iterable<String> ids) async {
       await AppPaths.init();
+      // D60: los archivos del item pueden ser de cualquier generación de llave
+      // conocida por la sesión (también restos de otra durante una rotación).
+      final maxGen = VaultSession().maxGen;
       for (final id in ids) {
         for (final rel in [
-          AppPaths.vaultRelativePath(id),
-          AppPaths.thumbRelativePath(id),
+          for (var gen = 1; gen <= maxGen; gen++) ...[
+            AppPaths.vaultRelativePath(id, gen: gen),
+            AppPaths.thumbRelativePath(id, gen: gen),
+          ],
         ]) {
           try {
             final file = AppPaths.resolve(rel);
@@ -323,7 +329,8 @@ class VaultServices {
     session.addOnClear(offline.cancel);
     final opener = VaultMediaOpener(
       fetcher: fetcher,
-      filesKey: () => session.filesKey,
+      // D60: la llave de la generación del item que se abre.
+      filesKey: session.filesKeyFor,
       temp: temp,
       session: session,
       markInUse: cache.markInUse,
@@ -344,6 +351,9 @@ class VaultServices {
       recoveryBackupProvider: () => AuthController().exportRecoveryBackup(),
       resolvePath: AppPaths.resolve,
       setCachePurgeSuspended: (v) => cache.suspended = v,
+      // D61: cambio de cuenta y rotación de la DEK son excluyentes.
+      rotationActive: () async =>
+          (await RotationKeyStore.shared.load()) != null,
       freeSpace: platformFreeSpace,
     );
     // Al bloquear: el cambio de cuenta se pausa (el estado queda en la BD).
@@ -377,6 +387,9 @@ class VaultServices {
       afterRun: () async {
         await enforceCache();
       },
+      // D60/D61: generación vigente (nombre del respaldo) y rotación en curso.
+      rotation: StoreRotationGuard(RotationKeyStore.shared),
+      currentKeyGen: () => AuthController().currentKeyGen(),
     );
     // Al bloquear: cancela la subida en curso y los reintentos programados.
     session.addOnClear(sync.cancel);
@@ -389,8 +402,11 @@ class VaultServices {
 
   static EncryptedThumbnailLoader _createThumbs() {
     final session = VaultSession();
+    final repository = VaultDataRepository();
     final loader = EncryptedThumbnailLoader(
-      thumbsKey: () => session.keysOrNull?.thumbs,
+      // D60: la llave de la generación del item.
+      thumbsKey: session.thumbsKeyFor,
+      refresh: repository.getItem,
     );
     // Al bloquear, la caché en memoria se vacía.
     session.addOnClear(loader.clear);
@@ -413,6 +429,7 @@ class VaultServices {
       repository: repository,
       filesKey: () => session.filesKey,
       thumbsKey: () => session.keysOrNull?.thumbs,
+      keyGen: () => session.currentGen,
       tempDirProvider: () =>
           Directory(p.join(AppPaths.cacheDir.path, 'import_tmp')),
       // F5: verificador real (en_nube + driveFileId + MD5/tamaño). La bandera
@@ -421,14 +438,17 @@ class VaultServices {
       // defecto, leída en cada intento). No se borra nada automáticamente.
       deletionEnabledProvider: preferences.getDeleteOriginalsWhenInCloud,
       cloudVerifier: sync.cloudVerifier,
+      // A1 (D61): sin borrar originales mientras se rota la llave.
+      originalsDeletionPaused: () => sync.rotation.active,
       videoThumbnailer: videoThumbnailer,
     );
     final regeneration = ThumbnailRegenerationService(
       repository: repository,
       source: source,
       videoThumbnailer: videoThumbnailer,
-      filesKey: () => session.filesKey,
-      thumbsKey: () => session.keysOrNull?.thumbs,
+      // D60: la miniatura se escribe con la generación de su item.
+      filesKey: session.filesKeyFor,
+      thumbsKey: session.thumbsKeyFor,
       tempDirProvider: () =>
           Directory(p.join(AppPaths.cacheDir.path, 'import_tmp')),
     );

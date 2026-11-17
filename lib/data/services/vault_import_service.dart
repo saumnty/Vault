@@ -45,15 +45,23 @@ class VaultImportService {
   VaultImportService({
     DocumentPicker? picker,
     SecretKey? Function()? filesKey,
+    int Function()? keyGen,
     CryptoService? crypto,
     VaultDataRepository? repository,
   }) : _picker = picker ?? PlatformDocumentPicker(),
        _filesKey = filesKey ?? (() => VaultSession().filesKey),
+       _keyGen =
+           keyGen ??
+           (filesKey == null ? (() => VaultSession().currentGen) : (() => 1)),
        _cryptoService = crypto ?? CryptoService(),
        _repo = repository ?? VaultDataRepository();
 
   final DocumentPicker _picker;
   final SecretKey? Function() _filesKey;
+
+  /// Generación de llave de [_filesKey] (D60). Por defecto la de la sesión
+  /// global; con una llave inyectada (pruebas) y sin generación, la 1.
+  final int Function() _keyGen;
   final CryptoService _cryptoService;
   final VaultDataRepository _repo;
 
@@ -69,6 +77,8 @@ class VaultImportService {
     try {
       // 1. Verificar sesión activa
       // Subllave "files" de la jerarquía (HKDF de la DEK), no la DEK.
+      // Llave y su generación, leídas juntas (sin `await` en medio).
+      final gen = _keyGen();
       final filesKey = _filesKey();
       if (filesKey == null) return false;
 
@@ -80,7 +90,7 @@ class VaultImportService {
       await AppPaths.init();
       final itemId = const Uuid().v4();
       // En la BD solo va la ruta RELATIVA (vault/<id>.vault).
-      final relativePath = AppPaths.vaultRelativePath(itemId);
+      final relativePath = AppPaths.vaultRelativePath(itemId, gen: gen);
       final destFile = AppPaths.resolve(relativePath);
 
       // 4. Cifrar en formato .vault v2 (bloques de 1 MiB, streaming) y, de
@@ -99,9 +109,8 @@ class VaultImportService {
 
       // 5. Registrar en SQLCipher
       final itemModel = VaultItemModel(
-        // D60: cifrado con la llave de la sesión, que hoy es siempre la de
-        // la generación 1 (el keyring por generación llega con la rotación).
-        keyGen: 1,
+        // D60: la generación de la llave con que se cifró.
+        keyGen: gen,
         id: itemId,
         name: picked.name,
         folderId: targetFolderId,

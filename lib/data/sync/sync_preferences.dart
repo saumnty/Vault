@@ -17,12 +17,23 @@ class SyncPreferences {
   /// el snapshot de Drive está al día (F9).
   static const String snapshotDirtyAtKey = 'sync.v1.snapshot_dirty_at';
 
+  /// M7 (D61): correo de una cuenta ANTERIOR de un cambio de cuenta (D52) en
+  /// la que el usuario decidió conservar los datos. Esa cuenta guarda un
+  /// conjunto completo que abre el código de recuperación de entonces; la
+  /// rotación de la DEK lo avisa.
+  static const String oldAccountKeptKey = 'migration.v1.old_account_kept';
+
   /// Por defecto SOLO Wi-Fi (no gastar datos móviles sin permiso).
   Future<bool> getWifiOnly() async =>
       (await _store.read(wifiOnlyKey)) != 'false';
 
   Future<void> setWifiOnly(bool value) =>
       _store.write(wifiOnlyKey, value ? 'true' : 'false');
+
+  Future<String?> getOldAccountKept() => _store.read(oldAccountKeptKey);
+  Future<void> setOldAccountKept(String email) =>
+      _store.write(oldAccountKeptKey, email);
+  Future<void> clearOldAccountKept() => _store.delete(oldAccountKeptKey);
 
   Future<String?> getRecoveryUploadedSha() => _store.read(recoverySha);
   Future<void> setRecoveryUploadedSha(String sha) =>

@@ -148,6 +148,7 @@ class AccountMigrationService {
     required this.recoveryBackupProvider,
     required this.resolvePath,
     this.setCachePurgeSuspended,
+    this.rotationActive,
     FreeSpaceProvider? freeSpace,
     int Function()? nowMs,
     this.freeSpaceMargin = 100 * 1024 * 1024,
@@ -170,6 +171,10 @@ class AccountMigrationService {
 
   /// Suspende/reanuda la purga de la caché LRU.
   final void Function(bool suspended)? setCachePurgeSuspended;
+
+  /// `true` si hay una rotación de la DEK registrada (D61): el cambio de
+  /// cuenta y la rotación son excluyentes.
+  final Future<bool> Function()? rotationActive;
   final FreeSpaceProvider _freeSpace;
   final int Function() _now;
 
@@ -270,6 +275,11 @@ class AccountMigrationService {
     if (_running) throw const MigrationException('Ya hay un cambio en curso');
     if (await hasActive()) {
       throw const MigrationException('Ya hay un cambio de cuenta empezado');
+    }
+    if (await rotationActive?.call() ?? false) {
+      throw const MigrationException(
+        'Hay un cambio de llave maestra en curso. Espera a que termine.',
+      );
     }
     final old = cloud.currentAccountEmail;
     if (old == null) {
@@ -536,7 +546,29 @@ class AccountMigrationService {
       await _setError('No hay respaldo de recuperación local.');
       throw const _Stop();
     }
-    final remote = await cloud.findByName(CloudNames.recoveryBackup);
+    // D60: el respaldo lleva la generación de llave vigente en el nombre. Un
+    // respaldo de OTRA generación en la cuenta nueva es de otra bóveda (o de
+    // otra rama): tampoco se sobrescribe ni se mezcla.
+    final ours = CloudNames.recoveryBackupFor(await sync.currentKeyGen());
+    final foreign = [
+      for (final f in await cloud.list())
+        if (f.name != ours &&
+            switch (CloudNames.parse(f.name)?.kind) {
+              CloudNameKind.recoveryBackup ||
+              CloudNameKind.bridgeBackup => true,
+              _ => false,
+            })
+          f,
+    ];
+    if (foreign.isNotEmpty) {
+      await migration.update(
+        phase: MigrationPhase.blockedOtherVault,
+        now: _now(),
+      );
+      VaultLog.d('Cuenta nueva con otra bóveda', category: 'migration');
+      return false;
+    }
+    final remote = await cloud.findByName(ours);
     if (remote != null) {
       final bytes = await cloud.downloadBytes(remote.id, maxBytes: 4096);
       final ours = md5OfBytes(bytes) == md5OfBytes(utf8.encode(backup));
@@ -660,8 +692,12 @@ class AccountMigrationService {
 
   Future<bool> _finalize(MigrationState state) async {
     final backup = await recoveryBackupProvider();
-    final remoteBackup = await cloud.findByName(CloudNames.recoveryBackup);
-    final remoteSnap = await cloud.findByName(CloudNames.dbSnapshot);
+    // D60: nombres de la generación vigente (el snapshot se cifra con ella).
+    final gen = await sync.currentKeyGen();
+    final backupName = CloudNames.recoveryBackupFor(gen);
+    final snapName = CloudNames.dbSnapshotFor(gen);
+    final remoteBackup = await cloud.findByName(backupName);
+    final remoteSnap = await cloud.findByName(snapName);
     if (backup == null) {
       await _setError('No hay respaldo de recuperación local.');
       throw const _Stop();
@@ -674,8 +710,8 @@ class AccountMigrationService {
       );
       await prefs.setRecoveryUploadedSha('');
       await sync.run(manual: true, force: true);
-      final b = await cloud.findByName(CloudNames.recoveryBackup);
-      final s = await cloud.findByName(CloudNames.dbSnapshot);
+      final b = await cloud.findByName(backupName);
+      final s = await cloud.findByName(snapName);
       if (b == null || s == null) {
         await _pause(
           state,
@@ -730,6 +766,9 @@ class AccountMigrationService {
       'Datos de la cuenta anterior borrados: $deleted',
       category: 'migration',
     );
+    if (await prefs.getOldAccountKept() == old) {
+      await prefs.clearOldAccountKept();
+    }
     await cloud.signOut();
     try {
       final back = await cloud.signIn();
@@ -749,6 +788,10 @@ class AccountMigrationService {
     if (state == null || state.phase != MigrationPhase.askDeleteOld) {
       throw const MigrationException('No hay nada que decidir');
     }
+    // M7: la cuenta anterior guarda un conjunto que abre el código de
+    // entonces; se recuerda para avisar al rotar la llave.
+    final old = state.oldEmail;
+    if (old != null) await prefs.setOldAccountKept(old);
     await _finishClean();
   }
 

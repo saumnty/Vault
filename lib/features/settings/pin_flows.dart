@@ -58,6 +58,12 @@ Future<bool> runChangePinFlow(BuildContext context, AuthController auth) async {
     } on PinLockedOutException catch (e) {
       if (context.mounted) _snack(context, _lockoutText(e));
       return false;
+    } on RotationInProgressException {
+      // M2 (D63): no se cambia el PIN durante un cambio de llave maestra.
+      if (context.mounted) {
+        _snack(context, 'Disponible al terminar el cambio de llave maestra');
+      }
+      return false;
     }
     wrongCurrent = true;
   }
@@ -82,6 +88,8 @@ Future<bool> runRegenerateCodeFlow(
         code = await auth.regenerateRecoveryCode(pin);
       } on PinLockedOutException catch (e) {
         return _lockoutText(e);
+      } on RotationInProgressException {
+        return 'Disponible al terminar el cambio de llave maestra';
       }
       return code == null ? 'PIN incorrecto' : null;
     },

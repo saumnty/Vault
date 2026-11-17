@@ -91,7 +91,7 @@ void main() {
       temp = PlainTempManager(dirProvider: () => AppPaths.tmpPlainDir);
       opener = VaultMediaOpener(
         fetcher: env.fetcher,
-        filesKey: () => env.session.filesKey,
+        filesKey: env.session.filesKeyFor,
         temp: temp,
         streaming: false,
       );

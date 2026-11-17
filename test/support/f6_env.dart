@@ -93,7 +93,7 @@ class F6Env {
         // Copia simulada de la BD (F9: subir una miniatura ensucia el snapshot).
         final f = File(p.join(tmp.path, 'db', 'f6.db.snapshot'));
         await f.writeAsBytes([1, 2, 3, 4]);
-        return f;
+        return SnapshotCopy(f, dbGen: 1);
       },
       nowMs: () => now,
       random: Random(1),

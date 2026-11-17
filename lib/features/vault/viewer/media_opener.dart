@@ -147,8 +147,10 @@ class VaultMediaOpener implements MediaOpener {
 
   final VaultFileFetcher fetcher;
 
-  /// `null` = bóveda bloqueada.
-  final SecretKey? Function() filesKey;
+  /// Subllave "files" de la generación de llave de un item (D60;
+  /// `VaultSession.filesKeyFor`). `null` = bóveda bloqueada (o la sesión no
+  /// tiene esa generación).
+  final SecretKey? Function(int keyGen) filesKey;
   final PlainTempManager temp;
   final CryptoService crypto;
 
@@ -177,27 +179,50 @@ class VaultMediaOpener implements MediaOpener {
   final void Function(String itemId)? markInUse;
   final void Function(String itemId)? releaseInUse;
 
-  SecretKey requireKey() {
-    final k = filesKey();
+  /// Subllave para leer un item de la generación [keyGen]. Lanza
+  /// [StateError] si la bóveda está bloqueada.
+  SecretKey requireKey(int keyGen) {
+    final k = filesKey(keyGen);
     if (k == null) throw StateError('La bóveda está bloqueada');
     return k;
+  }
+
+  /// Ejecuta [action] con la fila MÁS RECIENTE del item (ruta, `fileId` y
+  /// generación actuales; D60). Si el archivo desapareció entre la lectura de
+  /// la fila y la apertura (la rotación lo re-cifró justo entonces) y la
+  /// fila cambió, se reintenta una vez con la fila nueva.
+  Future<T> withFreshItem<T>(
+    VaultItemModel item,
+    Future<T> Function(VaultItemModel fresh) action,
+  ) async {
+    final fresh = await fetcher.refresh(item);
+    try {
+      return await action(fresh);
+    } on FileSystemException {
+      final again = await fetcher.refresh(fresh);
+      if (again.keyGen == fresh.keyGen &&
+          again.encryptedPath == fresh.encryptedPath) {
+        rethrow;
+      }
+      return action(again);
+    }
   }
 
   @override
   Future<Uint8List> loadImage(
     VaultItemModel item, {
     MediaProgressCallback? onProgress,
-  }) async {
+  }) => withFreshItem(item, (fresh) async {
     final file = await fetcher.ensureLocal(
-      item,
+      fresh,
       onProgress: (got, total) => onProgress?.call(
         MediaProgress(MediaPhase.downloading, total <= 0 ? null : got / total),
       ),
     );
     final reader = await crypto.openReader(
       file,
-      requireKey(),
-      expectedFileId: item.fileId,
+      requireKey(fresh.keyGen),
+      expectedFileId: fresh.fileId,
     );
     try {
       return await reader.readRange(0, reader.plaintextLength);
@@ -205,7 +230,7 @@ class VaultMediaOpener implements MediaOpener {
       await reader.close();
       unawaited(notifyOpened());
     }
-  }
+  });
 
   @override
   VideoSource videoSource(VaultItemModel item) => streaming
@@ -245,14 +270,16 @@ class FullDecryptVideoSource implements VideoSource {
     void report(MediaPhase phase, double? f) =>
         onProgress?.call(MediaProgress(phase, f));
     try {
+      // D60: fila fresca (generación, ruta y fileId actuales).
+      final fresh = await opener.fetcher.refresh(item);
       final local = await opener.fetcher.ensureLocal(
-        item,
+        fresh,
         cancel: _cancel,
         onProgress: (got, total) =>
             report(MediaPhase.downloading, total <= 0 ? null : got / total),
       );
       _checkAlive();
-      final key = opener.requireKey();
+      final key = opener.requireKey(fresh.keyGen);
       final ext = p.extension(item.name);
       final plain = opener.temp.newTempFile(
         extension: ext.isEmpty ? '.mp4' : ext,
@@ -262,7 +289,7 @@ class FullDecryptVideoSource implements VideoSource {
       final reader = await opener.crypto.openReader(
         local,
         key,
-        expectedFileId: item.fileId,
+        expectedFileId: fresh.fileId,
       );
       RandomAccessFile? out;
       try {
@@ -365,8 +392,12 @@ class StreamingVideoSource implements VideoSource {
     opener.markInUse?.call(item.id);
     _inUse = true;
     try {
+      // D60: fila fresca (generación, ruta y fileId actuales). Si el archivo
+      // desaparece por un re-cifrado justo ahora, la caída a completo-primero
+      // vuelve a leer la fila.
+      final fresh = await opener.fetcher.refresh(item);
       final local = await opener.fetcher.ensureLocal(
-        item,
+        fresh,
         cancel: _cancel,
         onProgress: (got, total) => onProgress?.call(
           MediaProgress(
@@ -376,14 +407,14 @@ class StreamingVideoSource implements VideoSource {
         ),
       );
       _checkAlive();
-      final key = opener.requireKey();
+      final key = opener.requireKey(fresh.keyGen);
       final mime = videoMimeType(mimeType: item.mimeType, fileName: item.name);
       // verifyFinal (por defecto): autentica ya la longitud total
       // (Content-Length fiable) y detecta truncados antes de servir nada.
       final reader = await opener.crypto.openReader(
         local,
         key,
-        expectedFileId: item.fileId,
+        expectedFileId: fresh.fileId,
       );
       if (_released) {
         await reader.close();
