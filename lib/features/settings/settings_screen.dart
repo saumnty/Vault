@@ -23,6 +23,7 @@ import '../vault/vault_services.dart';
 import 'account_migration_screen.dart';
 import 'diagnostics_screen.dart';
 import 'pin_flows.dart';
+import 'tags_screen.dart';
 import 'trash_screen.dart';
 import 'settings_environment.dart';
 import 'widgets/settings_widgets.dart';
@@ -731,6 +732,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               SettingsSection(
                                 title: 'Almacenamiento',
                                 children: _storageTiles(),
+                              ),
+                            if (widget.services.tags != null)
+                              SettingsSection(
+                                title: 'Etiquetas',
+                                children: [
+                                  SettingsTile(
+                                    icon: Icons.label_outline,
+                                    title: 'Etiquetas',
+                                    subtitle:
+                                        'Crea, renombra o elimina etiquetas '
+                                        'para organizar tus archivos',
+                                    onTap: () => Navigator.of(context).push(
+                                      MaterialPageRoute<void>(
+                                        builder: (_) => TagsScreen(
+                                          repository: widget.services.tags!,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             if (widget.services.trash != null)
                               SettingsSection(

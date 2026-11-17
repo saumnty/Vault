@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../data/models/folder_model.dart';
 import '../../../data/models/vault_item_model.dart';
+import '../../../data/tags/tag_repository.dart';
 
 /// Elemento mostrable en la cuadrícula: carpeta o archivo.
 sealed class BrowserEntry {
@@ -78,3 +79,13 @@ String labelForKind(FileKind kind) => switch (kind) {
   FileKind.pdf => 'PDF',
   FileKind.other => 'Archivo',
 };
+
+/// ¿El archivo cumple el filtro de tipo? (foto / video / cualquier otro).
+bool itemMatchesKind(VaultItemModel item, KindFilter kind) {
+  final k = fileKindOf(item);
+  return switch (kind) {
+    KindFilter.photo => k == FileKind.image,
+    KindFilter.video => k == FileKind.video,
+    KindFilter.file => k != FileKind.image && k != FileKind.video,
+  };
+}

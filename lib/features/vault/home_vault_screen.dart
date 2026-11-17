@@ -25,9 +25,12 @@ import 'models/browser_entry.dart';
 import 'vault_browser_controller.dart';
 import 'vault_media_viewer_screen.dart';
 import 'vault_services.dart';
+import 'widgets/active_filters_bar.dart';
 import 'widgets/breadcrumb_bar.dart';
 import 'widgets/expandable_fab.dart';
+import 'widgets/filter_sheet.dart';
 import 'widgets/swipe_action_row.dart';
+import 'widgets/tags_sheet.dart';
 import 'widgets/vault_grid.dart';
 import 'widgets/vault_sheets.dart';
 import 'widgets/vault_top_bar.dart';
@@ -99,6 +102,9 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
   final TextEditingController _search = TextEditingController();
   bool _searching = false;
   bool _pinching = false;
+
+  /// id -> nombre de las etiquetas (chips de filtros activos).
+  Map<String, String> _tagNames = const {};
 
   /// Originales ya en la nube pendientes de borrar (aviso sobre la cuadrícula;
   /// 0 si el borrado está apagado).
@@ -300,6 +306,38 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     );
   }
 
+  Future<void> _openFilters() async {
+    final tags = _services.tags;
+    if (tags == null) return;
+    final result = await showFilterSheet(
+      context,
+      tags: tags,
+      current: _controller.filter,
+    );
+    if (result == null || !mounted) return;
+    await _controller.setFilter(result);
+    await _loadTagNames();
+  }
+
+  Future<void> _loadTagNames() async {
+    final tags = _services.tags;
+    if (tags == null) return;
+    try {
+      final list = await tags.list();
+      if (mounted) {
+        setState(() => _tagNames = {for (final t in list) t.id: t.name});
+      }
+    } on Object {
+      // sin nombres: los chips muestran "Etiqueta"
+    }
+  }
+
+  Future<void> _tagSelection(List<BrowserEntry> targets) async {
+    if (!targets.any((e) => e is FileEntry)) return;
+    await showTagsSheet(context, controller: _controller, targets: targets);
+    if (mounted) await _loadTagNames();
+  }
+
   Future<void> _importFile() async {
     final deleteOriginal = await showImportConfirmSheet(context);
     if (deleteOriginal == null || !mounted) return;
@@ -412,11 +450,14 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                 Column(
                   children: [
                     VaultTopBar(
-                      title: widget.currentFolderName,
+                      title: c.isFiltering
+                          ? 'Resultados en toda la bóveda'
+                          : widget.currentFolderName,
                       crumbs: [
                         const Crumb(id: null, label: 'Mi Bóveda'),
-                        for (final f in c.breadcrumbs)
-                          Crumb(id: f.id, label: f.name),
+                        if (!c.isFiltering)
+                          for (final f in c.breadcrumbs)
+                            Crumb(id: f.id, label: f.name),
                       ],
                       canGoBack: Navigator.of(context).canPop(),
                       onBack: () => Navigator.of(context).maybePop(),
@@ -433,6 +474,13 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                       onMove: () => _move(c.selectedEntries),
                       onOffline: () => _offline(c.selectedEntries),
                       onDelete: () => _delete(c.selectedEntries),
+                      onFilters: _services.tags == null ? null : _openFilters,
+                      filterCount: activeFilterCount(c.filter),
+                      onTags:
+                          _services.tags != null &&
+                              c.selectedEntries.any((e) => e is FileEntry)
+                          ? () => _tagSelection(c.selectedEntries)
+                          : null,
                       onLock: widget.onLock,
                       onSettings:
                           widget.currentFolderId == null &&
@@ -447,6 +495,15 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                                   showSyncSheet(context, _services.sync!),
                             ),
                     ),
+                    if (c.isFiltering && !c.isSelecting)
+                      ActiveFiltersBar(
+                        filter: c.filter,
+                        tagNames: _tagNames,
+                        onChanged: (f) async {
+                          await c.setFilter(f);
+                        },
+                        onClear: c.clearFilters,
+                      ),
                     if (_pendingOriginals > 0 && !c.isSelecting)
                       OriginalsPendingBanner(
                         count: _pendingOriginals,
@@ -524,6 +581,13 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
         message: 'Revisa que la bóveda esté desbloqueada e inténtalo de nuevo.',
         actionLabel: 'Reintentar',
         onAction: c.load,
+      );
+    }
+    if (c.isFiltering) {
+      return const EmptyState(
+        kind: EmptyKind.search,
+        title: 'Nada coincide con los filtros',
+        message: 'Prueba quitando algún filtro. Se busca en toda la bóveda.',
       );
     }
     if (c.query.isNotEmpty) {

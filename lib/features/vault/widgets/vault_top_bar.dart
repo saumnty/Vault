@@ -34,6 +34,9 @@ class VaultTopBar extends StatelessWidget {
     this.trailing,
     this.onLock,
     this.onSettings,
+    this.onFilters,
+    this.filterCount = 0,
+    this.onTags,
   });
 
   final String title;
@@ -62,6 +65,15 @@ class VaultTopBar extends StatelessWidget {
 
   /// Ajustes (icono de engranaje); `null` lo oculta.
   final VoidCallback? onSettings;
+
+  /// Abre la hoja de filtros; `null` oculta el botón (sin etiquetas).
+  final VoidCallback? onFilters;
+
+  /// Filtros activos (indicador del botón).
+  final int filterCount;
+
+  /// Etiquetas de la selección; `null` oculta la acción.
+  final VoidCallback? onTags;
 
   @override
   Widget build(BuildContext context) {
@@ -96,6 +108,7 @@ class VaultTopBar extends StatelessWidget {
                     onMove: onMove,
                     onOffline: onOffline,
                     onDelete: onDelete,
+                    onTags: onTags,
                   )
                 : Column(
                     key: const ValueKey('normal'),
@@ -166,6 +179,19 @@ class VaultTopBar extends StatelessWidget {
                 icon: Icons.settings_outlined,
                 label: 'Ajustes',
                 onPressed: onSettings,
+              ),
+            if (onFilters != null)
+              Badge(
+                isLabelVisible: filterCount > 0,
+                label: Text('$filterCount'),
+                backgroundColor: AppColors.accent,
+                textColor: AppColors.onAccent,
+                child: AppIconButton(
+                  key: const ValueKey('open-filters'),
+                  icon: Icons.tune,
+                  label: 'Filtros',
+                  onPressed: onFilters,
+                ),
               ),
             AppIconButton(
               icon: Icons.search,

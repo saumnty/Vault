@@ -282,6 +282,14 @@ class TrashRepository {
         where: 'trashRoot = ? AND deletedAt IS NOT NULL',
         whereArgs: [rootId],
       );
+      if (rows.isNotEmpty) {
+        final im = List.filled(rows.length, '?').join(',');
+        await txn.delete(
+          'item_tags',
+          where: 'itemId IN ($im)',
+          whereArgs: [for (final r in rows) r['id']],
+        );
+      }
       await txn.delete(
         'vault_items',
         where: 'trashRoot = ? AND deletedAt IS NOT NULL',

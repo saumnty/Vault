@@ -15,6 +15,7 @@ class SelectionBar extends StatelessWidget {
     required this.onMove,
     required this.onOffline,
     required this.onDelete,
+    this.onTags,
   });
 
   final int count;
@@ -23,6 +24,9 @@ class SelectionBar extends StatelessWidget {
   final VoidCallback onMove;
   final VoidCallback onOffline;
   final VoidCallback onDelete;
+
+  /// Etiquetas de los archivos seleccionados; `null` oculta la acción.
+  final VoidCallback? onTags;
 
   @override
   Widget build(BuildContext context) {
@@ -49,6 +53,12 @@ class SelectionBar extends StatelessWidget {
             label: 'Seleccionar todo',
             onPressed: onSelectAll,
           ),
+          if (onTags != null)
+            AppIconButton(
+              icon: Icons.label_outline,
+              label: 'Etiquetas',
+              onPressed: onTags,
+            ),
           AppIconButton(
             icon: Icons.drive_file_move_outline,
             label: 'Mover',

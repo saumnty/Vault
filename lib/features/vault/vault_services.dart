@@ -39,6 +39,7 @@ import '../../data/services/vault_import_service.dart';
 import '../gallery/gallery_deps.dart';
 import 'services/thumbnail_loader.dart';
 import 'services/trash_service.dart';
+import '../../data/tags/tag_repository.dart';
 import '../../data/trash/trash_repository.dart';
 import '../../data/gallery/photo_saver.dart';
 import 'viewer/media_exporter.dart';
@@ -108,6 +109,7 @@ class VaultServices {
     this.mediaOpener = const UnavailableMediaOpener(),
     this.mediaExporter,
     this.trash,
+    this.tags,
     this.folderOfflineToggler,
     this.remoteDeleter,
     this.downloadProgress,
@@ -138,6 +140,9 @@ class VaultServices {
 
   /// Papelera (`null` = borrado directo, p. ej. pruebas de la cuadrícula).
   final TrashService? trash;
+
+  /// Etiquetas y búsqueda con filtros (`null` = sin esa función).
+  final TagRepository? tags;
 
   /// Por defecto `repository.setFolderOffline`.
   final FolderOfflineToggler? folderOfflineToggler;
@@ -240,6 +245,7 @@ class VaultServices {
       fileCleaner: cleaner,
       remoteDeleter: remoteDeleter,
       trash: trash,
+      tags: TagRepository(),
       offlineToggler: core.offline.setItemOffline,
       folderOfflineToggler: core.offline.setFolderOffline,
       downloadProgress: core.offline.progress,

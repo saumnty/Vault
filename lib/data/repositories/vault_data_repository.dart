@@ -141,6 +141,14 @@ class VaultDataRepository {
         folderIds,
       );
       final itemIds = rows.map((r) => r['id'] as String).toList();
+      if (itemIds.isNotEmpty) {
+        final im = List.filled(itemIds.length, '?').join(',');
+        await txn.delete(
+          'item_tags',
+          where: 'itemId IN ($im)',
+          whereArgs: itemIds,
+        );
+      }
       await txn.delete(
         'vault_items',
         where: 'folderId IN ($marks)',
@@ -388,6 +396,7 @@ class VaultDataRepository {
 
   Future<void> deleteItem(String id) async {
     final db = await _dbProvider();
+    await db.delete('item_tags', where: 'itemId = ?', whereArgs: [id]);
     await db.delete('vault_items', where: 'id = ?', whereArgs: [id]);
     _changed();
   }

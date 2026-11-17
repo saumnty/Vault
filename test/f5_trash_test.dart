@@ -108,7 +108,6 @@ void main() {
     );
 
     test('v7 -> v8 conserva TODOS los datos y agrega las columnas', () async {
-      expect(VaultSchema.version, 8);
       final db = await upgrade(await makeOld(7));
       final item = (await db.query('vault_items')).single;
       expect(item['id'], 'i1');
@@ -124,7 +123,7 @@ void main() {
       expect(cols, containsAll(['deletedAt', 'trashRoot']));
       expect(
         Sqflite.firstIntValue(await db.rawQuery('PRAGMA user_version')),
-        8,
+        VaultSchema.version,
       );
       await db.close();
     });

@@ -24,10 +24,11 @@ import '../../core/session/vault_session.dart';
 /// v8 = papelera (v2 fase 5: `deletedAt` y `trashRoot` en `vault_items` y
 /// `folders`). DESDE v6 la actualización es INCREMENTAL (conserva los datos:
 /// ya hay bóvedas reales en iPhone); versiones anteriores se recrean.
+/// v9 = etiquetas (v2 fase 9: tablas `tags` e `item_tags`).
 class VaultSchema {
   VaultSchema._();
 
-  static const int version = 8;
+  static const int version = 9;
 
   /// Primera versión que se actualiza sin perder datos (y que un snapshot de
   /// Drive puede traer al restaurar).
@@ -42,6 +43,7 @@ class VaultSchema {
     'idx_folders_parent',
     'idx_sync_queue_due',
     'idx_items_deleted',
+    'idx_item_tags_tag',
   ];
 
   static Future<void> create(DatabaseExecutor db) async {
@@ -116,6 +118,7 @@ class VaultSchema {
       'CREATE INDEX idx_items_deleted ON vault_items(deletedAt)',
     );
     await createMigrationTables(db);
+    await createTagTables(db);
   }
 
   /// Cambio de cuenta de Google (v7). Una sola fila de estado (`id = 1`) y,
@@ -159,6 +162,29 @@ class VaultSchema {
     if (from < 7) await createMigrationTables(db);
     // v7 -> v8: papelera.
     if (from < 8) await addTrashColumns(db);
+    // v8 -> v9: etiquetas.
+    if (from < 9) await createTagTables(db);
+  }
+
+  /// v9: etiquetas. `tags.name` es único sin distinguir mayúsculas. Idempotente.
+  static Future<void> createTagTables(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS tags (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        createdAt TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS item_tags (
+        itemId TEXT NOT NULL,
+        tagId TEXT NOT NULL,
+        PRIMARY KEY (itemId, tagId)
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_item_tags_tag ON item_tags(tagId)',
+    );
   }
 
   /// v8: `deletedAt` (epoch ms en que entró a la papelera) y `trashRoot` (id
@@ -183,6 +209,8 @@ class VaultSchema {
 
   /// Borra todo y recrea (sustituye a una migración).
   static Future<void> recreate(Database db) async {
+    await db.execute('DROP TABLE IF EXISTS item_tags');
+    await db.execute('DROP TABLE IF EXISTS tags');
     await db.execute('DROP TABLE IF EXISTS migration_items');
     await db.execute('DROP TABLE IF EXISTS migration_state');
     await db.execute('DROP TABLE IF EXISTS sync_queue');

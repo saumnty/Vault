@@ -5,6 +5,7 @@ import '../../core/logging/vault_log.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../data/models/folder_model.dart';
 import '../../data/models/vault_item_model.dart';
+import '../../data/tags/tag_repository.dart';
 import '../../data/sync/sync_service.dart';
 import 'models/browser_entry.dart';
 import 'vault_services.dart';
@@ -48,6 +49,7 @@ class VaultBrowserController extends ChangeNotifier {
   bool _isLoading = true;
   Object? _error;
   String _query = '';
+  ItemFilter _filter = const ItemFilter();
   int _columns;
   bool _disposed = false;
 
@@ -55,6 +57,12 @@ class VaultBrowserController extends ChangeNotifier {
   Object? get error => _error;
   int get columns => _columns;
   String get query => _query;
+
+  /// Filtros activos (etiquetas, tipo, fechas). El texto va en [query].
+  ItemFilter get filter => _filter;
+
+  /// Hay filtros: la vista pasa a ser una BÚSQUEDA en todas las carpetas.
+  bool get isFiltering => _filter.hasFilters && services.tags != null;
 
   /// Cadena de carpetas de la raíz a la actual (vacía en la raíz).
   List<FolderModel> get breadcrumbs => _breadcrumbs;
@@ -105,8 +113,20 @@ class VaultBrowserController extends ChangeNotifier {
     }
     try {
       final repo = services.repository;
-      final folders = await repo.getFoldersByParent(folderId);
-      final items = await repo.getItemsByFolder(folderId);
+      final tags = services.tags;
+      final global = isFiltering;
+      // Con filtros: resultados de TODAS las carpetas (sin carpetas).
+      final folders = global
+          ? const <FolderModel>[]
+          : await repo.getFoldersByParent(folderId);
+      final items = global
+          ? await tags!.search(
+              _filter.copyWith(text: _query),
+              kindMatcher: _filter.kind == null
+                  ? null
+                  : (i) => itemMatchesKind(i, _filter.kind!),
+            )
+          : await repo.getItemsByFolder(folderId);
       final crumbs = folderId == null
           ? const <FolderModel>[]
           : await repo.getBreadcrumbs(folderId!);
@@ -148,6 +168,49 @@ class VaultBrowserController extends ChangeNotifier {
   void setQuery(String value) {
     if (value == _query) return;
     _query = value;
+    notifyListeners();
+    // En modo filtros la búsqueda por nombre se hace en la BD.
+    if (isFiltering) load(silent: true);
+  }
+
+  /// Aplica filtros (etiquetas/tipo/fechas). Con filtros la vista es una
+  /// búsqueda global; sin ellos vuelve a la carpeta actual.
+  Future<void> setFilter(ItemFilter filter) async {
+    _filter = filter;
+    _selection.clear();
+    await load(silent: true);
+  }
+
+  Future<void> clearFilters() => setFilter(const ItemFilter());
+
+  /// Etiquetas asignadas a los archivos de [targets] (carpetas se ignoran).
+  Future<Map<String, List<TagModel>>> tagsOf(Iterable<BrowserEntry> targets) {
+    final tags = services.tags;
+    if (tags == null) return Future.value(const {});
+    return tags.tagsOfItems([
+      for (final e in targets)
+        if (e is FileEntry) e.item.id,
+    ]);
+  }
+
+  /// Añade o quita [tagId] a los archivos de [targets].
+  Future<void> setTag(
+    Iterable<BrowserEntry> targets,
+    String tagId, {
+    required bool on,
+  }) async {
+    final tags = services.tags;
+    if (tags == null) return;
+    final ids = [
+      for (final e in targets)
+        if (e is FileEntry) e.item.id,
+    ];
+    if (on) {
+      await tags.addTag(ids, tagId);
+    } else {
+      await tags.removeTag(ids, tagId);
+    }
+    if (isFiltering) await load(silent: true);
     notifyListeners();
   }
 

@@ -268,3 +268,10 @@ Reconocimiento propio de toques (`VideoGestureLayer`) en lugar de `onDoubleTap`:
 * **Restaurar** vuelve a su carpeta; si ya no existe o también está en la papelera, va a la raíz.
 * **Texto de confirmación**: "¿Mover N elementos a la Papelera?… restaurable 30 días… después permanente, también en Google Drive". Sin servicio de papelera (pruebas) se conserva el texto del borrado directo.
 * La papelera vive en Ajustes (no en la raíz) para no ocupar la cuadrícula.
+
+## D57 · Etiquetas, filtros y búsqueda (v2 fase 9, BD v9)
+* **Esquema v9 incremental** (`createTagTables`, idempotente): `tags(id, name UNIQUE NOCASE, createdAt)` e `item_tags(itemId, tagId)`. Viven en la BD cifrada: viajan en el snapshot de Drive y vuelven al restaurar (un snapshot v8 se acepta y la app lo sube a v9 al abrirlo). El nombre es único sin distinguir mayúsculas, hasta 40 caracteres.
+* **Borrado**: borrar una etiqueta quita sus asignaciones, nunca archivos; borrar un archivo (directo o definitivo desde la Papelera) limpia sus filas de `item_tags`. Las cuentas de la etiqueta cuentan solo archivos vivos (no los de la Papelera).
+* **Filtros** (`ItemFilter`, todos combinables con Y): texto (nombre, sin mayúsculas, `%`/`_` literales), etiquetas (el archivo debe tener TODAS), tipo (foto/video/otro, con la misma `fileKindOf` que el resto de la app) y rango de fechas de importación (día completo, ambos extremos incluidos; comparación de texto ISO con inicio de día `AAAA-MM-DDT00:00:00`).
+* **Con filtros la vista pasa a ser una búsqueda en TODA la bóveda** (sin carpetas, sin la Papelera) con título "Resultados en toda la bóveda"; sin filtros, el buscador sigue filtrando solo la carpeta actual como antes.
+* El selector de fechas queda en inglés (no hay `flutter_localizations`); solo los textos propios están en español. Añadirlo queda para una ronda de pulido.
