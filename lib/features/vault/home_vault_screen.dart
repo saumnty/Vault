@@ -35,6 +35,7 @@ import 'widgets/tags_sheet.dart';
 import 'widgets/vault_grid.dart';
 import 'widgets/vault_sheets.dart';
 import 'widgets/vault_top_bar.dart';
+import '../../shared/vault_ui_mode.dart';
 
 /// Nombre de ruta de una carpeta (para que las migas de pan puedan volver a
 /// ella con `popUntil`). La raíz es la ruta `/`.
@@ -426,12 +427,15 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
       color: AppColors.accent,
       onTap: () => _move([e]),
     ),
-    SwipeAction(
-      icon: Icons.offline_pin_outlined,
-      label: _controller.isOffline(e) ? 'Quitar sin conexión' : 'Sin conexión',
-      color: AppColors.surfaceHighest,
-      onTap: () => _offline([e]),
-    ),
+    if (!VaultUiMode.cloudless)
+      SwipeAction(
+        icon: Icons.offline_pin_outlined,
+        label: _controller.isOffline(e)
+            ? 'Quitar sin conexión'
+            : 'Sin conexión',
+        color: AppColors.surfaceHighest,
+        onTap: () => _offline([e]),
+      ),
     SwipeAction(
       icon: Icons.delete_outline,
       label: 'Eliminar',
@@ -482,7 +486,9 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                       onClearSelection: c.clearSelection,
                       onSelectAll: c.selectAll,
                       onMove: () => _move(c.selectedEntries),
-                      onOffline: () => _offline(c.selectedEntries),
+                      onOffline: VaultUiMode.cloudless
+                          ? null
+                          : () => _offline(c.selectedEntries),
                       onDelete: () => _delete(c.selectedEntries),
                       onFilters: _services.tags == null ? null : _openFilters,
                       filterCount: activeFilterCount(c.filter),

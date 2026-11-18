@@ -7,6 +7,7 @@ import '../../core/theme/app_typography.dart';
 import '../../data/gallery/gallery_asset_source.dart';
 import '../../data/gallery/gallery_import_service.dart';
 import '../../shared/format.dart';
+import '../../shared/vault_ui_mode.dart';
 import '../../shared/widgets/app_buttons.dart';
 import '../../shared/widgets/blur_sheet.dart';
 
@@ -192,7 +193,7 @@ class _ImportProgressContentState extends State<ImportProgressContent> {
             overflow: TextOverflow.ellipsis,
           ),
         ),
-      if (r.succeeded > 0) ...[
+      if (r.succeeded > 0 && !VaultUiMode.cloudless) ...[
         const SizedBox(height: AppSpacing.sm),
         Text(
           widget.deleteOriginalsEnabled

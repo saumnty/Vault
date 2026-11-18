@@ -7,6 +7,7 @@ import '../../core/theme/app_typography.dart';
 import '../../data/gallery/gallery_asset_source.dart';
 import '../../data/gallery/video_compressor.dart';
 import '../../shared/format.dart';
+import '../../shared/vault_ui_mode.dart';
 import '../../shared/widgets/app_buttons.dart';
 import '../../shared/widgets/blur_sheet.dart';
 import 'delete_originals_sheet.dart';
@@ -139,21 +140,23 @@ class _ImportOptionsContentState extends State<ImportOptionsContent> {
               onTap: () => setState(() => _quality = q),
             ),
         const SizedBox(height: AppSpacing.sm),
-        MergeSemantics(
-          child: SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            value: _delete,
-            onChanged: (v) => setState(() => _delete = v),
-            title: const Text(
-              'Borrar originales cuando estén en la nube',
-              style: AppTypography.body,
-            ),
-            subtitle: const Text(
-              deleteOriginalsExplanation,
-              style: AppTypography.caption,
+        // Fase 8 (G7): sin nube no hay borrado de originales que ofrecer.
+        if (!VaultUiMode.cloudless)
+          MergeSemantics(
+            child: SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _delete,
+              onChanged: (v) => setState(() => _delete = v),
+              title: const Text(
+                'Borrar originales cuando estén en la nube',
+                style: AppTypography.body,
+              ),
+              subtitle: const Text(
+                deleteOriginalsExplanation,
+                style: AppTypography.caption,
+              ),
             ),
           ),
-        ),
         const SizedBox(height: AppSpacing.lg),
         AppFilledButton(
           label: 'Cifrar e importar',

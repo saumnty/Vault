@@ -26,6 +26,7 @@ import '../vault/vault_services.dart';
 import 'account_migration_screen.dart';
 import 'diagnostics_screen.dart';
 import 'pin_flows.dart';
+import 'secondary_vault_screen.dart';
 import 'tags_screen.dart';
 import 'trash_screen.dart';
 import 'settings_environment.dart';
@@ -87,6 +88,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   KeyRotationService? get _rotation => widget.services.rotation;
 
+  /// Fase 8: dentro de la bóveda secundaria, Ajustes reducido (§6.11).
+  bool get _secondary => _env.isSecondary;
+
+  /// Estado de la bóveda adicional (solo en la principal).
+  SecondaryVaultStatus? _altStatus;
+
   /// Hay un cambio de llave maestra registrado (S-11).
   bool get _rotating => _rotation?.auth.rotationStore.record.value != null;
 
@@ -125,6 +132,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final wifi = await _sync?.getWifiOnly() ?? true;
     final stats = await _safeStats();
     final missing = await _safeMissingThumbs();
+    SecondaryVaultStatus? alt;
+    if (!_secondary) {
+      try {
+        alt = await _auth.secondaryStatus();
+      } on Object {
+        alt = null;
+      }
+    }
     String version = '';
     try {
       version = (await _env.versionLoader()).toString();
@@ -141,6 +156,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _wifiOnly = wifi;
       _stats = stats;
       _missingThumbs = missing;
+      _altStatus = alt;
       _version = version;
       _loaded = true;
     });
@@ -550,6 +566,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
       BiometricAvailability.unavailable => 'No disponible en este dispositivo',
     };
     final rotating = _rotating;
+    if (_secondary) {
+      // Fase 8 (§6.11): en la secundaria no hay Cambiar PIN (C2), biometría,
+      // Proteger pantalla, código de recuperación ni rotación.
+      return [
+        SettingsTile(
+          icon: Icons.timer_outlined,
+          title: 'Autobloqueo',
+          trailing: _env.autoLock.delay.label,
+          onTap: _pickAutoLock,
+        ),
+        SettingsTile(
+          icon: Icons.lock_outline_rounded,
+          title: 'Bloquear ahora',
+          onTap: _env.onLock,
+        ),
+      ];
+    }
     return [
       SettingsTile(
         icon: Icons.pin_outlined,
@@ -607,11 +640,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
         onTap: _checkCode,
       ),
       SettingsTile(
+        key: const ValueKey('secondary-vault-tile'),
+        icon: Icons.layers_outlined,
+        title: 'Bóveda adicional',
+        subtitle: switch (_altStatus) {
+          SecondaryVaultStatus.active => 'Activa',
+          SecondaryVaultStatus.damaged => 'Dañada',
+          _ => 'Desactivada',
+        },
+        onTap: _openSecondaryVault,
+      ),
+      SettingsTile(
         icon: Icons.lock_outline_rounded,
         title: 'Bloquear ahora',
         onTap: _env.onLock,
       ),
     ];
+  }
+
+  Future<void> _openSecondaryVault() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => SecondaryVaultScreen(auth: _auth),
+      ),
+    );
+    if (!mounted) return;
+    SecondaryVaultStatus? alt;
+    try {
+      alt = await _auth.secondaryStatus();
+    } on Object {
+      alt = null;
+    }
+    final bio = await _auth.isBiometricUnlockEnabled();
+    if (mounted) {
+      setState(() {
+        _altStatus = alt;
+        _bioEnabled = bio;
+      });
+    }
   }
 
   List<Widget> _import() => [
@@ -621,14 +687,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
       trailing: _quality.label,
       onTap: _pickQuality,
     ),
-    SettingsSwitchTile(
-      icon: Icons.delete_sweep_outlined,
-      title: 'Borrar originales cuando estén en la nube',
-      subtitle: deleteOriginalsExplanation,
-      value: _deleteOriginals,
-      onChanged: _toggleDeleteOriginals,
-    ),
-    if (_deleteOriginals && widget.services.gallery != null)
+    // Sin nube no hay verificación: en la secundaria no se borran originales.
+    if (!_secondary)
+      SettingsSwitchTile(
+        icon: Icons.delete_sweep_outlined,
+        title: 'Borrar originales cuando estén en la nube',
+        subtitle: deleteOriginalsExplanation,
+        value: _deleteOriginals,
+        onChanged: _toggleDeleteOriginals,
+      ),
+    if (!_secondary && _deleteOriginals && widget.services.gallery != null)
       SettingsTile(
         icon: Icons.cleaning_services_outlined,
         title: 'Borrar ahora los originales verificados',
@@ -841,6 +909,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               SettingsSection(
                                 title: 'Almacenamiento',
                                 children: _storageTiles(),
+                              )
+                            else if (_secondary &&
+                                widget.services.gallery?.regeneration != null)
+                              SettingsSection(
+                                title: 'Almacenamiento',
+                                children: _storageTiles()
+                                    .where(
+                                      (w) =>
+                                          w is SettingsTile &&
+                                          w.icon == Icons.image_search_outlined,
+                                    )
+                                    .toList(),
                               ),
                             if (widget.services.tags != null)
                               SettingsSection(
@@ -891,35 +971,51 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   title: 'Versión',
                                   trailing: _version,
                                 ),
-                                const SettingsTile(
-                                  icon: Icons.privacy_tip_outlined,
-                                  title: 'Privacidad',
-                                  subtitle:
-                                      'Tus archivos se cifran en este teléfono '
-                                      'antes de guardarse o de subirse a un '
-                                      'espacio privado de tu Google Drive. El '
-                                      'PIN y las llaves nunca salen del '
-                                      'dispositivo: solo viaja un respaldo '
-                                      'cifrado con tu código de recuperación. '
-                                      'Vault no tiene servidores, ni '
-                                      'analíticas, ni comparte datos con '
-                                      'terceros.',
-                                ),
-                                SettingsTile(
-                                  icon: Icons.bug_report_outlined,
-                                  title: 'Diagnóstico',
-                                  subtitle: 'Registro local sin datos tuyos',
-                                  onTap: () => Navigator.of(context).push(
-                                    MaterialPageRoute<void>(
-                                      builder: (_) => DiagnosticsScreen(
-                                        headerLoader: () =>
-                                            loadDiagnosticsHeader(
-                                              versionLoader: _env.versionLoader,
-                                            ),
+                                if (_secondary)
+                                  // Fase 8 (§6.11): texto neutro.
+                                  const SettingsTile(
+                                    icon: Icons.privacy_tip_outlined,
+                                    title: 'Privacidad',
+                                    subtitle:
+                                        'Tus archivos se cifran en este '
+                                        'teléfono antes de guardarse. El PIN '
+                                        'y las llaves nunca salen del '
+                                        'dispositivo. Vault no tiene '
+                                        'servidores, ni analíticas, ni '
+                                        'comparte datos con terceros.',
+                                  )
+                                else
+                                  const SettingsTile(
+                                    icon: Icons.privacy_tip_outlined,
+                                    title: 'Privacidad',
+                                    subtitle:
+                                        'Tus archivos se cifran en este '
+                                        'teléfono antes de guardarse o de '
+                                        'subirse a un espacio privado de tu '
+                                        'Google Drive. El PIN y las llaves '
+                                        'nunca salen del dispositivo: solo '
+                                        'viaja un respaldo cifrado con tu '
+                                        'código de recuperación. Vault no '
+                                        'tiene servidores, ni analíticas, ni '
+                                        'comparte datos con terceros.',
+                                  ),
+                                if (!_secondary)
+                                  SettingsTile(
+                                    icon: Icons.bug_report_outlined,
+                                    title: 'Diagnóstico',
+                                    subtitle: 'Registro local sin datos tuyos',
+                                    onTap: () => Navigator.of(context).push(
+                                      MaterialPageRoute<void>(
+                                        builder: (_) => DiagnosticsScreen(
+                                          headerLoader: () =>
+                                              loadDiagnosticsHeader(
+                                                versionLoader:
+                                                    _env.versionLoader,
+                                              ),
+                                        ),
                                       ),
                                     ),
                                   ),
-                                ),
                               ],
                             ),
                           ],

@@ -9,6 +9,7 @@ import '../../../core/theme/app_motion.dart';
 import '../../../core/theme/app_radii.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../shared/vault_ui_mode.dart';
 import '../../../data/models/vault_item_model.dart';
 import '../../../shared/widgets/app_buttons.dart';
 import '../vault_services.dart';
@@ -235,7 +236,8 @@ class ViewerProgress extends StatelessWidget {
   Widget build(BuildContext context) {
     final p = progress;
     final text = switch (p?.phase) {
-      MediaPhase.downloading => 'Descargando de Drive…',
+      MediaPhase.downloading =>
+        VaultUiMode.cloudless ? 'Abriendo…' : 'Descargando de Drive…',
       MediaPhase.decrypting => 'Descifrando…',
       null => idleLabel ?? 'Abriendo…',
     };

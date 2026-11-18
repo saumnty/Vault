@@ -3,16 +3,20 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../data/models/sync_status.dart';
+import '../../../shared/vault_ui_mode.dart';
 
-/// Texto accesible (español) de cada estado.
-String syncStatusLabel(SyncStatus status) => switch (status) {
-  SyncStatus.pendiente => 'Pendiente de subir',
-  SyncStatus.subiendo => 'Subiendo a la nube',
-  SyncStatus.enNube => 'En la nube',
-  SyncStatus.enCache => 'En caché del dispositivo',
-  SyncStatus.sinConexion => 'Disponible sin conexión',
-  SyncStatus.error => 'Error de sincronización',
-};
+/// Texto accesible (español) de cada estado. Fase 8: en la bóveda secundaria
+/// (sin nube) siempre "En este teléfono".
+String syncStatusLabel(SyncStatus status) => VaultUiMode.cloudless
+    ? 'En este teléfono'
+    : switch (status) {
+        SyncStatus.pendiente => 'Pendiente de subir',
+        SyncStatus.subiendo => 'Subiendo a la nube',
+        SyncStatus.enNube => 'En la nube',
+        SyncStatus.enCache => 'En caché del dispositivo',
+        SyncStatus.sinConexion => 'Disponible sin conexión',
+        SyncStatus.error => 'Error de sincronización',
+      };
 
 IconData syncStatusIcon(SyncStatus status) => switch (status) {
   SyncStatus.pendiente => Icons.schedule,
@@ -50,6 +54,8 @@ class SyncStatusIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Fase 8 (G7): sin nube no hay estado de subida que mostrar.
+    if (VaultUiMode.cloudless) return const SizedBox.shrink();
     final color = downloading ? AppColors.success : syncStatusColor(status);
     final uploading = status == SyncStatus.subiendo || downloading;
     final base = downloading

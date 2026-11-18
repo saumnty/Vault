@@ -15,6 +15,7 @@ import 'core/security/security_preferences.dart';
 import 'core/services/app_paths.dart';
 import 'core/services/plain_residue.dart';
 import 'core/services/plain_temp_manager.dart';
+import 'core/session/vault_slot.dart';
 import 'core/theme/app_motion.dart';
 import 'core/theme/app_theme.dart';
 import 'data/cloud/cloud_provider.dart';
@@ -30,6 +31,7 @@ import 'features/onboarding/onboarding_flow.dart';
 import 'features/settings/settings_environment.dart';
 import 'features/vault/home_vault_screen.dart';
 import 'features/vault/vault_services.dart';
+import 'shared/vault_ui_mode.dart';
 import 'shared/widgets/privacy_cover.dart';
 
 void main() async {
@@ -95,12 +97,16 @@ class VaultApp extends StatelessWidget {
     this.autoLockSuspension,
     this.autoLockDelay,
     this.restoreService,
+    this.secondaryServices,
   });
 
   /// Inyectables para pruebas; por defecto usan almacenamiento, biometría y
   /// base de datos reales.
   final AuthController? authController;
   final VaultServices? services;
+
+  /// Pruebas: servicios de la bóveda secundaria (fase 8).
+  final VaultServices? secondaryServices;
   final AutoLockClock? autoLockClock;
   final AutoLockSuspension? autoLockSuspension;
   final AutoLockDelay? autoLockDelay;
@@ -122,6 +128,7 @@ class VaultApp extends StatelessWidget {
       home: VaultRootNavigator(
         authController: authController,
         services: services,
+        secondaryServices: secondaryServices,
         autoLockClock: autoLockClock,
         autoLockSuspension: autoLockSuspension,
         autoLockDelay: autoLockDelay,
@@ -141,10 +148,14 @@ class VaultRootNavigator extends StatefulWidget {
     this.autoLockSuspension,
     this.autoLockDelay,
     this.restoreService,
+    this.secondaryServices,
   });
 
   final AuthController? authController;
   final VaultServices? services;
+
+  /// Pruebas: servicios de la bóveda secundaria (fase 8).
+  final VaultServices? secondaryServices;
 
   /// Pruebas: reloj, suspensión y tiempo del autobloqueo. Con
   /// [autoLockDelay] nulo se carga la preferencia persistida.
@@ -188,8 +199,14 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
         prefs: SyncPreferences(FlutterSecureKeyValueStore()),
       ));
 
-  VaultServices get _services =>
-      widget.services ?? (_realServices ??= VaultServices.real());
+  /// Fase 8 (M7): bóveda abierta en la pantalla de la bóveda. Los servicios
+  /// y los Ajustes se eligen por ella en CADA desbloqueo (y al bloquear se
+  /// vuelve a la principal).
+  VaultSlot _openSlot = VaultSlot.primary;
+
+  VaultServices get _services => _openSlot == VaultSlot.secondary
+      ? (widget.secondaryServices ?? VaultServices.secondary())
+      : (widget.services ?? (_realServices ??= VaultServices.real()));
 
   late final AutoLockController _autoLock = AutoLockController(
     onLock: _lock,
@@ -260,10 +277,16 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
   void _lock() {
     // F9: con cambios sin respaldar, la copia cifrada de la BD se toma ANTES
     // de destruir las llaves (la interfaz ya vuelve al PIN de inmediato).
-    final flush = _phase == _Phase.vault && _authController.isUnlocked
+    // Fase 8: solo con la principal abierta (la secundaria no tiene snapshot;
+    // sus servicios no tienen `beforeLock`).
+    final flush =
+        _phase == _Phase.vault &&
+            _authController.session.isUnlockedAs(VaultSlot.primary)
         ? _services.beforeLock
         : null;
     lockWithFlush(flush: flush, lock: _authController.lock);
+    _openSlot = VaultSlot.primary;
+    VaultUiMode.cloudless = false;
     if (!mounted) return;
     final inVault = _phase == _Phase.vault;
     // En el onboarding SIN bóveda todavía no hay nada que bloquear.
@@ -279,6 +302,18 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
   Future<void> _handleAuthenticationSuccess() async {
     // Si se bloqueó durante la animación de desbloqueo, no se abre la bóveda.
     if (!_authController.isUnlocked) return;
+    // Fase 8 (M7): servicios y Ajustes de la bóveda que se abrió.
+    if (_authController.session.slot == VaultSlot.secondary) {
+      VaultUiMode.cloudless = true;
+      setState(() {
+        _openSlot = VaultSlot.secondary;
+        _resumeOnboarding = false;
+        _phase = _Phase.vault;
+      });
+      return;
+    }
+    _openSlot = VaultSlot.primary;
+    VaultUiMode.cloudless = false;
     final pending = await _authController.isOnboardingPending();
     if (!mounted || !_authController.isUnlocked) return;
     setState(() {
@@ -328,12 +363,15 @@ class _VaultRootNavigatorState extends State<VaultRootNavigator> {
       case _Phase.vault:
         // null indica la raíz de la bóveda
         return HomeVaultScreen(
-          key: const ValueKey('vault'),
+          // Fase 8: estado nuevo por bóveda (nada de la otra queda montado).
+          key: ValueKey('vault-${_openSlot.name}'),
           currentFolderId: null,
           currentFolderName: 'Mi Bóveda',
           services: _services,
           onLock: _autoLock.lockNow,
-          settings: _settings,
+          settings: _openSlot == VaultSlot.secondary
+              ? _settings.forSlot(VaultSlot.secondary)
+              : _settings,
         );
     }
   }

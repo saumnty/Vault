@@ -13,6 +13,7 @@ import '../../../core/streaming/vault_stream_server.dart';
 import '../../../data/cloud/cloud_storage.dart';
 import '../../../data/models/vault_item_model.dart';
 import '../../../data/sync/vault_file_fetcher.dart';
+import '../../../shared/vault_ui_mode.dart';
 
 /// Fase de apertura de un archivo (para la barra de progreso del visor).
 enum MediaPhase {
@@ -52,7 +53,18 @@ class VideoPlaybackException implements Exception {
 }
 
 /// Traduce cualquier excepción de apertura a un mensaje en español.
-MediaOpenError describeMediaError(Object e) => switch (e) {
+///
+/// Fase 8 (M8): en la bóveda secundaria (sin nube) los errores de "no está
+/// en el teléfono / nube" se dicen con un texto neutro.
+MediaOpenError describeMediaError(Object e) =>
+    VaultUiMode.cloudless &&
+        (e is CloudException ||
+            e is VaultFetchUnavailableException ||
+            e is VaultFetchVerificationException)
+    ? const MediaOpenError('Este archivo no está disponible.', canRetry: false)
+    : _describeMediaError(e);
+
+MediaOpenError _describeMediaError(Object e) => switch (e) {
   CloudNoNetworkException() => const MediaOpenError(
     'Sin conexión a internet. Este archivo solo está en la nube; '
     'conéctate y vuelve a intentarlo.',

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart' show SecretKey;
 import 'package:flutter/foundation.dart' show ValueListenable, kDebugMode;
 import 'package:flutter/painting.dart';
 import 'package:path/path.dart' as p;
@@ -186,6 +187,144 @@ class VaultServices {
 
   /// Rotación de la llave maestra (`null` = no disponible, p. ej. pruebas).
   final KeyRotationService? rotation;
+
+  /// `true` si son los servicios de una bóveda sin nube (la secundaria).
+  bool get isCloudless => sync == null;
+
+  /// Servicios de la bóveda SECUNDARIA (fase 8, D67, DISENO_SENUELO §4.4):
+  /// instancias PROPIAS (BD `alt/db`, rutas `alt/`, llaves ligadas a la
+  /// secundaria, ticket de su sesión) y nada de `_Core`: sin sincronización,
+  /// nube, sin conexión, migración ni rotación. Se crean una vez por proceso
+  /// (como los de la principal) y se reutilizan en cada desbloqueo de la
+  /// secundaria; sus cachés y lotes se vacían/cancelan al bloquear.
+  factory VaultServices.secondary() => _secondary ??= _createSecondary();
+
+  static VaultServices? _secondary;
+
+  static VaultServices _createSecondary() {
+    const slot = VaultSlot.secondary;
+    final session = VaultSession();
+    SessionHooks.ensureInstalled(session);
+    final paths = VaultPaths.secondary;
+    final db = VaultDatabase.secondaryInstance;
+    final repository = VaultDataRepository(dbProvider: () => db.database);
+    SessionTicket? ticket() =>
+        session.isUnlockedAs(slot) ? session.ticket() : null;
+    SecretKey? filesKey() =>
+        session.isUnlockedAs(slot) ? session.filesKey : null;
+    SecretKey? thumbsKey() =>
+        session.isUnlockedAs(slot) ? session.keysOrNull?.thumbs : null;
+    final importer = VaultImportService(
+      repository: repository,
+      paths: paths,
+      sessionTicket: ticket,
+    );
+    final temp = PlainTempManager(dirProvider: () => paths.tmpPlainDir);
+    session.addOnClear(temp.purgeSync);
+    final thumbs = EncryptedThumbnailLoader(
+      thumbsKey: (gen) => session.thumbsKeyFor(gen, slot),
+      refresh: repository.getItem,
+      resolve: paths.resolve,
+    );
+    session.addOnClear(thumbs.clear);
+    // La nube va con guarda (CloudSlotException): un `.vault` ausente da
+    // "no disponible", nunca una descarga.
+    final fetcher = VaultFileFetcher(
+      cloud: CloudProvider.instance,
+      items: repository,
+      resolvePath: paths.resolve,
+      sessionTicket: ticket,
+    );
+    final opener = VaultMediaOpener(
+      fetcher: fetcher,
+      filesKey: (gen) => session.filesKeyFor(gen, slot),
+      temp: temp,
+      session: session,
+    );
+    Future<void> cleaner(Iterable<String> ids) async {
+      for (final id in ids) {
+        for (final rel in [
+          AppPaths.vaultRelativePath(id),
+          AppPaths.thumbRelativePath(id),
+        ]) {
+          try {
+            final file = paths.resolve(rel);
+            if (await file.exists()) await file.delete();
+          } on FileSystemException {
+            // se reintentará
+          }
+        }
+      }
+    }
+
+    final trash = TrashService(
+      repository: TrashRepository(dbProvider: () => db.database),
+      fileCleaner: cleaner,
+      sessionTicket: ticket,
+    );
+    final source = PhotoManagerGallerySource();
+    final videoThumbnailer = PlatformVideoThumbnailer();
+    final gallery = GalleryImportService(
+      source: source,
+      compressor: VideoCompressPlugin(),
+      repository: repository,
+      filesKey: filesKey,
+      thumbsKey: thumbsKey,
+      keyGen: () => 1,
+      tempDirProvider: () => paths.importTmpDir,
+      // Sin nube no hay verificación: nunca se borran originales.
+      deletionEnabledProvider: () async => false,
+      cloudVerifier: (_) async => false,
+      videoThumbnailer: videoThumbnailer,
+      paths: paths,
+      sessionTicket: ticket,
+    );
+    final regeneration = ThumbnailRegenerationService(
+      repository: repository,
+      source: source,
+      videoThumbnailer: videoThumbnailer,
+      filesKey: (gen) => session.filesKeyFor(gen, slot),
+      thumbsKey: (gen) => session.thumbsKeyFor(gen, slot),
+      tempDirProvider: () => paths.importTmpDir,
+      paths: paths,
+      sessionTicket: ticket,
+    );
+    session.addOnClear(gallery.cancelRunning);
+    session.addOnClear(regeneration.cancel);
+    return VaultServices(
+      repository: repository,
+      importFile: ({required folderId, required deleteOriginal}) =>
+          importer.importAndEncryptFile(targetFolderId: folderId),
+      syncRunner: () async {},
+      thumbnailLoader: thumbs.call,
+      mediaOpener: opener,
+      mediaExporter: VaultMediaExporter(
+        opener: opener,
+        saver: PhotoManagerPhotoSaver(),
+        sessionTicket: ticket,
+      ),
+      fileCleaner: cleaner,
+      trash: trash,
+      tags: TagRepository(dbProvider: () => db.database),
+      offlineToggler: (_, _) async => false,
+      folderOfflineToggler: (_, _) async {},
+      onUnlocked: () async {
+        final t = ticket();
+        if (t == null) return;
+        await temp.sweep();
+        if (!t.isValid) return;
+        await trash.purgeExpired();
+        if (!t.isValid) return;
+        unawaited(regeneration.run());
+      },
+      gallery: GalleryDeps(
+        source: source,
+        service: gallery,
+        preferences: GalleryImportPreferences(FlutterSecureKeyValueStore()),
+        regeneration: regeneration,
+      ),
+    );
+  }
 
   /// Servicios reales. Las dependencias pesadas se crean bajo demanda.
   factory VaultServices.real() {

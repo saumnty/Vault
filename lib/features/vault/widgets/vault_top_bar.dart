@@ -54,7 +54,8 @@ class VaultTopBar extends StatelessWidget {
   final VoidCallback onClearSelection;
   final VoidCallback onSelectAll;
   final VoidCallback onMove;
-  final VoidCallback onOffline;
+  /// `null` oculta la acción (bóveda sin nube, fase 8).
+  final VoidCallback? onOffline;
   final VoidCallback onDelete;
 
   /// Acción extra antes de buscar (icono de sincronización).

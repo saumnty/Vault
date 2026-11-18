@@ -22,7 +22,9 @@ class SelectionBar extends StatelessWidget {
   final VoidCallback onClose;
   final VoidCallback onSelectAll;
   final VoidCallback onMove;
-  final VoidCallback onOffline;
+
+  /// "Disponible sin conexión"; `null` oculta la acción (bóveda sin nube).
+  final VoidCallback? onOffline;
   final VoidCallback onDelete;
 
   /// Etiquetas de los archivos seleccionados; `null` oculta la acción.
@@ -64,11 +66,12 @@ class SelectionBar extends StatelessWidget {
             label: 'Mover',
             onPressed: onMove,
           ),
-          AppIconButton(
-            icon: Icons.offline_pin_outlined,
-            label: 'Disponible sin conexión',
-            onPressed: onOffline,
-          ),
+          if (onOffline != null)
+            AppIconButton(
+              icon: Icons.offline_pin_outlined,
+              label: 'Disponible sin conexión',
+              onPressed: onOffline,
+            ),
           AppIconButton(
             icon: Icons.delete_outline,
             label: 'Eliminar',

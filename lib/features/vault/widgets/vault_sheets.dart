@@ -8,6 +8,7 @@ import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../data/models/folder_model.dart';
 import '../../../data/repositories/vault_data_repository.dart';
+import '../../../shared/vault_ui_mode.dart';
 import '../../../shared/widgets/app_buttons.dart';
 import '../../../shared/widgets/blur_sheet.dart';
 
@@ -30,13 +31,16 @@ class ImportConfirmContent extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const SheetHeader(
+        SheetHeader(
           title: 'Importar al Vault',
-          message:
-              'Se cifrará una copia en la bóveda y tu archivo original no se '
-              'toca. Si quieres liberar espacio, activa "Borrar originales '
-              'cuando estén en la nube" en Ajustes: solo se borran con su '
-              'copia verificada en Drive y tras tu confirmación.',
+          message: VaultUiMode.cloudless
+              ? 'Se cifrará una copia en la bóveda y tu archivo original no '
+                    'se toca.'
+              : 'Se cifrará una copia en la bóveda y tu archivo original no '
+                    'se toca. Si quieres liberar espacio, activa "Borrar '
+                    'originales cuando estén en la nube" en Ajustes: solo se '
+                    'borran con su copia verificada en Drive y tras tu '
+                    'confirmación.',
         ),
         AppFilledButton(
           label: 'Cifrar e importar',
@@ -131,6 +135,8 @@ Future<bool> showConfirmDeleteSheet(
 }) async {
   final String title;
   final String message;
+  // Fase 8 (G7): sin nube, sin mencionarla.
+  final cloudless = VaultUiMode.cloudless;
   if (toTrash) {
     title = count == 1
         ? '¿Mover 1 elemento a la Papelera?'
@@ -139,17 +145,18 @@ Future<bool> showConfirmDeleteSheet(
         '${includesFolders ? 'Las carpetas van con todo su contenido. ' : ''}'
         'Podrás restaurarlo desde Ajustes > Papelera durante '
         '$kTrashRetentionDays días. Después se eliminará de forma '
-        'permanente, también de la nube (Google Drive).';
+        '${cloudless ? 'permanente.' : 'permanente, también de la nube (Google Drive).'}';
   } else {
     title = count == 1
         ? '¿Eliminar 1 elemento?'
         : '¿Eliminar $count elementos?';
+    final cloud = cloudless
+        ? ''
+        : 'También se eliminará de la nube (Google Drive). ';
     message = includesFolders
-        ? 'Las carpetas se eliminan con todo su contenido. También se '
-              'eliminará de la nube (Google Drive). Esta acción no se '
-              'puede deshacer.'
-        : 'También se eliminará de la nube (Google Drive). Esta '
-              'acción no se puede deshacer.';
+        ? 'Las carpetas se eliminan con todo su contenido. ${cloud}Esta '
+              'acción no se puede deshacer.'
+        : '${cloud}Esta acción no se puede deshacer.';
   }
   final result = await showBlurSheet<bool>(
     context,

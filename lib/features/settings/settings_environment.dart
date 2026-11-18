@@ -3,6 +3,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../../core/crypto/auth_controller.dart';
 import '../../core/security/auto_lock.dart';
 import '../../core/security/platform_security.dart';
+import '../../core/session/vault_slot.dart';
 import '../../data/gallery/import_preferences.dart';
 
 /// Versión de la app para "Acerca de".
@@ -36,7 +37,24 @@ class SettingsEnvironment {
     required this.importPreferences,
     required this.onLock,
     this.versionLoader = loadAppVersion,
+    this.slot = VaultSlot.primary,
   });
+
+  /// Fase 8: bóveda abierta. En la secundaria, Ajustes es reducido (§6.11).
+  final VaultSlot slot;
+
+  bool get isSecondary => slot == VaultSlot.secondary;
+
+  /// Copia para otra bóveda (mismos controladores de la raíz).
+  SettingsEnvironment forSlot(VaultSlot s) => SettingsEnvironment(
+    auth: auth,
+    autoLock: autoLock,
+    screenProtection: screenProtection,
+    importPreferences: importPreferences,
+    onLock: onLock,
+    versionLoader: versionLoader,
+    slot: s,
+  );
 
   final AuthController auth;
 
