@@ -733,17 +733,14 @@ Usa un directorio temporal propio (no toca la bóveda de la app); ojo con la not
     4. **SOLO en un aparato de pruebas (NUNCA en tu iPhone: desinstalar borra la bóveda local y la adicional):** restauración con instalación limpia, código incorrecto y luego el correcto, modo avión durante la barra («No se pudo restaurar» + «Reintentar»), y otra cuenta de Google sin respaldo («No hay respaldo en esta cuenta de Google»).
   - Debe pasar: sincronización «al día» sin volver a subir todo (revisa la hoja de Sincronización y el consumo de datos). En el aparato de pruebas: código incorrecto → «Código incorrecto» (cinco fallos bloquean 30 s y persiste al cerrar); correcto (minúsculas, espacios y guiones valen) → PIN nuevo → «Bóveda restaurada: N archivos y M carpetas».
 
-- [ ] **10) Limpieza de restos y borrar la cuenta anterior** *(sin probar en iOS; Fase 1, pendientes cerrados)*
-  - Requisito: haber migrado de cuenta (Ajustes > Sincronización y cuenta > «Cambiar de cuenta de Google», sección «Pasar a tu cuenta personal»). Si no migraste, omite el punto 2.
+- [ ] **10) Espacio libre y limpieza de restos** *(sin probar en iOS; Fase 1, pendientes cerrados)*
+  - «Borrar datos de la cuenta anterior» (M7) NO está en esta lista: quien probó la migración no vio la opción Borrar/Conservar y no hay datos conservados que borrar. Queda anotado como «sin probar contra Drive real».
   - Qué hacer:
     1. Espacio libre: abre la hoja «Cambiar de cuenta de Google» sin pulsar «Empezar». Debe mostrar un número real (si dice «no se pudo comprobar», avísame).
-    2. Borrar la cuenta anterior (si elegiste «Conservar»): Ajustes > Seguridad > Rotar llave maestra (sin empezar la rotación) > «Borrar datos de la cuenta anterior». Prueba en este orden: (a) cancela el selector de cuentas; (b) elige OTRA cuenta distinta de la anterior; (c) elige la anterior.
-    3. Limpieza de restos: en Rotar llave maestra, «Limpiar restos de cambios de llave». Si nunca rotaste, es normal que no haya nada. Después abre varios archivos y haz «Comprobar mi código».
+    2. Limpieza de restos: en Rotar llave maestra, «Limpiar restos de cambios de llave». Si nunca rotaste, es normal que no haya nada. Después abre varios archivos y haz «Comprobar mi código».
   - Debe pasar:
     - (1) La hoja muestra espacio libre real.
-    - (2a) Cancelar no borra nada. (2b) Dice «Elegiste otra cuenta» y no borra. (2c) Borra la cuenta anterior y vuelve a la actual.
-    - En Drive de ambas cuentas (Administrar aplicaciones > Vault): la cuenta actual NO cambió.
-    - (3) Sin restos: «No hay restos que limpiar» o cifras pequeñas. Tras limpiar, los archivos abren y «Comprobar mi código» sigue en «Este código es el vigente».
+    - (2) Sin restos: «No hay restos que limpiar» o cifras pequeñas. Tras limpiar, los archivos abren y «Comprobar mi código» sigue en «Este código es el vigente».
     - Estas acciones son permanentes (no hay Papelera). Límites: la app no puede saber si otro teléfono está rotando justo ahora; si el selector de Google se cancela al volver, hay que iniciar sesión a mano.
 
 - [ ] **11) Rotar la llave maestra — AL FINAL Y OPCIONAL: solo si el código de recuperación se filtra; y, si se hace, SOLO después de un simulacro de restauración exitoso** *(sin probar en iOS; Fase 1)*
@@ -766,4 +763,17 @@ Usa un directorio temporal propio (no toca la bóveda de la app); ojo con la not
   - Debe pasar: la sincronización se detiene y la bóveda local sigue abriendo.
 
 ### Pruebas de Drive real hechas en el emulador (cuenta de pruebas, nunca la del iPhone)
-_Ver la sección «v2 · Cierre — borrados permanentes contra Drive real» más abajo (se rellena tras la prueba)._
+**M11 «Limpiar restos de cambios de llave» — probado contra Drive real (2026-11-18, emulador, cuenta de pruebas).** Bóveda en generación 3 (6 archivos vigentes: 2 `.k3.vault`, 2 `.k3.thumb`, `recovery_backup.k3.json`, `vault_db.k3.snapshot`). Se plantaron restos con un parche temporal (no cometido, revertido).
+| Plantado | Resultado tras limpiar |
+|---|---|
+| gen mayor sin respaldo (`.k9`, `.k7`) | borrado |
+| gen menor (`.k2` con snapshot; gen 1 sin sufijo con su `recovery_backup.json`) | borrado |
+| gen mayor CON `recovery_backup.k9.json` y ese respaldo | se conservan (diseño) |
+| nombres no válidos (`.k1`) | se conservan (no son de Vault) |
+| los 6 archivos vigentes | intactos en todo momento |
+La vista previa dio cifras exactas (4 archivos, 10,4 KB y luego 4 archivos, 6,1 KB). Restauración en limpio después: «2 archivos y 0 carpetas» y el video se reproduce. Sin bugs de la app. Límites: el aviso de resultado no se pudo capturar; en la cuenta de pruebas quedan 5 archivos basura del propio test (los que la limpieza protege por diseño), borrables a mano.
+
+**M7:** ver la sección siguiente (sin probar contra Drive real).
+
+### M7 «Borrar datos de la cuenta anterior» — sin probar contra Drive real
+Implementado y cubierto solo con nubes falsas (D73, `rotation_extras_test.dart`). Nunca se ejecutó contra Drive real: el emulador tiene una sola cuenta de pruebas y en la migración real no apareció la opción Borrar/Conservar, así que no hay datos conservados de otra cuenta. No se pide probarlo en el iPhone. Es un borrado permanente: úsalo solo tras probarlo con dos cuentas de pruebas.

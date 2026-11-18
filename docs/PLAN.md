@@ -78,7 +78,6 @@ Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (RE
 | 10 | Emulador y documentación (D65–D71) | 📝 DECISIONES D65–D71, REPORTE «v2 · Fase 8» (límites y pruebas de iPhone), CONTEXTO, PLAN; emulador: ver pasos 3–8 |
 
 ### Cierre v2
-- Estado: **regresión emulador en curso; lista final redactada**.
-- Lista final de pruebas de iPhone (v2), en orden 0 → 11 (el 11 es opcional y va al final): `docs/REPORTE.md`, sección «Lista final de pruebas de iPhone (v2) — en orden». Todo sin probar en iOS.
-- Antes de cualquier rotación de la llave, el simulacro de restauración del ítem 9 debe salir bien.
-
+- Estado: **v2 CERRADA (2026-11-18)** en la rama dev-claude, sin push. Regresión completa en el emulador hecha (un bug hallado y corregido: Papelera bloqueada si fallaba el aviso). M11 probado contra Drive real; M7 sin probar contra Drive real (no hay segunda cuenta de pruebas).
+- Lista final de pruebas de iPhone (v2), en orden 0 → 1 → 1 bis (simulacro) → 2 … 12 (el 11, rotación, es OPCIONAL: solo si el código se filtra y después del simulacro): `docs/REPORTE.md`, sección «Lista final de pruebas de iPhone (v2) — en orden». Todo sin probar en iOS.
+- Dónde retomar: esperar los resultados del iPhone del usuario; nunca instalar una build antigua en el iPhone ni desinstalar la app.
