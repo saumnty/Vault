@@ -42,7 +42,7 @@ Reglas: una fase a la vez; migraciones de BD incrementales (v7 → v8…), nunca
 | 9 | Etiquetas, filtros y búsqueda (BD v9) | Sonnet | 🧪 BD v9 incremental, `TagRepository`, filtros globales, hoja de etiquetas, Ajustes > Etiquetas; tests + emulador |
 | 6 | Selector de archivos propio (sin file_picker; S-02 residual, S-18) | Sonnet | 🧪 canal `vault/picker` (Kotlin probado en emulador; Swift sin compilar), `encryptSource`, `file_picker` fuera; tests |
 | 1 | Rotar la DEK (S-11), diseño revisado por Opus; PARAR al terminar | Opus | 🧪 pasos 1–11 implementados y en tests (D60–D63); ⬜ rotación real contra Drive sin probar; PARADA: simulacro de restauración del usuario (REPORTE "v2 · Fase 1") antes de rotar en el iPhone |
-| 8 | Bóveda señuelo: variante (a) «disimulo» (decisión del usuario 2026-11-18, sustituye a la de ambas del 17): segundo PIN que abre una bóveda SEPARADA; NO hace falta ocultar en disco ni en Drive cuántas bóvedas hay. Diseño con Opus + revisión independiente antes de codificar; mismas reglas que la fase 1 | Opus | ⬜ |
+| 8 | Bóveda señuelo: variante (a) «disimulo» (decisión del usuario 2026-11-18, sustituye a la de ambas del 17): segundo PIN que abre una bóveda SEPARADA; NO hace falta ocultar en disco ni en Drive cuántas bóvedas hay. Diseño final revisado por Opus independiente en `docs/DISENO_SENUELO.md` (2 críticos y 2 altos incorporados); mismas reglas que la fase 1 | Opus | 🔧 implementación por pasos (abajo) |
 | 11 | Kern: nombre visible e ícono | Haiku | ⬜ |
 
 Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (REPORTE.md "v2 · Fase 1") y después la rotación en el iPhone con la lista de pruebas. Pendiente de la fase: prueba de punta a punta en el emulador con Drive real (§10, a mano), limpieza manual de generaciones abandonadas (M11), botón de borrar la cuenta anterior desde el aviso M7 y goldens de la pantalla. Después: fase 8.
@@ -62,4 +62,18 @@ Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (RE
 | 10 | `KeyRotationService` con inyección de cortes | ✅🧪 (10a hasta el corte + 10b borrado y finalización; 1027 tests; cableado a la app, sin UI aún) |
 | 11 | UI de rotación | 🧪 `key_rotation_screen.dart`, entradas en Ajustes, banner, "Comprobar mi código", Diagnóstico; `test/ui/key_rotation_screen_test.dart` (16) + `settings_test` ampliado |
 | 12 | Punta a punta en emulador + docs; PARAR: simulacro de restauración | 📝 docs (D60–D63, REPORTE, CONTEXTO, PLAN) hechas; ⬜ punta a punta con Drive real sin hacer (no autorizado en este paso) |
+
+### Fase 8 · pasos (ver docs/DISENO_SENUELO.md §12; D65–D71)
+| Paso | Qué | Estado |
+|---|---|---|
+| 1 | `VaultSlot` y `VaultPaths` por bóveda, barridos de las dos raíces, exclusión de iCloud sin crear `alt/` | ⬜ |
+| 2 | Sesión con bóveda, época, `SessionTicket`, llaves ligadas a la bóveda, `SessionHooks` | ⬜ |
+| 3 | BD por bóveda (`VaultDatabase.secondaryInstance`), comprobaciones de época en `_open`/`rekeyTo` | ⬜ |
+| 4 | Guardas solo-principal: `SlotGuardedCloudStorage`, sync, sin conexión, `onDataChanged`, rotación, migración | ⬜ |
+| 5 | Época en operaciones largas (importar, regenerar, Papelera, caché, descargas, exportar, re-cifrado) + arnés de cruce | ⬜ |
+| 6 | `AuthController` y arranque: `altPin`, desbloqueo en paralelo (C1), `reauthPrimary`, crear/cambiar/eliminar, `_reconcileSecondary` | ⬜ |
+| 7 | `VaultServices.secondary()` y navegación por bóveda en `main.dart`, sin biometría automática | ⬜ |
+| 8 | UI: `SecondaryVaultScreen` y Ajustes reducido con textos neutros | ⬜ |
+| 9 | Batería transversal: aislamiento, principal intacta, convivencia con la rotación, cortes, esquema, SQLCipher real | ⬜ |
+| 10 | Emulador y documentación (D65–D71) | ⬜ |
 
