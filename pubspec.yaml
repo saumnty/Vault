@@ -76,6 +76,8 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   # SQLite de escritorio para pruebas del esquema/repositorio (sin SQLCipher).
   sqflite_common_ffi: 2.4.0+3
+  # Generador de iconos (Fase 11, Kern). Última estable publicada (0.14.4, 2025-06-10).
+  flutter_launcher_icons: 0.14.4
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -118,3 +120,14 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+# Icono de la app "Kern" (Fase 11). Fuente: assets/icon/kern.png (1024x1024, sin
+# transparencia en iOS) y kern_foreground.png para el adaptive icon de Android.
+# Regenerar con: dart run flutter_launcher_icons
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon/kern.png"
+  remove_alpha_ios: true
+  adaptive_icon_background: "#7C3AED"
+  adaptive_icon_foreground: "assets/icon/kern_foreground.png"

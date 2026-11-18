@@ -8,7 +8,7 @@
          (ya llegaba por fusión desde plugins; se declara explícitamente). -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <application
-        android:label="vault"
+        android:label="Kern"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
