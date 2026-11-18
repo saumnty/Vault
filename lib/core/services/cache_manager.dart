@@ -94,6 +94,11 @@ class CacheManager {
   /// `true` durante un cambio de cuenta: [enforce] no purga.
   bool suspended = false;
 
+  /// D61: durante una rotación de la DEK, generación de llave cuyos `.vault`
+  /// locales NO se purgan (la vieja, aún por re-cifrar: purgarlos obligaría
+  /// a bajarlos otra vez). `null` = sin rotación.
+  int? Function()? protectedKeyGen;
+
   /// Marca [itemId] como en uso hasta [releaseInUse].
   void markInUse(String itemId) =>
       _inUse.update(itemId, (n) => n + 1, ifAbsent: () => 1);
@@ -164,10 +169,12 @@ class CacheManager {
     final limit = maxBytes ?? await getLimitBytes();
     final verified = await _repo.getCloudVerifiedItems();
     final protected = await _repo.getEffectiveOfflineItemIds();
+    final keepGen = protectedKeyGen?.call();
     final candidates = <(VaultItemModel, int)>[];
     var total = 0;
     for (final item in verified) {
       if (protected.contains(item.id) || item.isOffline) continue;
+      if (keepGen != null && item.keyGen == keepGen) continue;
       if (item.syncStatus != SyncStatus.enNube &&
           item.syncStatus != SyncStatus.enCache) {
         continue;

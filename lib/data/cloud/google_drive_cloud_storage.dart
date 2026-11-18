@@ -250,6 +250,18 @@ class GoogleDriveCloudStorage implements CloudStorage {
   });
 
   @override
+  Future<CloudFile> rename(String fileId, String newName) =>
+      _withApi((api) async {
+        // Solo metadatos (sin `uploadMedia`): no crea revisión de contenido.
+        final f = await api.files.update(
+          drive.File(name: newName),
+          fileId,
+          $fields: _fields,
+        );
+        return _toCloud(f);
+      });
+
+  @override
   Future<CloudFile> getMetadata(String fileId) => _withApi((api) async {
     final f = await api.files.get(fileId, $fields: _fields) as drive.File;
     return _toCloud(f);

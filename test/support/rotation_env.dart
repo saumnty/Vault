@@ -11,6 +11,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:vault/core/crypto/auth_controller.dart';
 import 'package:vault/core/crypto/crypto_service.dart';
+import 'package:vault/core/crypto/key_hierarchy.dart';
+import 'package:vault/core/crypto/key_recovery_service.dart';
+import 'package:vault/core/crypto/wrapped_key.dart';
 import 'package:vault/core/crypto/vault_file_format.dart' show VaultByteSource;
 import 'package:vault/core/services/app_paths.dart';
 import 'package:vault/core/session/vault_session.dart';
@@ -164,6 +167,9 @@ class RotationPhone {
   void Function(ReencryptStep s)? itemCrash;
   bool Function(String id)? inUse;
 
+  /// La rotación se pausa justo al llegar al corte (`deletingOldCloud`).
+  bool stopAtCut = false;
+
   int now = 1000000;
 
   Future<void> create() async {
@@ -231,7 +237,11 @@ class RotationPhone {
       repo: repo,
       reencryptor: reencryptor,
       isInUse: (id) => inUse?.call(id) ?? false,
-      crashPoint: (p) => crash?.call(p),
+      crashPoint: (p) {
+        crash?.call(p);
+        // Para inspeccionar el estado del corte: se pausa justo después.
+        if (stopAtCut && p == RotationCrashPoint.afterCut) service.pause();
+      },
       nowMs: () => now,
       syncIdleTimeout: const Duration(seconds: 5),
     );
@@ -370,9 +380,93 @@ class RotationPhone {
 
   /// §10.1 `expectRecoverable`: restaura en un teléfono LIMPIO con [code] y
   /// descifra cada item restaurado. `true` si funcionó.
+  /// §10.1 `expectNoOldKeyMaterial`: nada en la nube (revisiones incluidas,
+  /// salvo la cuarentena si [allowQuarantine], M6), en el disco ni en el
+  /// almacén seguro se abre con la DEK vieja [old] ni con el código [oldCode].
+  Future<void> expectNoOldKeyMaterial(
+    KeyHierarchy old,
+    String oldCode, {
+    bool allowQuarantine = false,
+  }) async {
+    final oldPw = VaultDatabase.passwordFor(old);
+    final oldDek = old.dekBytes();
+    final recovery = KeyRecoveryService(kdfParams: fastKdf);
+    final probe = File('${Directory.systemTemp.path}/rot_probe_$hashCode.db');
+    Future<void> check(String where, Uint8List bytes) async {
+      for (final k in [old.files, old.thumbs]) {
+        Object? opened;
+        try {
+          opened = await crypto.decryptBytes(bytes, k);
+        } on Object {
+          opened = null;
+        }
+        expect(opened, isNull, reason: '$where abre con la DEK vieja');
+      }
+      // ¿Una BD (snapshot) cifrada con la llave vieja?
+      if (bytes.length > 16 &&
+          String.fromCharCodes(bytes.take(15)) == 'SQLite format 3') {
+        probe.writeAsBytesSync(bytes);
+        Object? key;
+        try {
+          final db = await databaseFactoryFfi.openDatabase(probe.path);
+          try {
+            key = (await db.query('_fake_key')).first['k'];
+          } finally {
+            await db.close();
+          }
+        } on Object {
+          key = null;
+        }
+        if (probe.existsSync()) probe.deleteSync();
+        expect(key, isNot(oldPw), reason: '$where es una BD con la vieja');
+      }
+      // ¿Un respaldo que abre con el código viejo?
+      RecoveryBackup? b;
+      try {
+        b = RecoveryBackup.parse(utf8.decode(bytes, allowMalformed: true));
+      } on FormatException {
+        b = null;
+      }
+      if (b != null) {
+        expect(
+          await recovery.recoverDek(oldCode, b),
+          isNull,
+          reason: '$where abre con el código viejo',
+        );
+      }
+    }
+
+    for (final (name, bytes) in cloud.everyVersion) {
+      if (allowQuarantine && name.startsWith('lost_')) continue;
+      await check('nube:$name', bytes);
+    }
+    for (final f in dir.listSync(recursive: true).whereType<File>()) {
+      await check('disco:${f.path}', f.readAsBytesSync());
+    }
+    for (final e in store.data.entries) {
+      await check('almacén:${e.key}', Uint8List.fromList(utf8.encode(e.value)));
+      // Envolturas del PIN que dieran la DEK vieja.
+      WrappedKey? w;
+      try {
+        w = WrappedKey.decode(e.value, expectedPurpose: WrapPurpose.pin);
+      } on FormatException {
+        w = null;
+      }
+      final dek = await w?.unwrap(utf8.encode(rotationPin));
+      if (dek != null) {
+        expect(
+          _eq(dek, oldDek),
+          isFalse,
+          reason: 'almacén:${e.key} da la DEK vieja',
+        );
+      }
+    }
+  }
+
   Future<bool> canRestoreWith(
     String code, {
     Set<String> lost = const {},
+    Future<void> Function(Database db)? inspect,
   }) async {
     final saved = AppPaths.baseDir;
     final tmp = await Directory.systemTemp.createTemp('rot_restore');
@@ -422,6 +516,7 @@ class RotationPhone {
             );
             if (!_eq(plain, plains[i.id]!)) return false;
           }
+          await inspect?.call(await vdb2.database);
           return true;
         } finally {
           await vdb2.close();

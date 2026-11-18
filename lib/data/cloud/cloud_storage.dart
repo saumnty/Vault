@@ -170,6 +170,10 @@ abstract interface class CloudStorage {
 
   Future<CloudFile> getMetadata(String fileId);
 
+  /// Cambia solo el NOMBRE de [fileId] (metadatos; el contenido y sus
+  /// revisiones no cambian). Lo usa la cuarentena de la rotación (M6).
+  Future<CloudFile> rename(String fileId, String newName);
+
   /// Descarga a [destination]. Si [maxBytes] no es null y el tamaño declarado
   /// o los bytes recibidos lo superan, aborta, borra lo escrito y lanza
   /// [CloudTooLargeException] (S-14).

@@ -9,7 +9,7 @@ import 'package:vault/data/sync/sync_service.dart';
 class _Blob {
   _Blob(this.id, this.name, this.bytes, this.md5);
   final String id;
-  final String name;
+  String name;
   Uint8List bytes;
   String md5;
 
@@ -71,6 +71,25 @@ class FakeCloudStorage implements CloudStorage {
     for (final b in _blobs.values)
       if (b.name == name) ...[b.bytes, ...b.revisions],
   ];
+
+  /// Contenido actual Y revisiones de TODOS los archivos (lo que alguien con
+  /// acceso a la cuenta podría recuperar), con su nombre.
+  List<(String, Uint8List)> get everyVersion => [
+    for (final b in _blobs.values) ...[
+      (b.name, b.bytes),
+      for (final r in b.revisions) (b.name, r),
+    ],
+  ];
+
+  @override
+  Future<CloudFile> rename(String fileId, String newName) async {
+    _requireAuth();
+    _check('rename');
+    final b = _blobs[fileId];
+    if (b == null) throw const CloudNotFoundException();
+    b.name = newName;
+    return _meta(b);
+  }
 
   Uint8List? bytesOf(String name) {
     for (final b in _blobs.values) {

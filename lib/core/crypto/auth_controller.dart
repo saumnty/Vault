@@ -166,8 +166,10 @@ class AuthController {
   /// `freezing` (solo en memoria, nunca en la sesión: hasta congelar, todo lo
   /// nuevo se sigue cifrando con la vieja). Se obtienen al preparar, al
   /// confirmar el código o al desbloquear con el PIN; se destruyen al
-  /// bloquear.
-  KeyHierarchy? _nextKeys;
+  /// bloquear. Se guarda en el [RotationKeyStore] (compartido en la app por
+  /// todos los `AuthController`).
+  KeyHierarchy? get _nextKeys => _rotation.nextKeys;
+  set _nextKeys(KeyHierarchy? value) => _rotation.nextKeys = value;
 
   VaultSession get session => _session;
 
@@ -1221,6 +1223,20 @@ class AuthController {
     await _rotation.delete(RotationKeyStore.nextPinEnvelopeKey);
     await _rotation.delete(RotationKeyStore.nextRecoveryBackupKey);
     _session.openKeyring(VaultKeyring.single(rec.toGen, current));
+  });
+
+  /// `finalizingLocal` (D61): borra lo que quede de la rotación en el
+  /// almacén seguro; el REGISTRO lo último. Devuelve si la biometría estaba
+  /// activa antes (para ofrecer reactivarla). Idempotente.
+  Future<bool> finishRotation() => _serialized(() async {
+    final rec = await _rotation.load();
+    if (rec == null) return false;
+    if (rec.effectivePhase != RotationPhase.finalizingLocal) {
+      throw const RotationInProgressException('Fase incorrecta');
+    }
+    _dropNextKeys();
+    await _rotation.clearAll();
+    return rec.biometricWasEnabled;
   });
 
   /// "Comprobar mi código" (M1): `true` si [code] abre el respaldo de

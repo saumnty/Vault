@@ -52,7 +52,12 @@ class ThumbnailRegenerationService {
     this.thumbnailSize = 256,
     this.maxPerRun = 40,
     this.autoMaxDecryptBytes = 100 * 1024 * 1024,
+    this.paused,
   }) : _crypto = crypto ?? CryptoService();
+
+  /// D61: `true` durante una rotación de la DEK (no se escriben miniaturas
+  /// mientras los items cambian de generación). [run] no hace nada.
+  final bool Function()? paused;
 
   final VaultDataRepository repository;
   final GalleryAssetSource source;
@@ -98,7 +103,7 @@ class ThumbnailRegenerationService {
     void Function(int done, int total)? onProgress,
     bool Function()? isCancelled,
   }) async {
-    if (_running) {
+    if (_running || (paused?.call() ?? false)) {
       return const ThumbnailRegenerationResult(
         candidates: 0,
         regenerated: 0,

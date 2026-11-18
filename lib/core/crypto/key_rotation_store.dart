@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import 'key_hierarchy.dart';
 import 'secure_kv_store.dart';
 
 /// Fases de una rotación de la DEK (`docs/DISENO_ROTACION.md` §3).
@@ -252,6 +253,13 @@ class RotationKeyStore {
   ];
 
   final SecureKeyValueStore _storage;
+
+  /// DEK NUEVA de la rotación solo en MEMORIA (`prepared`..`freezing`, ver
+  /// la nota de implementación del paso 6). Vive aquí y no en un
+  /// `AuthController` concreto para que la compartan el que desbloquea (la
+  /// pantalla del PIN) y el que usa el servicio de rotación. Nunca se
+  /// escribe en disco; `AuthController.lock` la destruye.
+  KeyHierarchy? nextKeys;
 
   /// Último registro leído o escrito (`null` = sin rotación). La
   /// sincronización lo lee de forma síncrona (RotationGuard).

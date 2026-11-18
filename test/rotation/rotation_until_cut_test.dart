@@ -18,7 +18,7 @@ void main() {
   late RotationPhone phone;
 
   setUp(() async {
-    phone = RotationPhone();
+    phone = RotationPhone()..stopAtCut = true;
     await phone.create();
     await phone.seedVault();
   });
@@ -92,7 +92,10 @@ void main() {
     RotationCrashPoint.backupUploaded: true,
   };
 
-  for (final point in RotationCrashPoint.values) {
+  // Los puntos de después del corte están en rotation_after_cut_test.dart.
+  for (final point in RotationCrashPoint.values.where(
+    (p) => p.index <= RotationCrashPoint.backupUploaded.index,
+  )) {
     for (final drop in [0, 1]) {
       test(
         'corte en ${point.name}${drop > 0 ? ' (+escritura perdida)' : ''}',

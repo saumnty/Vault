@@ -27,12 +27,12 @@ class MultiAccountCloud extends FakeCloudStorage {
   int signInCalls = 0;
   int signOutCalls = 0;
 
-  FakeCloudStorage account(String email) =>
-      _accounts.putIfAbsent(
-        email,
-        () => FakeCloudStorage(email: email)
+  FakeCloudStorage account(String email) => _accounts.putIfAbsent(
+    email,
+    () =>
+        FakeCloudStorage(email: email)
           ..quotaValue = const CloudQuota(usedBytes: 0, limitBytes: 1 << 40),
-      );
+  );
 
   FakeCloudStorage get _cur {
     final e = _current;
@@ -112,6 +112,10 @@ class MultiAccountCloud extends FakeCloudStorage {
 
   @override
   Future<void> delete(String fileId) => _cur.delete(fileId);
+
+  @override
+  Future<CloudFile> rename(String fileId, String newName) =>
+      _cur.rename(fileId, newName);
 
   @override
   Future<CloudFile?> findByName(String name) => _cur.findByName(name);

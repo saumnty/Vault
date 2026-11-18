@@ -26,7 +26,10 @@ import '../../data/migration/account_migration_service.dart';
 import '../../data/migration/free_space.dart';
 import '../../data/migration/migration_repository.dart';
 import '../../data/repositories/vault_database.dart';
+import '../../data/rotation/item_reencryptor.dart';
+import '../../data/rotation/key_rotation_service.dart';
 import '../../data/rotation/rotation_guard.dart';
+import '../../data/rotation/rotation_repository.dart';
 import '../../data/sync/network_monitor.dart';
 import '../../data/sync/offline_service.dart';
 import '../../data/sync/sync_preferences.dart';
@@ -122,6 +125,7 @@ class VaultServices {
     this.sync,
     this.storage,
     this.migration,
+    this.rotation,
   });
 
   final VaultDataRepository repository;
@@ -180,6 +184,9 @@ class VaultServices {
 
   /// Cambio de cuenta de Google con migración (`null` = no disponible).
   final AccountMigrationService? migration;
+
+  /// Rotación de la llave maestra (`null` = no disponible, p. ej. pruebas).
+  final KeyRotationService? rotation;
 
   /// Servicios reales. Las dependencias pesadas se crean bajo demanda.
   factory VaultServices.real() {
@@ -275,6 +282,14 @@ class VaultServices {
         final m = core.migration;
         final st = await m.refresh();
         if (st != null && _autoResumable(st.phase)) unawaited(m.resume());
+        // Rotación de la DEK a medias: se retoma sola salvo que espere al
+        // usuario (código sin confirmar o un bloqueo).
+        final rot = await RotationKeyStore.shared.load();
+        if (rot != null &&
+            !rot.phase.isBlocked &&
+            rot.phase != RotationPhase.prepared) {
+          unawaited(core.rotation.resume());
+        }
       },
       gallery: _sharedGallery ??= _createGallery(repository, sync),
       sync: sync,
@@ -284,6 +299,7 @@ class VaultServices {
         offline: core.offline,
       ),
       migration: core.migration,
+      rotation: core.rotation,
     );
   }
 
@@ -358,7 +374,47 @@ class VaultServices {
     );
     // Al bloquear: el cambio de cuenta se pausa (el estado queda en la BD).
     session.addOnClear(migration.pause);
-    return _Core(sync, cache, fetcher, offline, opener, temp, migration);
+    // Rotación de la DEK (S-11, DISENO_ROTACION.md). Usa el almacén de
+    // rotación compartido (`RotationKeyStore.shared`): ve la DEK nueva que
+    // dejó en memoria el desbloqueo con PIN.
+    final rotation = KeyRotationService(
+      auth: AuthController(),
+      session: session,
+      db: VaultDatabase.instance,
+      items: repository,
+      queue: sync.queue,
+      sync: sync,
+      cloud: cloud,
+      network: ConnectivityPlusMonitor(),
+      prefs: SyncPreferences(prefsStore),
+      repo: RotationRepository(),
+      reencryptor: ItemReencryptor(
+        items: repository,
+        cloud: cloud,
+        workDir: () => Directory(p.join(AppPaths.cacheDir.path, 'rotation')),
+        isInUse: cache.isInUse,
+      ),
+      isInUse: cache.isInUse,
+      migrationActive: migration.hasActive,
+    );
+    // Al bloquear: la rotación se pausa (su estado está en disco).
+    session.addOnClear(rotation.pause);
+    // Antes del corte no se purgan los `.vault` de la generación vieja aún
+    // por re-cifrar (habría que volver a bajarlos).
+    cache.protectedKeyGen = () {
+      final r = RotationKeyStore.shared.record.value;
+      return r != null && r.freezeMeta ? r.fromGen : null;
+    };
+    return _Core(
+      sync,
+      cache,
+      fetcher,
+      offline,
+      opener,
+      temp,
+      migration,
+      rotation,
+    );
   }
 
   /// Fases que se retoman solas (las demás esperan una decisión).
@@ -449,6 +505,8 @@ class VaultServices {
       // D60: la miniatura se escribe con la generación de su item.
       filesKey: session.filesKeyFor,
       thumbsKey: session.thumbsKeyFor,
+      // D61: en pausa mientras se rota la llave.
+      paused: () => sync.rotation.active,
       tempDirProvider: () =>
           Directory(p.join(AppPaths.cacheDir.path, 'import_tmp')),
     );
@@ -471,6 +529,7 @@ class _Core {
     this.opener,
     this.temp,
     this.migration,
+    this.rotation,
   );
 
   final SyncService sync;
@@ -480,4 +539,5 @@ class _Core {
   final VaultMediaOpener opener;
   final PlainTempManager temp;
   final AccountMigrationService migration;
+  final KeyRotationService rotation;
 }

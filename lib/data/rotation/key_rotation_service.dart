@@ -39,6 +39,15 @@ enum RotationCrashPoint {
   switchDone,
   snapshotUploaded,
   backupUploaded,
+
+  /// Justo DESPUÉS de escribir la fase del corte (`deletingOldCloud`).
+  afterCut,
+  oldBackupDeleted,
+  bridgeDeleted,
+  oldSnapshotDeleted,
+  blobDeleted,
+  finalizeSwept,
+  finalizeBeforeRecord,
 }
 
 /// Estado para la UI.
@@ -51,7 +60,15 @@ class RotationStatus {
     this.needsPin = false,
     this.itemsDone = 0,
     this.itemsTotal = 0,
+    this.finished = false,
+    this.offerBiometric = false,
   });
+
+  /// La rotación acaba de terminar ("Rotación terminada").
+  final bool finished;
+
+  /// La biometría estaba activa antes de la rotación: ofrecer reactivarla.
+  final bool offerBiometric;
 
   /// `null` = no hay rotación.
   final RotationPhase? phase;
@@ -305,10 +322,9 @@ class KeyRotationService {
       case RotationPhase.uploadingBackup:
         return _uploadingBackup(rec);
       case RotationPhase.deletingOldCloud:
+        return _deletingOldCloud(rec);
       case RotationPhase.finalizingLocal:
-        // Entrega 10b.
-        _message('Borrando la copia anterior de Drive… (pendiente)');
-        return false;
+        return _finalizing(rec);
       default:
         return false;
     }
@@ -674,7 +690,87 @@ class KeyRotationService {
     // normal se descongela con los nombres de la generación nueva (M10).
     await _setPhase(RotationPhase.deletingOldCloud);
     VaultLog.d('Rotación: corte', category: 'rotation');
+    _crash(RotationCrashPoint.afterCut);
     return true;
+  }
+
+  /// Tras el corte: borra el conjunto VIEJO de Drive POR LISTA (A5), en
+  /// orden: respaldo viejo → puente → snapshot viejo → blobs. `files.delete`
+  /// es permanente (con revisiones, S-04). Los de cuarentena (M6) no se
+  /// borran: se renombran a `lost_*`. Antes de cada pasada, la guarda A5.
+  Future<bool> _deletingOldCloud(RotationRecord rec) async {
+    if (!await _accountOk(rec) || !await _networkOk()) return false;
+    if (!await _oldSetIntact(rec)) return false;
+    int rank(String kind) => switch (kind) {
+      'backup' => 0,
+      'bridge' => 1,
+      'snapshot' => 2,
+      _ => 3,
+    };
+    final old = await repo.oldFiles()
+      ..sort((a, b) => rank(a.kind).compareTo(rank(b.kind)));
+    var blobs = 0;
+    for (final o in old) {
+      if (_stopRequested) throw const _Stop();
+      if (o.quarantine && o.itemId != null) {
+        try {
+          await cloud.rename(
+            o.driveId,
+            CloudNames.quarantine(o.itemId!, rec.fromGen),
+          );
+        } on CloudNotFoundException {
+          // ya no estaba
+        }
+      } else {
+        try {
+          await cloud.delete(o.driveId);
+        } on CloudNotFoundException {
+          // ya no estaba: objetivo cumplido
+        }
+      }
+      await repo.removeOldFile(o.driveId);
+      switch (o.kind) {
+        case 'backup':
+          _crash(RotationCrashPoint.oldBackupDeleted);
+        case 'bridge':
+          _crash(RotationCrashPoint.bridgeDeleted);
+        case 'snapshot':
+          _crash(RotationCrashPoint.oldSnapshotDeleted);
+        default:
+          if (blobs++ == 0) _crash(RotationCrashPoint.blobDeleted);
+      }
+    }
+    await _setPhase(RotationPhase.finalizingLocal);
+    VaultLog.d('Rotación: conjunto viejo borrado', category: 'rotation');
+    return true;
+  }
+
+  /// Limpieza local: restos de la generación vieja, copia de la BD vieja,
+  /// triggers y filas de la rotación y, AL FINAL, el registro.
+  Future<bool> _finalizing(RotationRecord rec) async {
+    for (final i in await items.getItemsByKeyGen(rec.toGen)) {
+      final old = _resolve(AppPaths.vaultRelativePath(i.id, gen: rec.fromGen));
+      if ((isInUse?.call(i.id) ?? false) && old.existsSync()) {
+        _message('Cierra los archivos abiertos para terminar.');
+        return false;
+      }
+    }
+    await sweepLocalLeftovers(rec);
+    await db.deleteRekeyLeftovers(rec.fromGen);
+    _crash(RotationCrashPoint.finalizeSwept);
+    await repo.clear();
+    // El snapshot nuevo se tomó con las filas de la rotación: se publicará
+    // uno limpio en la próxima sincronización.
+    await prefs.markDirty(_now());
+    _crash(RotationCrashPoint.finalizeBeforeRecord);
+    final bio = await auth.finishRotation();
+    status.value = RotationStatus(
+      finished: true,
+      offerBiometric: bio,
+      message: 'Rotación terminada. Tu código anterior ya no abre nada.',
+    );
+    VaultLog.d('Rotación terminada', category: 'rotation');
+    return false;
   }
 
   // ----------------------------------------------------------- guardas
@@ -1007,7 +1103,8 @@ class KeyRotationService {
   Future<void> _publish({bool keepMessage = false}) async {
     final rec = await _store.load();
     if (rec == null) {
-      status.value = const RotationStatus();
+      // Recién terminada: se conserva "Rotación terminada" para la UI.
+      if (!status.value.finished) status.value = const RotationStatus();
       return;
     }
     status.value = RotationStatus(
