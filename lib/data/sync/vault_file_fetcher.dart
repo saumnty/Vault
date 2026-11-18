@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import '../../core/crypto/crypto_service.dart';
+import '../../core/session/session_ticket.dart';
 import '../cloud/cloud_storage.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
@@ -40,11 +41,18 @@ class VaultFileFetcher {
     required this.items,
     required this.resolvePath,
     int Function()? nowMs,
+    this.sessionTicket,
   }) : _now = nowMs ?? (() => DateTime.now().millisecondsSinceEpoch);
 
   final CloudStorage cloud;
   final VaultDataRepository items;
   final File Function(String relativePath) resolvePath;
+
+  /// D67 (fase 8): ticket de la sesión de SU bóveda (o `null` si no está
+  /// abierta). Se captura al empezar la descarga y se comprueba antes de
+  /// dejar el `.vault` en su sitio y de marcar la fila. `null` (pruebas) =
+  /// sin esta guarda.
+  final SessionTicket? Function()? sessionTicket;
   final int Function() _now;
 
   final Map<String, Future<File>> _inFlight = {};
@@ -81,6 +89,11 @@ class VaultFileFetcher {
     CloudProgress? onProgress,
     CloudCancelToken? cancel,
   ) async {
+    final provider = sessionTicket;
+    final SessionTicket? ticket = provider?.call();
+    if (provider != null && ticket == null) {
+      throw StateError('La bóveda está bloqueada');
+    }
     // Siempre con la fila más reciente (ruta y generación actuales).
     final fresh = await refresh(item);
     final target = resolvePath(fresh.encryptedPath);
@@ -136,6 +149,7 @@ class VaultFileFetcher {
           );
         }
       }
+      ticket?.check(); // D67: el `.part` se borra abajo
       await part.rename(target.path);
     } catch (_) {
       try {
@@ -146,6 +160,7 @@ class VaultFileFetcher {
       rethrow;
     }
     final offline = await items.isEffectivelyOffline(fresh.id);
+    ticket?.check();
     await _markLocal(
       fresh,
       offline ? SyncStatus.sinConexion : SyncStatus.enCache,

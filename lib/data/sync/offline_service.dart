@@ -4,6 +4,7 @@ import 'dart:collection';
 import 'package:flutter/foundation.dart';
 
 import '../../core/logging/vault_log.dart';
+import '../../core/session/session_ticket.dart';
 import '../cloud/cloud_storage.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
@@ -31,6 +32,7 @@ class OfflineService {
     required this.network,
     required this.prefs,
     required this.isUnlocked,
+    this.sessionTicket,
   });
 
   final VaultDataRepository items;
@@ -38,6 +40,11 @@ class OfflineService {
   final NetworkMonitor network;
   final SyncPreferences prefs;
   final bool Function() isUnlocked;
+
+  /// D67 (fase 8): ticket de la sesión de SU bóveda (o `null` si no está
+  /// abierta). La pasada y las descargas paran si cambia. `null` (pruebas) =
+  /// sin esta guarda.
+  final SessionTicket? Function()? sessionTicket;
 
   /// Progreso 0..1 por id de item mientras se descarga.
   final ValueNotifier<Map<String, double>> progress = ValueNotifier(const {});
@@ -113,9 +120,13 @@ class OfflineService {
 
   Future<void> _reconcile() async {
     if (_disposed || !isUnlocked()) return;
+    // D67: bóveda y época al empezar; un bloqueo u otra bóveda cortan.
+    final ticket = sessionTicket?.call();
+    if (sessionTicket != null && ticket == null) return;
     final effective = await items.getEffectiveOfflineItemIds();
     final verified = await items.getCloudVerifiedItems();
     for (final item in verified) {
+      if (ticket != null && !ticket.isValid) return;
       final local = fetcher.hasLocal(item);
       if (effective.contains(item.id)) {
         if (local) {
@@ -157,8 +168,12 @@ class OfflineService {
     if (_running || _disposed) return;
     _running = true;
     final token = _token = CloudCancelToken();
+    final ticket = sessionTicket?.call();
     try {
-      while (_queue.isNotEmpty && !token.isCancelled && isUnlocked()) {
+      while (_queue.isNotEmpty &&
+          !token.isCancelled &&
+          isUnlocked() &&
+          (sessionTicket == null || (ticket?.isValid ?? false))) {
         if (!await _networkAllowed()) {
           // Sin red / solo Wi-Fi: se queda pendiente hasta que vuelva.
           _queue.clear();

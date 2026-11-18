@@ -11,6 +11,7 @@ import '../../core/crypto/secure_kv_store.dart';
 import '../../core/services/app_paths.dart';
 import '../../core/services/cache_manager.dart';
 import '../../core/services/plain_temp_manager.dart';
+import '../../core/session/primary_gates.dart';
 import '../../core/session/session_hooks.dart';
 import '../../core/session/vault_session.dart';
 import '../../data/gallery/gallery_import_service.dart';
@@ -237,6 +238,8 @@ class VaultServices {
       repository: TrashRepository(),
       fileCleaner: cleaner,
       remoteDeleter: remoteDeleter,
+      // D67: el borrado definitivo es de la sesión principal que lo empezó.
+      sessionTicket: PrimaryGates.ticket(VaultSession()),
     );
     return VaultServices(
       repository: repository,
@@ -252,6 +255,7 @@ class VaultServices {
       mediaExporter: VaultMediaExporter(
         opener: core.opener,
         saver: PhotoManagerPhotoSaver(),
+        sessionTicket: PrimaryGates.ticket(VaultSession()),
       ),
       fileCleaner: cleaner,
       remoteDeleter: remoteDeleter,
@@ -266,11 +270,20 @@ class VaultServices {
       },
       beforeLock: sync.flushSnapshotBeforeLock,
       onUnlocked: () async {
+        // D67: solo con la principal abierta y mientras siga siéndolo (un
+        // bloqueo o la otra bóveda a mitad cortan el resto).
+        final session = VaultSession();
+        if (!session.isUnlockedAs(VaultSlot.primary)) return;
+        final t = session.ticket();
         await core.temp.sweep();
+        if (!t.isValid) return;
         // Papelera: lo que lleva 30 días o más se elimina (y su copia de Drive).
         await trash.purgeExpired();
+        if (!t.isValid) return;
         await core.offline.reconcile();
+        if (!t.isValid) return;
         await core.cache.enforce();
+        if (!t.isValid) return;
         // Miniaturas que faltan (p. ej. videos importados sin miniatura):
         // en segundo plano, acotado y sin bloquear la apertura.
         final regen = _sharedGallery?.regeneration;
@@ -279,10 +292,12 @@ class VaultServices {
         // si no necesita al usuario.
         final m = core.migration;
         final st = await m.refresh();
+        if (!t.isValid) return;
         if (st != null && _autoResumable(st.phase)) unawaited(m.resume());
         // Rotación de la DEK a medias: se retoma sola salvo que espere al
         // usuario (código sin confirmar o un bloqueo).
         final rot = await RotationKeyStore.shared.load();
+        if (!t.isValid) return;
         if (rot != null &&
             !rot.phase.isBlocked &&
             rot.phase != RotationPhase.prepared) {
@@ -310,6 +325,8 @@ class VaultServices {
     final cache = CacheManager(
       repository: repository,
       preferences: CachePreferences(prefsStore),
+      // D67: solo purga la principal y para si la sesión cambia.
+      sessionTicket: PrimaryGates.ticket(session),
     );
     // Depuración: `--dart-define=VAULT_CACHE_LIMIT=<bytes>` fija el límite de
     // la caché (solo en builds de depuración; F8 traerá el ajuste de usuario).
@@ -320,11 +337,17 @@ class VaultServices {
     }
     final sync = _createSync(repository, cache.enforce);
     // F9: todo cambio de datos marca el snapshot como sucio (con debounce).
-    VaultDataRepository.onDataChanged = sync.notifyDataChanged;
+    // D67: solo los cambios de la PRINCIPAL (la secundaria nunca marca sucio
+    // el snapshot de Drive).
+    VaultDataRepository.onDataChanged = PrimaryGates.dataChanged(
+      session,
+      sync.notifyDataChanged,
+    );
     final fetcher = VaultFileFetcher(
       cloud: cloud,
       items: repository,
       resolvePath: AppPaths.resolve,
+      sessionTicket: PrimaryGates.ticket(session),
     );
     final temp = PlainTempManager.instance;
     // Al bloquear: registro de diagnóstico en memoria, temporales descifrados
@@ -336,7 +359,9 @@ class VaultServices {
       fetcher: fetcher,
       network: ConnectivityPlusMonitor(),
       prefs: SyncPreferences(prefsStore),
-      isUnlocked: () => session.isUnlocked,
+      // D67: solo con la principal abierta.
+      isUnlocked: PrimaryGates.unlocked(session),
+      sessionTicket: PrimaryGates.ticket(session),
     )..start();
     session.addOnClear(offline.cancel);
     final opener = VaultMediaOpener(
@@ -367,6 +392,8 @@ class VaultServices {
       // D61: cambio de cuenta y rotación de la DEK son excluyentes.
       rotationActive: () async =>
           (await RotationKeyStore.shared.load()) != null,
+      // D67: solo con la principal abierta; para si la sesión cambia.
+      sessionTicket: PrimaryGates.ticket(session),
       freeSpace: platformFreeSpace,
     );
     // Al bloquear: el cambio de cuenta se pausa (el estado queda en la BD).
@@ -432,7 +459,9 @@ class VaultServices {
       items: repository,
       network: ConnectivityPlusMonitor(),
       prefs: SyncPreferences(FlutterSecureKeyValueStore()),
-      isUnlocked: () => session.isUnlocked,
+      // D67: la sincronización es solo de la principal (con la secundaria
+      // abierta no corre ninguna pasada).
+      isUnlocked: PrimaryGates.unlocked(session),
       resolvePath: AppPaths.resolve,
       recoveryBackupProvider: () => AuthController().exportRecoveryBackup(),
       snapshotProvider: () => VaultDatabase.instance.exportEncryptedSnapshot(),
@@ -481,9 +510,15 @@ class VaultServices {
       source: source,
       compressor: VideoCompressPlugin(),
       repository: repository,
-      filesKey: () => session.filesKey,
-      thumbsKey: () => session.keysOrNull?.thumbs,
+      // D67: llaves de la sesión PRINCIPAL (la secundaria tendrá su propia
+      // instancia); con la secundaria abierta, `null` = no importa.
+      filesKey: () =>
+          session.isUnlockedAs(VaultSlot.primary) ? session.filesKey : null,
+      thumbsKey: () => session.isUnlockedAs(VaultSlot.primary)
+          ? session.keysOrNull?.thumbs
+          : null,
       keyGen: () => session.currentGen,
+      sessionTicket: PrimaryGates.ticket(session),
       tempDirProvider: () =>
           Directory(p.join(AppPaths.cacheDir.path, 'import_tmp')),
       // F5: verificador real (en_nube + driveFileId + MD5/tamaño). La bandera
@@ -507,7 +542,11 @@ class VaultServices {
       paused: () => sync.rotation.active,
       tempDirProvider: () =>
           Directory(p.join(AppPaths.cacheDir.path, 'import_tmp')),
+      sessionTicket: PrimaryGates.ticket(session),
     );
+    // D67: al bloquear se cancelan el lote de importación y la regeneración.
+    session.addOnClear(service.cancelRunning);
+    session.addOnClear(regeneration.cancel);
     return GalleryDeps(
       source: source,
       service: service,

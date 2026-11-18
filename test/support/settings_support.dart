@@ -215,7 +215,9 @@ class SettingsTestEnv {
   }) => TestRotationService(
     fixedPlan: plan,
     auth: auth,
-    session: VaultSession.create(),
+    // D67 (fase 8): la rotación avanza solo con la sesión principal ABIERTA;
+    // es la misma sesión del `auth` (como en la app).
+    session: auth.session,
     db: VaultDatabase.forTesting(
       session: VaultSession.create(),
       opener: (path, {password, required options}) =>

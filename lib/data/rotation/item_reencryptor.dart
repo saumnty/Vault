@@ -12,6 +12,7 @@ import '../../core/crypto/key_hierarchy.dart';
 import '../../core/crypto/vault_file_format.dart';
 import '../../core/logging/vault_log.dart';
 import '../../core/services/app_paths.dart';
+import '../../core/session/session_ticket.dart';
 import '../cloud/cloud_storage.dart';
 import '../models/vault_item_model.dart';
 import '../repositories/vault_data_repository.dart';
@@ -198,7 +199,12 @@ class ItemReencryptor {
     required int toGen,
     required KeyHierarchy to,
     CloudCancelToken? cancel,
+    SessionTicket? ticket,
   }) async {
+    // D67 (fase 8): con [ticket], antes de cada escritura (archivos nuevos,
+    // `rename`, fila) y de borrar la generación vieja se exige la MISMA
+    // sesión; si no, lanza [SessionChangedException] y los `.part` se borran.
+    void check() => ticket?.check();
     final fresh = await items.getItem(item.id);
     if (fresh == null) return const ReencryptResult(ReencryptOutcome.changed);
     if (fresh.keyGen == toGen) {
@@ -217,6 +223,7 @@ class ItemReencryptor {
     final download = File(p.join(workDir().path, '${fresh.id}.src.part'));
     var committed = false;
     try {
+      check();
       for (final f in [newPart, newThumbPart, newFile, newThumb, download]) {
         if (f.existsSync()) await f.delete();
       }
@@ -274,6 +281,7 @@ class ItemReencryptor {
         } else {
           try {
             final enc = await _crypto.encryptBytes(plainThumb, to.thumbs);
+            check();
             await newThumbPart.writeAsBytes(enc, flush: true);
             thumbFileId = CryptoService.fileIdOfHeader(enc);
           } finally {
@@ -283,11 +291,13 @@ class ItemReencryptor {
       }
 
       // 5. Nombres definitivos (mismo directorio: atómico).
+      check();
       await newPart.rename(newFile.path);
       if (thumbFileId != null) await newThumbPart.rename(newThumb.path);
       onStep?.call(ReencryptStep.afterRename);
 
       // 6. Fila (condicional) + cola.
+      check();
       final ok = await items.swapItemGeneration(
         fresh.id,
         fromGen: fromGen,
@@ -307,13 +317,15 @@ class ItemReencryptor {
       committed = true;
       onStep?.call(ReencryptStep.afterSwap);
 
-      // 7. Archivos de la generación vieja.
+      // 7. Archivos de la generación vieja. Si la sesión cambió tras la
+      // fila, se aplazan (el barrido de la reanudación los borra).
       final deferred = <String>[];
       final inUse = isInUse?.call(fresh.id) ?? false;
+      final stale = ticket != null && !ticket.isValid;
       final oldRels = [fresh.encryptedPath, ?fresh.thumbPath];
       for (final rel in oldRels) {
         if (rel == newRel || rel == newThumbRel) continue;
-        if (inUse && rel == fresh.encryptedPath) {
+        if (stale || (inUse && rel == fresh.encryptedPath)) {
           deferred.add(rel);
           continue;
         }

@@ -128,6 +128,12 @@ class CloudTooLargeException extends CloudException {
   ]);
 }
 
+/// Fase 8 (D67/D68): la nube no está disponible porque la bóveda abierta es
+/// la secundaria (`SlotGuardedCloudStorage`). Mensaje neutro (M8).
+class CloudSlotException extends CloudException {
+  const CloudSlotException([super.message = 'No disponible']);
+}
+
 /// Cualquier otro error inesperado.
 class CloudUnknownException extends CloudException {
   const CloudUnknownException(super.message);

@@ -8,6 +8,7 @@ import 'package:uuid/uuid.dart';
 import '../../core/crypto/crypto_service.dart';
 import '../../core/logging/vault_log.dart';
 import '../../core/services/app_paths.dart';
+import '../../core/session/session_ticket.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
 import '../repositories/vault_data_repository.dart';
@@ -155,7 +156,10 @@ class GalleryImportService {
     VideoThumbnailer? videoThumbnailer,
     int Function()? keyGen,
     this.originalsDeletionPaused,
-  }) : _keyGen = keyGen ?? (() => 1),
+    VaultPaths? paths,
+    this.sessionTicket,
+  }) : _paths = paths ?? VaultPaths.primary,
+       _keyGen = keyGen ?? (() => 1),
        _crypto = crypto ?? CryptoService(),
        _videoThumbs = videoThumbnailer ?? PlatformVideoThumbnailer(),
        _newId = idGenerator ?? (() => const Uuid().v4()),
@@ -206,6 +210,15 @@ class GalleryImportService {
   /// además apaga el aviso de la cuadrícula.
   final bool Function()? originalsDeletionPaused;
 
+  /// Rutas de la bóveda a la que importa (D67; por defecto la principal).
+  final VaultPaths _paths;
+
+  /// D67 (fase 8): ticket de la sesión de SU bóveda (o `null` si no está
+  /// abierta). Se captura al empezar el lote y se comprueba antes de cada
+  /// escritura: si se bloquea o se abre la otra bóveda a mitad, el lote se
+  /// corta sin escribir nada más. `null` (pruebas) = sin esta guarda.
+  final SessionTicket? Function()? sessionTicket;
+
   final CryptoService _crypto;
   final VideoThumbnailer _videoThumbs;
   final String Function() _newId;
@@ -218,6 +231,11 @@ class GalleryImportService {
 
   bool _running = false;
   bool get isRunning => _running;
+
+  ImportCancelToken? _currentToken;
+
+  /// Cancela el lote en curso (lo llama el bloqueo: D67).
+  void cancelRunning() => _currentToken?.cancel();
 
   /// Importa [assets] secuencialmente. Lanza [StateError] si la bóveda está
   /// bloqueada o ya hay un lote en curso.
@@ -233,9 +251,18 @@ class GalleryImportService {
     if (fKey == null || tKey == null) {
       throw StateError('La bóveda está bloqueada');
     }
+    final SessionTicket? ticket;
+    final provider = sessionTicket;
+    if (provider != null) {
+      ticket = provider();
+      if (ticket == null) throw StateError('La bóveda está bloqueada');
+    } else {
+      ticket = null;
+    }
     if (_running) throw StateError('Ya hay una importación en curso');
     _running = true;
     final token = cancelToken ?? ImportCancelToken();
+    _currentToken = token;
     void onCancel() => compressor.cancel();
     token.addListener(onCancel);
 
@@ -250,6 +277,7 @@ class GalleryImportService {
     try {
       for (var i = 0; i < assets.length; i++) {
         final asset = assets[i];
+        if (ticket != null && !ticket.isValid) token.cancel();
         if (token.isCancelled) {
           results.add(
             ImportItemResult(assetId: asset.id, stage: ImportStage.cancelled),
@@ -286,6 +314,7 @@ class GalleryImportService {
             fKey,
             tKey,
             token,
+            ticket,
             emit,
           );
         } on _Cancelled {
@@ -306,6 +335,7 @@ class GalleryImportService {
       }
     } finally {
       token.removeListener(onCancel);
+      if (identical(_currentToken, token)) _currentToken = null;
       try {
         await compressor.cleanup();
       } on Object {
@@ -337,6 +367,7 @@ class GalleryImportService {
     SecretKey fKey,
     SecretKey tKey,
     ImportCancelToken token,
+    SessionTicket? ticket,
     void Function(
       ImportStage stage, {
       double? fraction,
@@ -346,16 +377,22 @@ class GalleryImportService {
     emit,
   ) async {
     void check() {
+      // D67: un bloqueo u otra bóveda a mitad cancelan el lote.
+      if (ticket != null && !ticket.isValid) token.cancel();
       if (token.isCancelled) throw _Cancelled();
     }
 
     final itemId = _newId();
     final vaultRel = AppPaths.vaultRelativePath(itemId, gen: gen);
     final thumbRel = AppPaths.thumbRelativePath(itemId, gen: gen);
+    // D67: rutas absolutas de SU bóveda, capturadas al empezar.
+    final vaultFile = _paths.resolve(vaultRel);
+    final thumbFile = _paths.resolve(thumbRel);
     final workDir = Directory(p.join(tempDirProvider().path, itemId));
     final toDelete = <File>[];
     var committed = false;
     try {
+      check();
       await workDir.create(recursive: true);
 
       // (a) Materializar el original. iOS: si solo está en iCloud, descarga
@@ -436,11 +473,8 @@ class GalleryImportService {
       // (d) Cifrar con la subllave "files".
       emit(ImportStage.encrypting);
       stageWatch.reset();
-      final fileHeader = await _crypto.encryptFile(
-        content,
-        AppPaths.resolve(vaultRel),
-        fKey,
-      );
+      check();
+      final fileHeader = await _crypto.encryptFile(content, vaultFile, fKey);
       if (!kReleaseMode) {
         // Solo tamaños y duraciones (sin nombres ni rutas).
         debugPrint(
@@ -472,7 +506,8 @@ class GalleryImportService {
         }
         if (bytes != null && bytes.isNotEmpty) {
           final enc = await _crypto.encryptBytes(bytes, tKey);
-          await AppPaths.resolve(thumbRel).writeAsBytes(enc, flush: true);
+          check();
+          await thumbFile.writeAsBytes(enc, flush: true);
           thumbFileId = CryptoService.fileIdOfHeader(enc);
           thumbOk = true;
           VaultLog.d('Miniatura generada', category: 'thumbs');
@@ -490,6 +525,7 @@ class GalleryImportService {
       // (f) Registro en BD.
       final name =
           asset.title ?? p.basename(origin.file.path).replaceAll('\\', '/');
+      check(); // D67: nunca una fila en la BD de otra sesión
       await repository.insertItem(
         VaultItemModel(
           // D60: la generación de las llaves con que se cifró.
@@ -526,9 +562,10 @@ class GalleryImportService {
         await _tryDelete(f);
       }
       if (!committed) {
-        // Sin fila en BD no debe quedar nada cifrado huérfano.
-        await _tryDelete(AppPaths.resolve(vaultRel));
-        await _tryDelete(AppPaths.resolve(thumbRel));
+        // Sin fila en BD no debe quedar nada cifrado huérfano (rutas de SU
+        // bóveda: nunca toca la otra).
+        await _tryDelete(vaultFile);
+        await _tryDelete(thumbFile);
       }
       try {
         if (await workDir.exists()) await workDir.delete(recursive: true);

@@ -5,6 +5,7 @@ import '../../data/models/sync_status.dart';
 import '../../data/models/vault_item_model.dart';
 import '../../data/repositories/vault_data_repository.dart';
 import '../crypto/secure_kv_store.dart';
+import '../session/session_ticket.dart';
 import 'app_paths.dart';
 
 /// Preferencia persistida del límite de caché (la ajusta F8).
@@ -77,9 +78,15 @@ class CacheManager {
     required VaultDataRepository repository,
     required CachePreferences preferences,
     File Function(String relativePath)? resolvePath,
+    this.sessionTicket,
   }) : _repo = repository,
        _prefs = preferences,
        _resolve = resolvePath ?? AppPaths.resolve;
+
+  /// D67 (fase 8): ticket de la sesión de SU bóveda (o `null` si no está
+  /// abierta: entonces [enforce] no purga nada). Se comprueba antes de cada
+  /// borrado. `null` (pruebas) = sin esta guarda.
+  final SessionTicket? Function()? sessionTicket;
 
   final VaultDataRepository _repo;
   final CachePreferences _prefs;
@@ -166,6 +173,9 @@ class CacheManager {
   }
 
   Future<List<String>> _enforce(int? maxBytes) async {
+    final provider = sessionTicket;
+    final SessionTicket? ticket = provider?.call();
+    if (provider != null && ticket == null) return const [];
     final limit = maxBytes ?? await getLimitBytes();
     final verified = await _repo.getCloudVerifiedItems();
     final protected = await _repo.getEffectiveOfflineItemIds();
@@ -191,6 +201,8 @@ class CacheManager {
     for (final (item, size) in candidates) {
       if (total <= limit) break;
       if (_inUse.containsKey(item.id)) continue; // abierto: no se purga
+      // D67: con la sesión cambiada (bloqueo, otra bóveda) se para.
+      if (ticket != null && !ticket.isValid) break;
       try {
         await _resolve(item.encryptedPath).delete();
       } on FileSystemException {

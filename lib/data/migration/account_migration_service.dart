@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../../core/logging/vault_log.dart';
+import '../../core/session/session_ticket.dart';
 import '../cloud/cloud_storage.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
@@ -149,6 +150,7 @@ class AccountMigrationService {
     required this.resolvePath,
     this.setCachePurgeSuspended,
     this.rotationActive,
+    this.sessionTicket,
     FreeSpaceProvider? freeSpace,
     int Function()? nowMs,
     this.freeSpaceMargin = 100 * 1024 * 1024,
@@ -177,6 +179,10 @@ class AccountMigrationService {
   final Future<bool> Function()? rotationActive;
   final FreeSpaceProvider _freeSpace;
   final int Function() _now;
+
+  /// D67 (fase 8): ticket de la sesión PRINCIPAL abierta, o `null` si la
+  /// principal no está abierta. `null` (pruebas) = sin esta guarda.
+  final SessionTicket? Function()? sessionTicket;
 
   /// Margen de espacio libre que se exige además de lo que hay que bajar.
   final int freeSpaceMargin;
@@ -306,17 +312,32 @@ class AccountMigrationService {
   }
 
   /// Continúa desde donde quedó (tras pausa, corte o reinicio).
+  ///
+  /// D67 (fase 8): con [sessionTicket] (la app) solo corre con la principal
+  /// abierta y para, sin escribir nada más, en cuanto la sesión cambia
+  /// (bloqueo u otra bóveda).
   Future<void> resume() async {
     if (_running) return;
+    final SessionTicket? ticket;
+    final provider = sessionTicket;
+    if (provider != null) {
+      ticket = provider();
+      if (ticket == null) return;
+    } else {
+      ticket = null;
+    }
+    bool stale() => ticket != null && !ticket.isValid;
     final first = await migration.load();
-    if (first == null) return;
+    if (first == null || stale()) return;
     _running = true;
     _cancelRequested = false;
     _token = CloudCancelToken();
     _applyGuards(true);
     try {
       while (true) {
+        if (stale()) throw const _Stop();
         final state = await migration.load();
+        if (stale()) throw const _Stop();
         if (state == null) break;
         _emit(state, running: true);
         final next = await _step(state);
@@ -327,17 +348,23 @@ class AccountMigrationService {
     } on _Stop {
       // Pausa o bloqueo ya publicados.
     } on CloudException catch (e) {
-      final s = await migration.load();
-      VaultLog.e('Cambio de cuenta en pausa', e, 'migration');
-      await _setError(describeSyncError(e));
-      if (s != null) _emit((await migration.load()) ?? s, running: false);
+      // D67: con la sesión cambiada no se escribe el error (la nube corta
+      // con la secundaria abierta: no es un fallo de la migración).
+      if (!stale()) {
+        final s = await migration.load();
+        VaultLog.e('Cambio de cuenta en pausa', e, 'migration');
+        await _setError(describeSyncError(e));
+        if (s != null) _emit((await migration.load()) ?? s, running: false);
+      }
     } finally {
       _running = false;
-      final s = await migration.load();
-      if (s != null) {
-        _emit(s, running: false);
-      } else {
-        status.value = const MigrationStatus();
+      if (!stale()) {
+        final s = await migration.load();
+        if (s != null) {
+          _emit(s, running: false);
+        } else {
+          status.value = const MigrationStatus();
+        }
       }
     }
   }

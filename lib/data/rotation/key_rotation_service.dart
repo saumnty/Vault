@@ -247,6 +247,13 @@ class KeyRotationService {
   bool _running = false;
   bool get isRunning => _running;
   bool _stopRequested = false;
+
+  /// Sesión (bóveda y época) con la que empezó la vuelta actual (D67).
+  SessionTicket? _ticket;
+
+  /// Hay que parar: pausa pedida, o la sesión cambió (bloqueo, otra
+  /// bóveda). Con la sesión cambiada no se escribe ningún estado.
+  bool get _halted => _stopRequested || !(_ticket?.isValid ?? false);
   CloudCancelToken _token = CloudCancelToken();
 
   RotationKeyStore get _store => auth.rotationStore;
@@ -427,12 +434,17 @@ class KeyRotationService {
   /// sin red o bloquearse.
   Future<void> resume() async {
     if (_running) return;
+    // D67 (fase 8): la rotación es solo de la principal y avanza solo
+    // mientras siga abierta la MISMA sesión.
+    if (!session.isUnlockedAs(VaultSlot.primary)) return;
+    _ticket = session.ticket();
     _running = true;
     _stopRequested = false;
     _token = CloudCancelToken();
     try {
-      while (!_stopRequested) {
+      while (!_halted) {
         final rec = await _store.load();
+        if (_halted) throw const _Stop();
         if (rec == null || rec.phase.isBlocked) break;
         // Un aviso de una pausa anterior ("la subida no avanza"…) ya no
         // aplica en cuanto la rotación vuelve a avanzar (hallado en la prueba
@@ -659,7 +671,7 @@ class KeyRotationService {
     var skipped = 0;
     var done = 0;
     for (final item in pending) {
-      if (_stopRequested) throw const _Stop();
+      if (_halted) throw const _Stop();
       if (isInUse?.call(item.id) ?? false) {
         skipped++;
         continue;
@@ -680,6 +692,7 @@ class KeyRotationService {
         toGen: rec.toGen,
         to: to,
         cancel: _token,
+        ticket: _ticket,
       );
       final problem = _problemOf(item, r, listed);
       if (problem == ReencryptOutcome.missing) {
@@ -752,6 +765,10 @@ class KeyRotationService {
     final listed = await _listedOldFileItems();
     final missing = <RotationProblemItem>[];
     final damaged = <RotationProblemItem>[];
+    // D67: con la sesión cambiada a mitad, el re-cifrado no escribe nada.
+    final ticket = session.isUnlockedAs(VaultSlot.primary)
+        ? session.ticket()
+        : null;
     for (final item in await items.getItemsByKeyGen(rec.fromGen)) {
       if (isInUse?.call(item.id) ?? false) continue;
       final r = await reencryptor.reencrypt(
@@ -760,6 +777,7 @@ class KeyRotationService {
         from: from,
         toGen: rec.toGen,
         to: to,
+        ticket: ticket,
       );
       final p = RotationProblemItem(id: item.id, name: item.name);
       switch (_problemOf(item, r, listed)) {
@@ -981,7 +999,7 @@ class KeyRotationService {
       ..sort((a, b) => rank(a.kind).compareTo(rank(b.kind)));
     var blobs = 0;
     for (final o in old) {
-      if (_stopRequested) throw const _Stop();
+      if (_halted) throw const _Stop();
       if (o.quarantine && o.itemId != null) {
         try {
           await cloud.rename(
@@ -1110,7 +1128,7 @@ class KeyRotationService {
     var lastPending = -1;
     var stalled = 0;
     for (var round = 0; round < maxUploadRounds; round++) {
-      if (_stopRequested) throw const _Stop();
+      if (_halted) throw const _Stop();
       final jobs = [
         for (final j in await queue.all())
           if (j.kind == SyncJobKind.file || j.kind == SyncJobKind.thumb) j,
@@ -1334,12 +1352,20 @@ class KeyRotationService {
   Future<void> _setPhase(RotationPhase phase) async {
     final cur = await _store.load();
     if (cur == null) return;
+    _requireSameSession();
     await _store.save(cur.copyWith(phase: phase, updatedAt: _now()));
+  }
+
+  /// D67 (A1-6): dentro del bucle, si la sesión cambió (bloqueo, otra
+  /// bóveda) no se escribe ninguna fase ni ningún bloqueo: se para.
+  void _requireSameSession() {
+    if (_running && !(_ticket?.isValid ?? false)) throw const _Stop();
   }
 
   Future<void> _block(RotationPhase phase, String why) async {
     final cur = await _store.load();
     if (cur == null) return;
+    _requireSameSession();
     await _store.save(
       cur.copyWith(
         phase: phase,

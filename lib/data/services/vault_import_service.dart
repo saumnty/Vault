@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
@@ -48,13 +50,43 @@ class VaultImportService {
     int Function()? keyGen,
     CryptoService? crypto,
     VaultDataRepository? repository,
+    VaultPaths? paths,
+    SessionTicket? Function()? sessionTicket,
   }) : _picker = picker ?? PlatformDocumentPicker(),
-       _filesKey = filesKey ?? (() => VaultSession().filesKey),
+       // D67: por defecto, la llave de la sesión global solo si la bóveda
+       // abierta es la de [paths] (la principal salvo que se indique otra).
+       _filesKey =
+           filesKey ??
+           (() {
+             final s = VaultSession();
+             return s.isUnlockedAs((paths ?? VaultPaths.primary).slot)
+                 ? s.filesKey
+                 : null;
+           }),
        _keyGen =
            keyGen ??
            (filesKey == null ? (() => VaultSession().currentGen) : (() => 1)),
        _cryptoService = crypto ?? CryptoService(),
-       _repo = repository ?? VaultDataRepository();
+       _repo = repository ?? VaultDataRepository(),
+       _paths = paths ?? VaultPaths.primary,
+       _ticket =
+           sessionTicket ??
+           (filesKey == null
+               ? (() {
+                   final s = VaultSession();
+                   return s.isUnlockedAs((paths ?? VaultPaths.primary).slot)
+                       ? s.ticket()
+                       : null;
+                 })
+               : null);
+
+  /// Rutas de la bóveda a la que importa (D67).
+  final VaultPaths _paths;
+
+  /// D67: ticket de la sesión de SU bóveda, capturado ANTES de abrir el
+  /// selector y comprobado antes de escribir el `.vault` y la fila. `null`
+  /// (pruebas con llave inyectada) = sin esta guarda.
+  final SessionTicket? Function()? _ticket;
 
   final DocumentPicker _picker;
   final SecretKey? Function() _filesKey;
@@ -74,6 +106,8 @@ class VaultImportService {
     bool deleteOriginal = false,
   }) async {
     PickedDocument? picked;
+    File? destFile;
+    var committed = false;
     try {
       // 1. Verificar sesión activa
       // Subllave "files" de la jerarquía (HKDF de la DEK), no la DEK.
@@ -81,17 +115,23 @@ class VaultImportService {
       final gen = _keyGen();
       final filesKey = _filesKey();
       if (filesKey == null) return false;
+      // D67: bóveda y época al empezar (antes del selector).
+      final provider = _ticket;
+      final SessionTicket? ticket = provider == null ? null : provider();
+      if (provider != null && ticket == null) return false;
+      bool stale() => ticket != null && !ticket.isValid;
 
       // 2. Seleccionar archivo
       picked = await _picker.pick();
-      if (picked == null) return false;
+      if (picked == null || stale()) return false;
 
       // 3. Preparar ruta destino interna (.vault)
       await AppPaths.init();
       final itemId = const Uuid().v4();
       // En la BD solo va la ruta RELATIVA (vault/<id>.vault).
       final relativePath = AppPaths.vaultRelativePath(itemId, gen: gen);
-      final destFile = AppPaths.resolve(relativePath);
+      final dest = destFile = _paths.resolve(relativePath);
+      if (stale()) return false;
 
       // 4. Cifrar en formato .vault v2 (bloques de 1 MiB, streaming) y, de
       // paso, SHA-256 del contenido original. Si falla, el destino parcial se
@@ -99,13 +139,15 @@ class VaultImportService {
       final source = _HashingSource(picked);
       final fileHeader = await _cryptoService.encryptSource(
         source,
-        destFile,
+        dest,
         filesKey,
       );
       final contentHash = await source.hexDigest();
 
       // Verificar que el archivo cifrado realmente se creó en el sandbox
-      if (!await destFile.exists()) return false;
+      if (!await dest.exists()) return false;
+      // D67: sin fila en la BD de otra sesión (el `.vault` se borra abajo).
+      if (stale()) return false;
 
       // 5. Registrar en SQLCipher
       final itemModel = VaultItemModel(
@@ -124,6 +166,7 @@ class VaultImportService {
       );
 
       await _repo.insertItem(itemModel);
+      committed = true;
 
       // 6. El original NUNCA se borra aquí: el borrado real de originales
       // exige verificar la copia en la nube y la confirmación del usuario;
@@ -136,6 +179,15 @@ class VaultImportService {
       return false;
     } finally {
       await picked?.close();
+      // Sin fila no queda un `.vault` huérfano (siempre en SU bóveda).
+      final f = destFile;
+      if (!committed && f != null) {
+        try {
+          if (await f.exists()) await f.delete();
+        } on FileSystemException {
+          // best-effort
+        }
+      }
     }
   }
 }

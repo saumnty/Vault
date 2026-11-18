@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import '../../core/crypto/crypto_service.dart';
 import '../../core/logging/vault_log.dart';
 import '../../core/services/app_paths.dart';
+import '../../core/session/session_ticket.dart';
 import '../../features/vault/models/browser_entry.dart';
 import '../models/vault_item_model.dart';
 import '../repositories/vault_data_repository.dart';
@@ -53,7 +54,25 @@ class ThumbnailRegenerationService {
     this.maxPerRun = 40,
     this.autoMaxDecryptBytes = 100 * 1024 * 1024,
     this.paused,
-  }) : _crypto = crypto ?? CryptoService();
+    VaultPaths? paths,
+    this.sessionTicket,
+  }) : _crypto = crypto ?? CryptoService(),
+       _paths = paths ?? VaultPaths.primary;
+
+  /// Rutas de SU bóveda (D67; por defecto la principal).
+  final VaultPaths _paths;
+
+  /// D67 (fase 8): ticket de la sesión de SU bóveda (o `null` si no está
+  /// abierta). Se captura al empezar la pasada y se comprueba antes de cada
+  /// escritura (temporal, miniatura, fila). `null` (pruebas) = sin guarda.
+  final SessionTicket? Function()? sessionTicket;
+
+  bool _cancelRequested = false;
+
+  /// Corta la pasada en curso (lo llama el bloqueo: D67).
+  void cancel() {
+    if (_running) _cancelRequested = true;
+  }
 
   /// D61: `true` durante una rotación de la DEK (no se escriben miniaturas
   /// mientras los items cambian de generación). [run] no hace nada.
@@ -89,8 +108,7 @@ class ThumbnailRegenerationService {
       for (final i in all)
         if ((fileKindOf(i) == FileKind.image ||
                 fileKindOf(i) == FileKind.video) &&
-            (i.thumbPath == null ||
-                !AppPaths.resolve(i.thumbPath!).existsSync()))
+            (i.thumbPath == null || !_paths.resolve(i.thumbPath!).existsSync()))
           i,
     ];
   }
@@ -110,10 +128,27 @@ class ThumbnailRegenerationService {
         failed: 0,
       );
     }
+    SessionTicket? ticket;
+    final provider = sessionTicket;
+    if (provider != null) {
+      ticket = provider();
+      if (ticket == null) {
+        return const ThumbnailRegenerationResult(
+          candidates: 0,
+          regenerated: 0,
+          failed: 0,
+        );
+      }
+    }
     _running = true;
+    _cancelRequested = false;
     var regenerated = 0;
     var failed = 0;
     var candidates = 0;
+    bool halted() =>
+        _cancelRequested ||
+        (ticket != null && !ticket.isValid) ||
+        (isCancelled?.call() ?? false);
     try {
       await AppPaths.init();
       List<VaultItemModel> list;
@@ -143,7 +178,7 @@ class ThumbnailRegenerationService {
       }
       var done = 0;
       for (final item in list) {
-        if (isCancelled?.call() ?? false) break;
+        if (halted()) break;
         // Si se bloqueó la bóveda a mitad, se corta.
         final tKey = thumbsKey(item.keyGen);
         final fKey = filesKey(item.keyGen);
@@ -153,14 +188,23 @@ class ThumbnailRegenerationService {
           break;
         }
         try {
-          final ok = await _one(item, tKey, fKey, manual: manual);
+          final ok = await _one(
+            item,
+            tKey,
+            fKey,
+            manual: manual,
+            halted: halted,
+          );
           if (ok) {
             regenerated++;
           } else {
             failed++;
             _failedThisSession.add(item.id);
           }
+        } on _Halted {
+          break;
         } on Object catch (e) {
+          if (halted()) break;
           failed++;
           _failedThisSession.add(item.id);
           VaultLog.e('Miniatura no regenerada', e, 'thumbs');
@@ -176,6 +220,7 @@ class ThumbnailRegenerationService {
       }
     } finally {
       _running = false;
+      _cancelRequested = false;
     }
     return ThumbnailRegenerationResult(
       candidates: candidates,
@@ -189,7 +234,12 @@ class ThumbnailRegenerationService {
     SecretKey tKey,
     SecretKey fKey, {
     required bool manual,
+    required bool Function() halted,
   }) async {
+    void check() {
+      if (halted()) throw const _Halted();
+    }
+
     Uint8List? bytes;
     // 1. Fototeca (si el original sigue allí).
     final assetId = item.sourceAssetId;
@@ -203,12 +253,15 @@ class ThumbnailRegenerationService {
     // 2. Video con .vault local: fotograma del contenido descifrado.
     if ((bytes == null || bytes.isEmpty) &&
         fileKindOf(item) == FileKind.video) {
+      check();
       bytes = await _frameFromLocalVault(item, fKey, manual: manual);
     }
     if (bytes == null || bytes.isEmpty) return false;
     final enc = await _crypto.encryptBytes(bytes, tKey);
     final rel = AppPaths.thumbRelativePath(item.id, gen: item.keyGen);
-    await AppPaths.resolve(rel).writeAsBytes(enc, flush: true);
+    check(); // D67: antes de escribir la miniatura
+    await _paths.resolve(rel).writeAsBytes(enc, flush: true);
+    check(); // ...y antes de la fila
     await repository.setThumb(
       item.id,
       thumbPath: rel,
@@ -222,7 +275,7 @@ class ThumbnailRegenerationService {
     SecretKey fKey, {
     required bool manual,
   }) async {
-    final vault = AppPaths.resolve(item.encryptedPath);
+    final vault = _paths.resolve(item.encryptedPath);
     if (!await vault.exists()) return null; // solo en la nube: no se descarga
     if (!manual && await vault.length() > autoMaxDecryptBytes) return null;
     final workDir = Directory(
@@ -253,4 +306,9 @@ class ThumbnailRegenerationService {
 
   @visibleForTesting
   Set<String> get failedThisSession => _failedThisSession;
+}
+
+/// La pasada se corta (bloqueo, otra bóveda, cancelación).
+class _Halted implements Exception {
+  const _Halted();
 }

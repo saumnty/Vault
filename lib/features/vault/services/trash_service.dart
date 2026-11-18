@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import '../../../core/logging/vault_log.dart';
+import '../../../core/session/session_ticket.dart';
 import '../../../data/models/vault_item_model.dart';
 import '../../../data/trash/trash_repository.dart';
 import '../models/browser_entry.dart';
@@ -24,6 +25,7 @@ class TrashService {
     RemoteDeleter? remoteDeleter,
     int Function()? nowMs,
     this.retentionDays = kTrashRetentionDays,
+    this.sessionTicket,
   }) : _repo = repository,
        _cleaner = fileCleaner,
        _remote = remoteDeleter,
@@ -34,6 +36,12 @@ class TrashService {
   final RemoteDeleter? _remote;
   final int Function() _now;
   final int retentionDays;
+
+  /// D67 (fase 8): ticket de la sesión de SU bóveda (o `null` si no está
+  /// abierta). El borrado definitivo lo captura al empezar y lo comprueba
+  /// antes de borrar filas, archivos y de encolar el borrado en Drive.
+  /// `null` (pruebas) = sin esta guarda.
+  final SessionTicket? Function()? sessionTicket;
 
   Duration get retention => Duration(days: retentionDays);
 
@@ -67,16 +75,31 @@ class TrashService {
   /// Elimina definitivamente las raíces dadas. Devuelve cuántos archivos se
   /// eliminaron.
   Future<int> deleteForever(Iterable<String> rootIds) async {
+    final provider = sessionTicket;
+    final SessionTicket? ticket = provider?.call();
+    if (provider != null && ticket == null) {
+      throw StateError('La bóveda está bloqueada');
+    }
     final itemIds = <String>[];
     final remote = <RemoteDeleteTarget>[];
-    for (final root in rootIds) {
-      final items = await _repo.itemsOf(root);
-      remote.addAll(items.map(_targetOf));
-      itemIds.addAll(await _repo.deleteRows(root));
+    try {
+      for (final root in rootIds) {
+        ticket?.check();
+        final items = await _repo.itemsOf(root);
+        remote.addAll(items.map(_targetOf));
+        ticket?.check();
+        itemIds.addAll(await _repo.deleteRows(root));
+      }
+    } finally {
+      // Las filas ya borradas se limpian aunque se haya cortado a mitad (sus
+      // archivos son de ESTA bóveda: el limpiador usa sus rutas). Si la
+      // sesión cambió, no se encola nada en Drive: como ante un corte (D56),
+      // a lo sumo queda un huérfano cifrado en Drive, nunca un item sin
+      // archivo.
+      if (itemIds.isNotEmpty) await _cleaner(itemIds);
     }
-    await _cleaner(itemIds);
     // Después de limpiar la cola local (que quita subidas del item).
-    await _remote?.call(remote);
+    if (ticket == null || ticket.isValid) await _remote?.call(remote);
     return itemIds.length;
   }
 
