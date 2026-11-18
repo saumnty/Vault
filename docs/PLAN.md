@@ -66,9 +66,9 @@ Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (RE
 ### Fase 8 · pasos (ver docs/DISENO_SENUELO.md §12; D65–D71)
 | Paso | Qué | Estado |
 |---|---|---|
-| 1 | `VaultSlot` y `VaultPaths` por bóveda, barridos de las dos raíces, exclusión de iCloud sin crear `alt/` | ⬜ |
-| 2 | Sesión con bóveda, época, `SessionTicket`, llaves ligadas a la bóveda, `SessionHooks` | ⬜ |
-| 3 | BD por bóveda (`VaultDatabase.secondaryInstance`), comprobaciones de época en `_open`/`rekeyTo` | ⬜ |
+| 1 | `VaultSlot` y `VaultPaths` por bóveda, barridos de las dos raíces, exclusión de iCloud sin crear `alt/` | ✅🧪 |
+| 2 | Sesión con bóveda, época, `SessionTicket`, llaves ligadas a la bóveda, `SessionHooks` | ✅🧪 |
+| 3 | BD por bóveda (`VaultDatabase.secondaryInstance`), comprobaciones de época en `_open`/`rekeyTo` | ✅🧪 suite 1087; emulador: principal idéntica, sin `alt/` |
 | 4 | Guardas solo-principal: `SlotGuardedCloudStorage`, sync, sin conexión, `onDataChanged`, rotación, migración | ⬜ |
 | 5 | Época en operaciones largas (importar, regenerar, Papelera, caché, descargas, exportar, re-cifrado) + arnés de cruce | ⬜ |
 | 6 | `AuthController` y arranque: `altPin`, desbloqueo en paralelo (C1), `reauthPrimary`, crear/cambiar/eliminar, `_reconcileSecondary` | ⬜ |

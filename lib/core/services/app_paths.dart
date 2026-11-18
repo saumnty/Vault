@@ -4,7 +4,14 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
-/// Punto único de resolución de rutas de la app.
+import 'vault_paths.dart';
+
+export 'vault_paths.dart' show VaultPaths;
+
+/// Punto único de resolución de rutas de la bóveda PRINCIPAL (y raíz de
+/// documentos de la app). Fase 8: la bóveda secundaria resuelve con
+/// `VaultPaths.secondary`; aquí nada cambia (mismas rutas de siempre) y
+/// [init] nunca crea la carpeta de la secundaria.
 ///
 /// En la BD solo se guardan rutas RELATIVAS al directorio de documentos de la
 /// app (p. ej. `vault/<id>.vault`), porque en iOS la ruta absoluta del
@@ -51,15 +58,14 @@ class AppPaths {
     return b;
   }
 
-  static Directory get vaultDir =>
-      Directory(p.join(baseDir.path, vaultDirName));
-  static Directory get thumbsDir =>
-      Directory(p.join(baseDir.path, thumbsDirName));
-  static Directory get cacheDir =>
-      Directory(p.join(baseDir.path, cacheDirName));
-  static Directory get tmpPlainDir =>
-      Directory(p.join(cacheDir.path, tmpPlainDirName));
-  static Directory get dbDir => Directory(p.join(baseDir.path, dbDirName));
+  // D67 (fase 8): las carpetas son las de la bóveda PRINCIPAL. `AppPaths`
+  // delega en `VaultPaths.primary`, que resuelve exactamente las mismas rutas
+  // de siempre; la bóveda secundaria usa su propio `VaultPaths.secondary`.
+  static Directory get vaultDir => VaultPaths.primary.vaultDir;
+  static Directory get thumbsDir => VaultPaths.primary.thumbsDir;
+  static Directory get cacheDir => VaultPaths.primary.cacheDir;
+  static Directory get tmpPlainDir => VaultPaths.primary.tmpPlainDir;
+  static Directory get dbDir => VaultPaths.primary.dbDir;
 
   /// Mayor generación de llave admitida en nombres de archivo (D60).
   static const int maxKeyGen = 9999;
@@ -178,10 +184,8 @@ class AppPaths {
   }
 
   /// Ruta absoluta de una ruta relativa guardada en la BD.
-  static String resolvePath(String relativePath) {
-    final rel = validateRelative(relativePath);
-    return p.joinAll([baseDir.path, ...rel.split('/')]);
-  }
+  static String resolvePath(String relativePath) =>
+      VaultPaths.primary.resolvePath(relativePath);
 
   /// [File] de una ruta relativa guardada en la BD.
   static File resolve(String relativePath) => File(resolvePath(relativePath));

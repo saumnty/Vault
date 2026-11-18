@@ -1189,7 +1189,7 @@ class KeyRotationService {
     if (local.existsSync()) {
       if (local.lengthSync() != i.cloudSize) return false;
       if (await md5OfFile(local) != i.cloudMd5!.toLowerCase()) return false;
-      final k = session.filesKeyFor(gen);
+      final k = session.filesKeyFor(gen, VaultSlot.primary); // D67
       if (k == null) return false;
       try {
         final reader = await _crypto.openReader(

@@ -107,7 +107,12 @@ class PlainResidue {
   static Future<int> sweepAtStartup() async {
     final dirs = <Directory>[];
     if (Platform.isAndroid) dirs.addAll(await pickerCopyRoots());
-    if (AppPaths.isInitialized) dirs.add(galleryImportTmp);
+    if (AppPaths.isInitialized) {
+      dirs.add(galleryImportTmp);
+      // Fase 8 (G5): también la de la bóveda secundaria (si no existe, no se
+      // crea: `sweepDirectories` salta las carpetas ausentes).
+      dirs.add(VaultPaths.secondary.importTmpDir);
+    }
     return sweepDirectories(dirs);
   }
 }

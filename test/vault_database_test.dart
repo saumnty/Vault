@@ -394,7 +394,9 @@ void main() {
       session.open(await _keys(1));
       final opening = vdb.database;
       session.clear();
-      await opening;
+      // D67 (fase 8): una apertura que cruza un bloqueo ya no se publica: se
+      // cierra y lanza (antes devolvía una conexión que el bloqueo cerraba).
+      await expectLater(opening, throwsA(isA<SessionChangedException>()));
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(vdb.isOpen, isFalse);
       await expectLater(vdb.database, throwsStateError);

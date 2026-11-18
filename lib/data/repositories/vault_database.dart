@@ -365,6 +365,14 @@ Future<Database> openSqlCipherDatabase(
 /// [VaultDatabaseMissingException] y NUNCA crea una BD vacía (que después se
 /// tomaría como la verdad y se subiría a Drive). Solo se crea con la marca
 /// ausente (primer uso tras `createVault`).
+///
+/// D67 (fase 8, `docs/DISENO_SENUELO.md` §2.3/§4.1): hay UNA instancia por
+/// bóveda ([instance] = la principal, la de siempre; [secondaryInstance] = la
+/// secundaria). Cada una tiene fijas su bóveda ([slot]), su ruta (la de su
+/// `VaultPaths`) y su marca C1. [database] exige que la sesión abierta sea de
+/// SU bóveda ([WrongVaultSlotError] si no) y liga la conexión a la época de
+/// la sesión; una apertura que cruza un bloqueo no publica la conexión ni
+/// crea nada.
 class VaultDatabase {
   static final VaultDatabase _instance = VaultDatabase._(
     session: VaultSession(),
@@ -376,13 +384,24 @@ class VaultDatabase {
 
   factory VaultDatabase() => _instance;
 
-  /// Instancia única (equivalente a `VaultDatabase()`).
+  /// Instancia única de la bóveda PRINCIPAL (equivalente a `VaultDatabase()`).
   static VaultDatabase get instance => _instance;
 
+  /// Instancia de la bóveda SECUNDARIA (`Documents/alt/db/vault_secure.db`).
+  /// Se crea al primer uso (sin secundaria nunca se construye).
+  static final VaultDatabase secondaryInstance = VaultDatabase._(
+    session: VaultSession(),
+    opener: openSqlCipherDatabase,
+    useSqlCipher: true,
+    markerStore: FlutterSecureKeyValueStore(),
+    rekeyer: const SqlCipherExportRekeyer(),
+    slot: VaultSlot.secondary,
+  );
+
   /// Instancia independiente para pruebas: [opener] (p. ej. sqflite_common_ffi,
-  /// sin SQLCipher) y [dbPath] absoluta explícita (si no, usa `AppPaths`).
-  /// Sin [markerStore] no se aplica la guarda de "BD ausente" (pruebas
-  /// históricas).
+  /// sin SQLCipher) y [dbPath] absoluta explícita (si no, usa la ruta de la
+  /// bóveda [slot]). Sin [markerStore] no se aplica la guarda de "BD ausente"
+  /// (pruebas históricas).
   @visibleForTesting
   VaultDatabase.forTesting({
     required VaultSession session,
@@ -391,6 +410,7 @@ class VaultDatabase {
     bool useSqlCipher = false,
     SecureKeyValueStore? markerStore,
     DbRekeyer? rekeyer,
+    VaultSlot slot = VaultSlot.primary,
   }) : this._(
          session: session,
          opener: opener,
@@ -398,6 +418,7 @@ class VaultDatabase {
          useSqlCipher: useSqlCipher,
          markerStore: markerStore,
          rekeyer: rekeyer ?? const SqlCipherExportRekeyer(),
+         slot: slot,
        );
 
   VaultDatabase._({
@@ -407,6 +428,7 @@ class VaultDatabase {
     required bool useSqlCipher,
     SecureKeyValueStore? markerStore,
     required DbRekeyer rekeyer,
+    this.slot = VaultSlot.primary,
   }) : _session = session,
        _opener = opener,
        _dbPathOverride = dbPath,
@@ -416,6 +438,9 @@ class VaultDatabase {
     // Al bloquear la bóveda se cierra la conexión.
     _session.addOnClear(() => unawaited(close()));
   }
+
+  /// Bóveda a la que pertenece esta instancia (fija).
+  final VaultSlot slot;
 
   final VaultSession _session;
   final DatabaseOpener _opener;
@@ -427,6 +452,9 @@ class VaultDatabase {
   Database? _db;
   String? _openPassword;
   int? _openedGen;
+
+  /// Época de la sesión con la que se abrió la conexión actual (D67).
+  int? _openedEpoch;
   Future<Database>? _opening;
 
   /// Puerta exclusiva del re-cifrado (§6.1): mientras exista, [database]
@@ -443,15 +471,28 @@ class VaultDatabase {
   /// llave anterior hasta re-cifrarla.
   int? get openedGen => _db == null ? null : _openedGen;
 
-  String get _dbPath =>
-      _dbPathOverride ?? p.join(AppPaths.dbDir.path, VaultSchema.dbFileName);
+  /// Ruta de la BD de ESTA bóveda (la principal: `db/vault_secure.db`, la de
+  /// siempre). Las operaciones la capturan una vez al empezar.
+  String get _dbPath => _dbPathOverride ?? VaultPaths.of(slot).dbFilePath;
+
+  /// Clave de la marca C1 de esta bóveda.
+  String get _markerKey => AuthController.dbCreatedKeyFor(slot);
+
+  /// D67: lanza [WrongVaultSlotError] si la sesión está abierta en OTRA
+  /// bóveda (nunca se lee ni se escribe la BD de una bóveda con la otra
+  /// abierta). Bloqueada: lo decide [_candidatesFromSession].
+  void _requireOwnSlot() {
+    final open = _session.slot;
+    if (open != null && open != slot) throw WrongVaultSlotError(slot, open);
+  }
 
   /// Llaves SQLCipher candidatas de la sesión (generación, llave cruda
   /// `x'<64 hex>'`), en el orden en que se prueban: SQLCipher usa la llave
   /// cruda tal cual y se salta su PBKDF2 interno (256 000 iteraciones), que es
   /// innecesario porque la subllave HKDF ya es de 256 bits de alta entropía.
   List<(int, String)> _candidatesFromSession() {
-    final candidates = _session.dbCandidates;
+    _requireOwnSlot();
+    final candidates = _session.dbCandidatesFor(slot);
     if (candidates.isEmpty || candidates.any((c) => c.$2.isDestroyed)) {
       throw StateError('La bóveda está bloqueada: no se puede abrir la BD');
     }
@@ -480,6 +521,8 @@ class VaultDatabase {
       await _rekeying!.future;
     }
     final candidates = _candidatesFromSession();
+    // D67: bóveda y época de la sesión al pedir la BD.
+    final ticket = _session.ticket();
     // Espera una apertura en curso antes de decidir.
     final pending = _opening;
     if (pending != null) {
@@ -487,14 +530,16 @@ class VaultDatabase {
         await pending;
       } catch (_) {}
     }
+    ticket.check();
     final current = _db;
     if (current != null &&
         current.isOpen &&
+        _openedEpoch == ticket.epoch &&
         candidates.any((c) => c.$1 == _openedGen && c.$2 == _openPassword)) {
       return current;
     }
     if (current != null) await close();
-    final future = _open(candidates);
+    final future = _open(candidates, ticket);
     _opening = future;
     try {
       return await future;
@@ -503,21 +548,30 @@ class VaultDatabase {
     }
   }
 
-  Future<Database> _open(List<(int, String)> candidates) async {
+  Future<Database> _open(
+    List<(int, String)> candidates,
+    SessionTicket ticket,
+  ) async {
     if (_dbPathOverride == null) await AppPaths.init();
-    final file = File(_dbPath);
+    // D67: ruta y marca capturadas UNA vez (son fijas por instancia).
+    final path = _dbPath;
+    final markerKey = _markerKey;
+    final file = File(path);
     final markers = _markerStore;
     var existed = file.existsSync();
     // C1: la BD ya existió y falta el archivo -> nunca se crea una vacía. Si
     // quedan restos de un re-cifrado (§6.2), se intenta repararla con ellos.
     if (!existed &&
         markers != null &&
-        await markers.read(AuthController.dbCreatedKey) == 'true') {
+        await markers.read(markerKey) == 'true') {
+      ticket.check();
       if (!await _repairFromRekeyLeftovers(candidates)) {
         throw const VaultDatabaseMissingException();
       }
       existed = true;
     }
+    // D67: nada se crea (carpeta ni BD) si la sesión cambió entretanto.
+    ticket.check();
     if (!file.parent.existsSync()) file.parent.createSync(recursive: true);
     // Una BD NUEVA se crea con la llave actual (la última candidata). Con una
     // existente se prueban en orden; sin SQLCipher (pruebas) no hay llave que
@@ -531,7 +585,7 @@ class VaultDatabase {
     StackTrace? lastStack;
     for (final c in tries) {
       try {
-        db = await _openWith(c.$2);
+        db = await _openWith(c.$2, path: path);
         used = c;
         break;
       } on VaultSchemaTooNewException {
@@ -544,21 +598,35 @@ class VaultDatabase {
     if (db == null) {
       Error.throwWithStackTrace(lastError!, lastStack!);
     }
+    // D67: si la sesión cambió (bloqueo, otra bóveda) mientras se abría, la
+    // conexión no se publica ni se escribe la marca.
+    await _closeIfStale(db, ticket);
     // Creada ahora, o ya existente de una versión sin la marca (bóvedas
     // anteriores a C1): desde aquí la BD de esta bóveda "existe".
-    if (markers != null &&
-        await markers.read(AuthController.dbCreatedKey) != 'true') {
+    if (markers != null && await markers.read(markerKey) != 'true') {
+      await _closeIfStale(db, ticket);
       try {
-        await markers.write(AuthController.dbCreatedKey, 'true');
+        await markers.write(markerKey, 'true');
       } catch (_) {
         // Almacén seguro no disponible: la marca se escribe en la próxima
         // apertura (hasta entonces la guarda no está activa, como antes).
       }
     }
+    await _closeIfStale(db, ticket);
     _db = db;
     _openPassword = used.$2;
     _openedGen = used.$1;
+    _openedEpoch = ticket.epoch;
     return db;
+  }
+
+  /// Cierra [db] y lanza [SessionChangedException] si [ticket] ya no vale.
+  static Future<void> _closeIfStale(Database db, SessionTicket ticket) async {
+    if (ticket.isValid) return;
+    try {
+      await db.close();
+    } catch (_) {}
+    throw SessionChangedException();
   }
 
   /// Abre con [password] y, con SQLCipher, comprueba que la llave abre el
@@ -637,24 +705,43 @@ class VaultDatabase {
     if (!_useSqlCipher) {
       throw StateError('El re-cifrado exige SQLCipher');
     }
+    // D67: la rotación es solo de la principal.
+    if (slot != VaultSlot.primary) {
+      throw StateError('Solo la bóveda principal se re-cifra');
+    }
+    _requireOwnSlot();
     if (_rekeying != null) throw StateError('Ya hay un re-cifrado en curso');
+    // D67: bóveda y época al empezar; cada punto de aborto las comprueba (un
+    // bloqueo, aunque se vuelva a abrir la misma bóveda, aborta).
+    final ticket = _session.ticket();
     final gate = Completer<void>();
     _rekeying = gate;
     // L6: copias propias (String inmutables) de las dos llaves.
     final oldPw = passwordFor(from);
     final newPw = passwordFor(to);
-    final dbFile = File(_dbPath);
+    // D67: rutas capturadas UNA vez (fijas por instancia).
+    final dbPath = _dbPath;
+    final dbFile = File(dbPath);
     final tmp = File(rekeyTmpPath(toGen));
     final backup = File(rekeyBackupPath(fromGen));
     var renamed = false;
+    void requireSession() {
+      if (!ticket.isValid) {
+        throw SessionChangedException(
+          'La bóveda se bloqueó durante el re-cifrado de la BD',
+        );
+      }
+    }
+
     try {
       await _closeConnection();
       if (await tmp.exists()) await tmp.delete();
       if (!dbFile.existsSync()) throw const VaultDatabaseMissingException();
       // ¿Ya re-cifrada (corte tras el rename)?
-      if (await _opensWith(_dbPath, newPw)) return;
+      if (await _opensWith(dbPath, newPw)) return;
 
-      final src = await _openWith(oldPw);
+      requireSession();
+      final src = await _openWith(oldPw, path: dbPath);
       final int version;
       final Map<String, int> counts;
       final Set<String> triggers;
@@ -671,7 +758,7 @@ class VaultDatabase {
       } finally {
         await src.close();
       }
-      _requireUnlocked();
+      requireSession();
 
       await _verifyRekeyed(
         tmp.path,
@@ -681,7 +768,7 @@ class VaultDatabase {
         counts: counts,
         triggers: triggers,
       );
-      _requireUnlocked();
+      requireSession();
 
       if (await backup.exists()) await backup.delete();
       await dbFile.copy(backup.path);
@@ -691,14 +778,16 @@ class VaultDatabase {
       } finally {
         await raf.close();
       }
-      _requireUnlocked(); // último punto de aborto
+      requireSession(); // último punto de aborto
 
-      // Restos de diario de la BD vieja: no deben aplicarse a la nueva.
+      // Restos de diario de la BD vieja: no deben aplicarse a la nueva. Desde
+      // aquí el `rename` ya no se interrumpe (como antes); la ruta es la
+      // capturada al empezar, fija por instancia (D67): nunca otra bóveda.
       for (final suffix in const ['-wal', '-shm', '-journal']) {
-        final f = File('$_dbPath$suffix');
+        final f = File('$dbPath$suffix');
         if (f.existsSync()) await f.delete();
       }
-      await tmp.rename(_dbPath);
+      await tmp.rename(dbPath);
       renamed = true;
     } catch (_) {
       if (!renamed) {
@@ -730,12 +819,6 @@ class VaultDatabase {
     }
   }
 
-  void _requireUnlocked() {
-    if (!_session.isUnlocked) {
-      throw StateError('La bóveda se bloqueó durante el re-cifrado de la BD');
-    }
-  }
-
   Future<void> _closeConnection() async {
     final pending = _opening;
     if (pending != null) {
@@ -747,6 +830,7 @@ class VaultDatabase {
     _db = null;
     _openPassword = null;
     _openedGen = null;
+    _openedEpoch = null;
     if (db != null && db.isOpen) await db.close();
   }
 
@@ -885,6 +969,7 @@ class VaultDatabase {
     _db = null;
     _openPassword = null;
     _openedGen = null;
+    _openedEpoch = null;
     if (db != null && db.isOpen) await db.close();
   }
 
@@ -895,8 +980,14 @@ class VaultDatabase {
   /// siguiente acceso.
   ///
   /// F5: `SyncService` la sube a appDataFolder como `vault_db[.kN].snapshot`.
+  ///
+  /// D67: solo la bóveda PRINCIPAL tiene snapshot (la secundaria no sale del
+  /// teléfono): en otra instancia lanza [WrongVaultSlotError].
   Future<SnapshotCopy> exportEncryptedSnapshot() async {
-    final db = await database; // exige sesión desbloqueada
+    if (slot != VaultSlot.primary) {
+      throw WrongVaultSlotError(VaultSlot.primary, slot);
+    }
+    final db = await database; // exige sesión desbloqueada (de la principal)
     final dbGen = openedGen!;
     final range = await db.rawQuery(
       'SELECT MIN(keyGen) AS lo, MAX(keyGen) AS hi FROM vault_items',

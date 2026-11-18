@@ -45,7 +45,8 @@ void main() async {
   // disco, se barre la carpeta de temporales en claro al arrancar.
   try {
     await AppPaths.init();
-    await PlainTempManager.instance.sweep();
+    // Fase 8 (G5): también los de la bóveda secundaria, si existe.
+    await PlainTempManager.instance.sweepAll();
     // S-02: copias en claro del selector de archivos (Android) y temporales
     // de la importación de la galería que quedaron de un cierre abrupto.
     await PlainResidue.sweepAtStartup();

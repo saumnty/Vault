@@ -231,6 +231,33 @@ void main() {
     expect(File(vdb.rekeyBackupPath(1)).existsSync(), isFalse);
   });
 
+  test('D67: bloquear y volver a abrir la MISMA bóveda a mitad también '
+      'aborta (época nueva) sin tocar la BD', () async {
+    final oldKeys = await _keys(1);
+    rekeyer.afterExport = (_) async {
+      session.clear();
+      session.open(await _keys(1));
+    };
+    final vdb = newDb();
+    await expectLater(rekey(vdb), throwsA(isA<SessionChangedException>()));
+    expect(await opensWith(dbPath, oldKeys), isTrue);
+    expect(File(vdb.rekeyTmpPath(2)).existsSync(), isFalse);
+    expect(File(vdb.rekeyBackupPath(1)).existsSync(), isFalse);
+  });
+
+  test('D67: una instancia de la secundaria no se re-cifra', () async {
+    final vdb = VaultDatabase.forTesting(
+      session: session,
+      dbPath: dbPath,
+      opener: fakeCipherOpener,
+      useSqlCipher: true,
+      rekeyer: rekeyer,
+      slot: VaultSlot.secondary,
+    );
+    await expectLater(rekey(vdb), throwsStateError);
+    expect(await opensWith(dbPath, k1), isTrue);
+  });
+
   test('corte tras exportar (queda .tmp): se repite sin problema', () async {
     final vdb = newDb();
     File(vdb.rekeyTmpPath(2))

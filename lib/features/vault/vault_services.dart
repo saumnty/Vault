@@ -8,13 +8,11 @@ import 'package:path/path.dart' as p;
 
 import '../../core/crypto/auth_controller.dart';
 import '../../core/crypto/secure_kv_store.dart';
-import '../../core/logging/diagnostics_buffer.dart';
 import '../../core/services/app_paths.dart';
 import '../../core/services/cache_manager.dart';
 import '../../core/services/plain_temp_manager.dart';
-import '../../core/session/image_cache_wipe.dart';
+import '../../core/session/session_hooks.dart';
 import '../../core/session/vault_session.dart';
-import '../../core/streaming/vault_stream_server.dart';
 import '../../data/gallery/gallery_import_service.dart';
 import '../../data/gallery/import_preferences.dart';
 import '../../data/gallery/photo_manager_gallery_source.dart';
@@ -329,12 +327,10 @@ class VaultServices {
       resolvePath: AppPaths.resolve,
     );
     final temp = PlainTempManager.instance;
-    // Al bloquear: el registro de diagnóstico en memoria se borra.
-    session.addOnClear(DiagnosticsBuffer.instance.clear);
-    // Al bloquear: temporales descifrados fuera, SIN esperas.
-    session.addOnClear(temp.purgeSync);
-    // ...y todo servidor de streaming local cerrado (corta conexiones).
-    session.addOnClear(VaultStreamServer.closeAllNow);
+    // Al bloquear: registro de diagnóstico en memoria, temporales descifrados
+    // (de las dos bóvedas, sin esperas), servidores de streaming locales y
+    // caché de imágenes. Ganchos COMUNES a las dos bóvedas (D67).
+    SessionHooks.ensureInstalled(session);
     final offline = OfflineService(
       items: repository,
       fetcher: fetcher,
@@ -345,8 +341,9 @@ class VaultServices {
     session.addOnClear(offline.cancel);
     final opener = VaultMediaOpener(
       fetcher: fetcher,
-      // D60: la llave de la generación del item que se abre.
-      filesKey: session.filesKeyFor,
+      // D60: la llave de la generación del item que se abre; D67: solo de la
+      // bóveda principal (con la secundaria abierta, `null`).
+      filesKey: (gen) => session.filesKeyFor(gen, VaultSlot.primary),
       temp: temp,
       session: session,
       markInUse: cache.markInUse,
@@ -460,14 +457,15 @@ class VaultServices {
     final session = VaultSession();
     final repository = VaultDataRepository();
     final loader = EncryptedThumbnailLoader(
-      // D60: la llave de la generación del item.
-      thumbsKey: session.thumbsKeyFor,
+      // D60: la llave de la generación del item (D67: de la principal).
+      thumbsKey: (gen) => session.thumbsKeyFor(gen, VaultSlot.primary),
       refresh: repository.getItem,
     );
     // Al bloquear, la caché en memoria se vacía.
     session.addOnClear(loader.clear);
-    // S-05: y la caché global de imágenes decodificadas de Flutter.
-    session.addOnClear(wipeImageCache);
+    // S-05: y la caché global de imágenes decodificadas de Flutter (gancho
+    // común, D67).
+    SessionHooks.ensureInstalled(session);
     return loader;
   }
 
@@ -503,8 +501,8 @@ class VaultServices {
       source: source,
       videoThumbnailer: videoThumbnailer,
       // D60: la miniatura se escribe con la generación de su item.
-      filesKey: session.filesKeyFor,
-      thumbsKey: session.thumbsKeyFor,
+      filesKey: (gen) => session.filesKeyFor(gen, VaultSlot.primary),
+      thumbsKey: (gen) => session.thumbsKeyFor(gen, VaultSlot.primary),
       // D61: en pausa mientras se rota la llave.
       paused: () => sync.rotation.active,
       tempDirProvider: () =>

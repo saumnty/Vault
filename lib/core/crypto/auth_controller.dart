@@ -142,6 +142,15 @@ class AuthController {
   /// borra al crear o restaurar una bóveda y con [discardLocalKeys].
   static const String dbCreatedKey = 'vault.v1.db_created';
 
+  /// Fase 8 (D67): marca C1 de la BD de la bóveda SECUNDARIA.
+  static const String altDbCreatedKey = 'vault.v1.alt.db_created';
+
+  /// Marca C1 de la BD de la bóveda [slot].
+  static String dbCreatedKeyFor(VaultSlot slot) => switch (slot) {
+    VaultSlot.primary => dbCreatedKey,
+    VaultSlot.secondary => altDbCreatedKey,
+  };
+
   /// D60: generación de la DEK vigente (ausente = 1, la bóveda original).
   static const String keyGenKey = 'vault.v1.key_gen';
 

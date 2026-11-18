@@ -62,8 +62,12 @@ class PlatformSecurity {
   ];
 
   /// Marca las carpetas del vault como excluidas del respaldo (se repite en
-  /// cada arranque por si el sistema limpió el atributo). Las carpetas se
-  /// crean antes si faltan.
+  /// cada arranque por si el sistema limpió el atributo). Las carpetas de la
+  /// bóveda principal se crean antes si faltan.
+  ///
+  /// Fase 8 (M2): la raíz de la bóveda secundaria (`alt/`) se excluye SOLO si
+  /// ya existe y nunca se crea aquí (un arranque sin secundaria no escribe
+  /// nada nuevo en disco). // iOS: sin probar en dispositivo.
   Future<void> excludeVaultFromBackup() async {
     for (final d in [
       AppPaths.vaultDir,
@@ -73,7 +77,11 @@ class PlatformSecurity {
     ]) {
       if (!d.existsSync()) d.createSync(recursive: true);
     }
-    await excludeFromBackup(vaultPaths());
+    final secondary = VaultPaths.secondary.root;
+    await excludeFromBackup([
+      ...vaultPaths(),
+      if (secondary.existsSync()) secondary.path,
+    ]);
   }
 }
 

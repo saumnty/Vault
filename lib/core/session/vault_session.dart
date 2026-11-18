@@ -1,9 +1,13 @@
 import 'package:cryptography/cryptography.dart';
 
 import '../crypto/key_hierarchy.dart';
+import 'session_ticket.dart';
 import 'vault_keyring.dart';
+import 'vault_slot.dart';
 
+export 'session_ticket.dart';
 export 'vault_keyring.dart';
+export 'vault_slot.dart';
 
 /// Sesión de la bóveda: mantiene en memoria las llaves ([VaultKeyring])
 /// mientras la bóveda está desbloqueada. [clear] las destruye (bloquear).
@@ -12,6 +16,12 @@ export 'vault_keyring.dart';
 /// [filesKey] (generación [currentGen]); lo que LEE un item usa
 /// [filesKeyFor]/[thumbsKeyFor] con la `keyGen` del item; la BD se abre con
 /// [dbCandidates].
+///
+/// D67 (fase 8, `docs/DISENO_SENUELO.md` §4.1): la sesión es de UNA bóveda
+/// ([slot]) y tiene una [epoch] que cambia al bloquear y al abrir desde el
+/// estado bloqueado. Las llaves de lectura se piden indicando la bóveda: con
+/// la otra bóveda abierta devuelven `null`. Abrir otra bóveda sin bloquear
+/// antes es un error ([StateError]).
 class VaultSession {
   static final VaultSession _instance = VaultSession.create();
 
@@ -22,6 +32,8 @@ class VaultSession {
   VaultSession.create();
 
   VaultKeyring? _ring;
+  VaultSlot? _slot;
+  int _epoch = 0;
   final List<void Function()> _onClear = [];
 
   /// Registra un callback que se invoca al bloquear ([clear]). Lo usa la BD
@@ -31,6 +43,25 @@ class VaultSession {
   void removeOnClear(void Function() listener) => _onClear.remove(listener);
 
   bool get isUnlocked => _ring != null;
+
+  /// Bóveda abierta, o `null` si está bloqueada.
+  VaultSlot? get slot => _ring == null ? null : _slot;
+
+  /// `true` si está desbloqueada y la bóveda abierta es [s].
+  bool isUnlockedAs(VaultSlot s) => _ring != null && _slot == s;
+
+  /// Época de la sesión: cambia en cada [clear] y en cada apertura desde el
+  /// estado bloqueado (no al cambiar el anillo de la MISMA sesión, p. ej.
+  /// durante una rotación).
+  int get epoch => _epoch;
+
+  /// Captura bóveda y época para una operación larga. Lanza [StateError] si
+  /// está bloqueada.
+  SessionTicket ticket() {
+    final s = slot;
+    if (s == null) throw StateError('La bóveda está bloqueada');
+    return _Ticket(this, s, _epoch);
+  }
 
   /// Llaves de la generación actual (la que cifra lo nuevo). Lanza
   /// [StateError] si la bóveda está bloqueada.
@@ -60,23 +91,39 @@ class VaultSession {
   /// Subllave para cifrar archivos NUEVOS, o `null` si está bloqueada.
   SecretKey? get filesKey => _ring?.current.files;
 
-  /// Subllave "files" de la generación [gen] (para LEER un item de esa
-  /// generación), o `null` si está bloqueada o la sesión no la tiene.
-  SecretKey? filesKeyFor(int gen) => _ring?.forGenOrNull(gen)?.files;
+  /// Subllave "files" de la generación [gen] de la bóveda [slot] (para LEER
+  /// un item de esa generación), o `null` si está bloqueada, si la bóveda
+  /// abierta es otra o si la sesión no tiene esa generación.
+  ///
+  /// [slot] es posicional opcional con la principal por defecto: los
+  /// servicios existentes (todos de la principal) siguen igual y, con la
+  /// secundaria abierta, reciben `null` (falla cerrado).
+  SecretKey? filesKeyFor(int gen, [VaultSlot slot = VaultSlot.primary]) =>
+      _ringFor(slot)?.forGenOrNull(gen)?.files;
 
-  /// Subllave "thumbs" de la generación [gen], o `null`.
-  SecretKey? thumbsKeyFor(int gen) => _ring?.forGenOrNull(gen)?.thumbs;
+  /// Subllave "thumbs" de la generación [gen] de la bóveda [slot], o `null`.
+  SecretKey? thumbsKeyFor(int gen, [VaultSlot slot = VaultSlot.primary]) =>
+      _ringFor(slot)?.forGenOrNull(gen)?.thumbs;
+
+  VaultKeyring? _ringFor(VaultSlot s) => _slot == s ? _ring : null;
 
   /// Llaves candidatas para abrir la BD (ver [VaultKeyring.dbCandidates]);
   /// vacía si está bloqueada.
   List<(int, KeyHierarchy)> get dbCandidates => _ring?.dbCandidates ?? const [];
 
+  /// Como [dbCandidates] pero vacía si la bóveda abierta no es [s].
+  List<(int, KeyHierarchy)> dbCandidatesFor(VaultSlot s) =>
+      _ringFor(s)?.dbCandidates ?? const [];
+
   /// Abre la sesión con una sola generación [gen] (la bóveda original es la
   /// 1). Ver [openKeyring].
-  void open(KeyHierarchy keys, {int gen = 1}) =>
-      openKeyring(VaultKeyring.single(gen, keys));
+  void open(
+    KeyHierarchy keys, {
+    int gen = 1,
+    VaultSlot slot = VaultSlot.primary,
+  }) => openKeyring(VaultKeyring.single(gen, keys), slot: slot);
 
-  /// Abre la sesión con [ring].
+  /// Abre la sesión con [ring] en la bóveda [slot].
   ///
   /// Si ya está abierta con la MISMA DEK (mismo `keyCheck`) en la misma
   /// generación (p. ej. un segundo desbloqueo por doble toque o huella + PIN),
@@ -84,11 +131,25 @@ class VaultSession {
   /// duplicadas: así no se invalidan referencias que otros servicios ya
   /// tienen (`filesKey`, la llave de la BD). Las jerarquías viejas que ya no
   /// están en [ring] se destruyen.
-  void openKeyring(VaultKeyring ring) {
+  ///
+  /// D67: con la sesión abierta en OTRA bóveda lanza [StateError] (y destruye
+  /// [ring]): para cambiar de bóveda hay que bloquear antes ([clear]).
+  void openKeyring(VaultKeyring ring, {VaultSlot slot = VaultSlot.primary}) {
     final old = _ring;
     if (identical(ring, old)) return;
-    if (old == null || old.isDestroyed) {
+    final live = old != null && !old.isDestroyed;
+    if (live && _slot != slot) {
+      ring.destroy();
+      throw StateError(
+        'La sesión está abierta en otra bóveda: hay que bloquear antes',
+      );
+    }
+    if (!live) {
       old?.destroy();
+      // Abrir desde el estado bloqueado (o desde llaves ya destruidas) es una
+      // sesión nueva: otra época.
+      _epoch++;
+      _slot = slot;
       _ring = ring;
       return;
     }
@@ -123,8 +184,28 @@ class VaultSession {
   void clear() {
     _ring?.destroy();
     _ring = null;
+    _slot = null;
+    _epoch++;
     for (final l in List.of(_onClear)) {
       l();
     }
+  }
+}
+
+class _Ticket implements SessionTicket {
+  _Ticket(this._session, this.slot, this.epoch);
+
+  final VaultSession _session;
+  @override
+  final VaultSlot slot;
+  @override
+  final int epoch;
+
+  @override
+  bool get isValid => _session.isUnlockedAs(slot) && _session.epoch == epoch;
+
+  @override
+  void check() {
+    if (!isValid) throw SessionChangedException();
   }
 }
