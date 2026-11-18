@@ -319,3 +319,39 @@ Diseño completo en `docs/DISENO_ROTACION.md` §1.
 * **"Reintentar"** sigue disponible (p. ej. un 404 que no era real o una copia que vuelve).
 * **Nombres solo en pantalla.** La lista (`KeyRotationService.problems`, en memoria) lleva id y nombre para la UI; el registro de la rotación (y por tanto el Diagnóstico) guarda solo cuentas ("1 archivo(s) sin ninguna copia y 1 archivo(s) dañado(s)"). Tras reiniciar la app la lista se recalcula (`loadProblems`, necesita el PIN).
 * **Un item sin ninguna copia no cuenta como pendiente** en las precondiciones A4 (`_nothingPending`) ni en la verificación de subida (`_unverified`): nunca podrá subirse y esperarlo atascaría la rotación para siempre. Corrige también un atasco latente: un perdido M6 de una rotación anterior (en `error`, sin archivo) impedía empezar la siguiente. La hoja previa cuenta los que ya se sabe que no tienen copia (`RotationPlan.noCopyItems`) y avisa, sin bloquear "Empezar".
+
+## D65 · Bóveda adicional (señuelo, variante (a) «disimulo»): modelo, nombres y límites (v2 fase 8, 2026-11-18)
+Diseño completo en `docs/DISENO_SENUELO.md` (revisado por un Opus independiente).
+* Un SEGUNDO PIN abre una bóveda SEPARADA: otra DEK aleatoria, otros archivos (`Documents/alt/{vault,thumbs,db,vault_cache}`) y otra BD (`alt/db/vault_secure.db`). La de siempre es la **principal** (`VaultSlot.primary`) y NO cambia nada: mismas rutas, claves `vault.v1.*`, esquema v10 sin migración. En la UI se llama «Bóveda adicional» y solo aparece en Ajustes > Seguridad de la principal; nunca «señuelo».
+* Claves nuevas: `vault.v1.alt.pin_envelope` (`WrapPurpose.altPin`, su presencia marca que existe) y `vault.v1.alt.db_created` (C1). Sin `alt.key_check` (sin biometría no hace falta).
+* **No oculta** que hay dos bóvedas (eso era la variante negable, descartada): se ve en el disco, el Keychain, el espacio ocupado, Drive y los tiempos. Tabla de qué protege y qué no en `DISENO_SENUELO.md` §7 y en la propia pantalla.
+
+## D66 · Desbloqueo: dos derivaciones en paralelo, un solo contador (C1), A2 y `reauthPrimary` (v2 fase 8)
+* Con la app bloqueada y una adicional, las dos envolturas se derivan SIEMPRE y EN PARALELO (`Future.wait`) y se decide al terminar ambas: el tiempo no dice cuál abrió. Sin adicional es exactamente el camino de siempre (UNA derivación).
+* Un solo contador (`vault.v1.pin_attempts`). **Solo acertar la principal lo pone a cero**; acertar la adicional devuelve el contador a su estado previo (`PinAttemptLimiter.rawState/restoreRaw`): intercalar su PIN no evita las esperas (C1).
+* Una envoltura adicional ilegible o con otros parámetros de Argon2id (M3: deben ser los de la principal o los de la app) no se deriva: «Dañada», y la principal abre igual (G6).
+* Con la sesión ABIERTA `unlockWithPin` solo prueba la envoltura de esa bóveda y nunca cambia de bóveda (A2); la pantalla de rotación usa `reauthPrimary`. Abrir la adicional no lee ni toca nada de la rotación. Tras la decisión la principal puede hacer un 3.er Argon2id (rotación en `prepared..freezing`): irrelevante, porque ya se ve qué bóveda se abrió.
+
+## D67 · Aislamiento por bóveda: `VaultPaths`/`VaultDatabase` por bóveda, época de sesión y guardas (v2 fase 8)
+* Sin raíz global mutable: `AppPaths` sigue siendo la principal (delega en `VaultPaths.primary`); la adicional usa `VaultPaths.secondary` y `VaultDatabase.secondaryInstance` (ruta y marca C1 fijas; con la otra bóveda abierta, `WrongVaultSlotError`).
+* `VaultSession` tiene bóveda (`slot`) y época (`epoch`, cambia al bloquear y al abrir); las llaves de lectura van ligadas a la bóveda (`filesKeyFor(gen, slot)`, la principal por defecto: con la otra abierta, `null`). Toda operación larga (importar, regenerar, Papelera, caché, descargas, exportar, re-cifrar, `rekeyTo`, abrir la BD) captura un `SessionTicket` y lo comprueba antes de cada escritura; importación y regeneración se cancelan al bloquear. Arnés de cruce en `test/secondary/crossing_test.dart`.
+* Ganchos de bloqueo comunes (`SessionHooks`): temporales en claro de las DOS raíces, streaming, diagnóstico, `ImageCache`. `excludeVaultFromBackup` excluye `alt/` solo si existe (no la crea).
+* Guardas solo-principal: compuertas de sync, sin conexión, `onDataChanged`, migración y rotación (`PrimaryGates`); `SlotGuardedCloudStorage` lanza `CloudSlotException` en toda operación con la adicional abierta; repositorios de cola, migración y rotación usan la BD principal (que lanza).
+
+## D68 · La bóveda adicional no tiene Drive ni código de recuperación (v2 fase 8)
+* Vive solo en el teléfono. `recovery_backup*.json`, `vault_db*.snapshot` y los blobs de la principal quedan byte a byte igual (revisiones incluidas) y restaurables; el probe, la rotación (A5) y la migración no ven nada nuevo. Restaurar en otro teléfono trae solo la principal. Si se pierde el teléfono o su PIN, su contenido se pierde (se avisa al crearla). Para una llave nueva: eliminar y crear otra.
+* Descartada en esta fase (posible «8b»): respaldo con prefijo `alt_` en el mismo appDataFolder (exige código propio, prefs, restauración con elección y migración; mostraría la misma cuenta de Google). `CloudNames.parse` ya ignora `alt_*`.
+
+## D69 · Biometría solo para la principal y sin diálogo automático (v2 fase 8)
+* Face ID / la huella abren SOLO la principal. Al crear la adicional, si están activos se ofrece «Desactivar (recomendado)» y se apagan ANTES de escribir su envoltura (M5); la pantalla avisa si conviven. Con una adicional, la pantalla del PIN no lanza sola la biometría (solo con su botón).
+
+## D70 · Interfaz de la adicional neutra (v2 fase 8)
+* Ajustes reducido: Autobloqueo, Bloquear ahora, Calidad de video, Regenerar miniaturas, Etiquetas, Papelera y Acerca de (privacidad neutra). Sin Cambiar PIN (C2), biometría, Proteger pantalla, código, rotación, «Comprobar mi código», sincronización, borrar originales, caché, sin conexión ni Diagnóstico.
+* `VaultUiMode.cloudless` (lo fija la raíz al abrir/bloquear) oculta el estado de subida («En este teléfono»), «sin conexión», el borrado de originales y cualquier mención a la nube en hojas y errores (M8: «Este archivo no está disponible.»). Test que recorre la pantalla y falla ante palabras prohibidas.
+* Servicios propios (`VaultServices.secondary()`, una instancia por proceso; sus cachés y lotes se vacían/cancelan al bloquear) y servicios/Ajustes recalculados por bóveda en cada desbloqueo (`main.dart`, M7).
+
+## D71 · Reglas del PIN adicional y cambio solo desde la principal (v2 fase 8)
+* 6 dígitos, distinto del principal y a ≥ 2 posiciones de él; con un principal heredado de 4–5 dígitos, no puede empezar por él (M6: un «Entrar» temprano abriría la principal). Mensaje neutro: «Ese PIN no está disponible. Elige otro.».
+* `changePin` de la principal rechaza un PIN que abra la adicional (solo igualdad; la distancia 1 no se comprueba, B3).
+* El PIN de la adicional se cambia SOLO desde la principal (PIN principal + PIN actual de la adicional, que cuenta en el mismo límite): dentro de la adicional no hay oráculo (C2). Crear y eliminar exigen la principal abierta y su PIN; eliminar borra la envoltura PRIMERO (con relectura), luego la marca y `alt/`.
+* Arranque (`reconcileSecondaryAtStartup`, 5 estados del §9): sin principal se borra todo lo `alt`; sin envoltura y con `alt/`, se borra `alt/`; con envoltura y sin `alt/`, se borran las claves; «Dañada» nunca se borra sola; un error al leer el almacén no borra nada (M4). `discardLocalKeys`/`commitRestore` no tocan `alt.*` (lo reconcilia el arranque).

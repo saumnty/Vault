@@ -42,10 +42,10 @@ Reglas: una fase a la vez; migraciones de BD incrementales (v7 → v8…), nunca
 | 9 | Etiquetas, filtros y búsqueda (BD v9) | Sonnet | 🧪 BD v9 incremental, `TagRepository`, filtros globales, hoja de etiquetas, Ajustes > Etiquetas; tests + emulador |
 | 6 | Selector de archivos propio (sin file_picker; S-02 residual, S-18) | Sonnet | 🧪 canal `vault/picker` (Kotlin probado en emulador; Swift sin compilar), `encryptSource`, `file_picker` fuera; tests |
 | 1 | Rotar la DEK (S-11), diseño revisado por Opus; PARAR al terminar | Opus | 🧪 pasos 1–11 implementados y en tests (D60–D63); ⬜ rotación real contra Drive sin probar; PARADA: simulacro de restauración del usuario (REPORTE "v2 · Fase 1") antes de rotar en el iPhone |
-| 8 | Bóveda señuelo: variante (a) «disimulo» (decisión del usuario 2026-11-18, sustituye a la de ambas del 17): segundo PIN que abre una bóveda SEPARADA; NO hace falta ocultar en disco ni en Drive cuántas bóvedas hay. Diseño final revisado por Opus independiente en `docs/DISENO_SENUELO.md` (2 críticos y 2 altos incorporados); mismas reglas que la fase 1 | Opus | 🔧 implementación por pasos (abajo) |
+| 8 | Bóveda señuelo: variante (a) «disimulo» (decisión del usuario 2026-11-18, sustituye a la de ambas del 17): segundo PIN que abre una bóveda SEPARADA; NO hace falta ocultar en disco ni en Drive cuántas bóvedas hay. Diseño final revisado por Opus independiente en `docs/DISENO_SENUELO.md` (2 críticos y 2 altos incorporados); mismas reglas que la fase 1 | Opus | 🧪 pasos 1–10 (abajo, D65–D71); ⬜ test de integración SQLCipher con dispositivo; 📝 iPhone sin probar (REPORTE «v2 · Fase 8») |
 | 11 | Kern: nombre visible e ícono | Haiku | ⬜ |
 
-Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (REPORTE.md "v2 · Fase 1") y después la rotación en el iPhone con la lista de pruebas. Pendiente de la fase: prueba de punta a punta en el emulador con Drive real (§10, a mano), limpieza manual de generaciones abandonadas (M11), botón de borrar la cuenta anterior desde el aviso M7 y goldens de la pantalla. Después: fase 8.
+Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (REPORTE.md "v2 · Fase 1") y después la rotación en el iPhone con la lista de pruebas. Pendiente de la fase: prueba de punta a punta en el emulador con Drive real (§10, a mano), limpieza manual de generaciones abandonadas (M11), botón de borrar la cuenta anterior desde el aviso M7 y goldens de la pantalla. Fase 8 (bóveda adicional) implementada en tests y emulador; pendiente: `flutter test integration_test/secondary_sqlcipher_test.dart -d ID_DISPOSITIVO` y la lista de iPhone de REPORTE «v2 · Fase 8». Después: fase 11.
 
 ### Fase 1 · pasos (ver docs/DISENO_ROTACION.md §11)
 | Paso | Qué | Estado |
@@ -74,6 +74,6 @@ Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (RE
 | 6 | `AuthController` y arranque: `altPin`, desbloqueo en paralelo (C1), `reauthPrimary`, crear/cambiar/eliminar, `_reconcileSecondary` | ✅🧪 suite 1142; emulador: desbloqueo normal con 1 derivación, sin `alt/` |
 | 7 | `VaultServices.secondary()` y navegación por bóveda en `main.dart`, sin biometría automática | ✅🧪 |
 | 8 | UI: `SecondaryVaultScreen` y Ajustes reducido con textos neutros | ✅🧪 suite 1152; emulador: crear, entrar con el 2.º PIN (bóveda vacía y separada), importar, aislamiento OK |
-| 9 | Batería transversal: aislamiento, principal intacta, convivencia con la rotación, cortes, esquema, SQLCipher real | ⬜ |
-| 10 | Emulador y documentación (D65–D71) | ⬜ |
+| 9 | Batería transversal: aislamiento, principal intacta, convivencia con la rotación, cortes, esquema, SQLCipher real | 🧪 `test/secondary/{isolation,primary_restore_intact,rotation_coexistence,crash_points,schema_upgrade_secondary}_test.dart`; ⬜ `integration_test/secondary_sqlcipher_test.dart` escrito, sin ejecutar (necesita dispositivo) |
+| 10 | Emulador y documentación (D65–D71) | 📝 DECISIONES D65–D71, REPORTE «v2 · Fase 8» (límites y pruebas de iPhone), CONTEXTO, PLAN; emulador: ver pasos 3–8 |
 

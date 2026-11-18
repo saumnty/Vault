@@ -573,3 +573,46 @@ Cuenta de Google de pruebas (distinta de la del iPhone, confirmado por el usuari
 - Las **revisiones** de Drive no se pueden listar con la interfaz de la app: se confía en que `files.delete` (permanente) las borre, como en S-04. Cubierto con revisiones en el fake de los tests (`everyVersion`).
 - Solo Android. iOS sigue sin probar; el simulacro y las pruebas del iPhone de arriba siguen vigentes.
 - Para esta prueba se usaron dos parches temporales (vaciar y listar Drive de la cuenta de pruebas), **no cometidos**.
+
+## v2 · Fase 8 — Bóveda adicional (señuelo, variante «disimulo») (2026-11-18)
+Diseño: `docs/DISENO_SENUELO.md` (revisado por Opus independiente). Decisiones D65–D71.
+
+**Qué es.** Desde la bóveda principal (Ajustes > Seguridad > «Bóveda adicional», con el PIN principal) se crea una segunda bóveda con su propio PIN de 6 dígitos. En la pantalla del PIN de siempre, cada PIN abre SU bóveda. La adicional tiene otra DEK, otros archivos (`Documents/alt/`) y otra BD; no tiene nube, código de recuperación ni biometría, y sus Ajustes no nombran nada de la principal.
+
+**La principal no cambia:** mismas rutas, mismas claves, esquema v10 sin migración, una sola derivación Argon2id al desbloquear mientras no exista una adicional. Verificado en emulador por el coordinador: sin adicional no aparece `alt/`; crear por la UI, entrar con su PIN (bóveda vacía y separada en `alt/`), importar, Ajustes reducido, bloquear y entrar con el principal (los 6 archivos de siempre, ninguno de la adicional).
+
+**Implementación (pasos 1–9 de `DISENO_SENUELO.md` §12):** `VaultSlot`/`VaultPaths`, sesión con bóveda y época (`SessionTicket`, `SessionHooks`), BD por bóveda, guardas solo-principal (`SlotGuardedCloudStorage`, `PrimaryGates`), época en las operaciones largas + arnés de cruce, llaves de la adicional en `AuthController` (dos derivaciones en paralelo, contador único C1, A2/`reauthPrimary`, crear/cambiar PIN/eliminar, `reconcileSecondaryAtStartup`), `VaultServices.secondary()` y navegación por bóveda, UI (`SecondaryVaultScreen`, Ajustes reducido, `VaultUiMode`).
+
+**Pruebas automáticas** (`test/secondary/`, `test/ui/secondary_settings_test.dart`, `test/ui/pin_screen_test.dart`): aislamiento en los dos sentidos (PIN, llaves, archivos, BD), arnés de cruce (cada operación larga pausada en cada `await`, bloqueo, apertura de la otra bóveda y comprobación de que no cambió), la principal byte a byte intacta (disco, almacén, Drive con revisiones) y restaurable en un teléfono limpio sin rastro de la adicional, convivencia con una rotación de la principal en cada fase, cortes en cada escritura al crear/eliminar (por excepción y con escrituras perdidas), los 5 estados del arranque, C1 (el PIN adicional intercalado no evita esperas), tiempos (dos derivaciones concurrentes siempre), plantilla de migraciones sobre la BD adicional, limpieza al bloquear y barrido de palabras prohibidas en la UI. Suite completa en verde.
+
+**Test de integración con SQLCipher REAL** (no ejecutado aquí; necesita dispositivo):
+```
+flutter test integration_test/secondary_sqlcipher_test.dart -d ID_DISPOSITIVO
+```
+Usa un directorio temporal propio (no toca la bóveda de la app); ojo con la nota de abajo: los tests de integración reinstalan la app en el emulador.
+
+### Qué protege y qué NO (límites honestos)
+| Situación | ¿Protege? |
+|---|---|
+| Te obligan a abrir Vault y das el PIN adicional | Sí: ve solo la adicional |
+| Después prueban PIN | Sí, como siempre (contador único; acertar la adicional no lo pone a cero). Solo pasa de 1/10⁶ a 2/10⁶ por intento |
+| Te obligan a usar Face ID / huella | **No**: abren la principal (por eso se recomienda apagarlos) |
+| Examinan el teléfono (archivos, Keychain, tamaño de `alt/` frente a `vault/`) o el espacio de la app en Ajustes del sistema | **No**: se ve que hay dos bóvedas y cuál pesa más |
+| Acceden a tu Google Drive | **No**: se ve que Vault guarda datos y cuánto |
+| Miden el tiempo del desbloqueo | Parcial: se sabe que hay dos bóvedas, no cuál se abrió |
+| Alguien que conoce Vault | Parcial: puede notar que a la adicional le faltan nube, código y biometría |
+| PIN adicional válido con su BD dañada | **No**: «No se pudo abrir la bóveda» delata que el PIN es válido |
+| Perder el teléfono / restaurar en otro / olvidar su PIN | La adicional **se pierde** (no tiene copia) |
+
+### Pruebas de iPhone — bóveda adicional
+1. **Antes de nada:** la principal se abre como siempre con su PIN (y con Face ID si estaba activo); Ajustes > Seguridad muestra «Bóveda adicional · Desactivada».
+2. **Crear la adicional:** Ajustes > Seguridad > Bóveda adicional > Crear: PIN principal, PIN nuevo (6 dígitos), confirmar. Si Face ID está activo, aceptar «Desactivar (recomendado)». Comprobar que la pantalla dice que no tiene copia en Drive ni código de recuperación.
+3. **Entrar con cada PIN:** bloquear → PIN adicional abre una bóveda VACÍA (sin el banner de nube, sin Sincronización en Ajustes, sin Cambiar PIN); bloquear → PIN principal abre la de siempre con todos los archivos. Un PIN incorrecto: «PIN incorrecto».
+4. **Tiempos:** cronometrar a ojo el desbloqueo con el principal, con el adicional y con uno incorrecto: deben tardar lo mismo (≈ el doble que antes solo si el teléfono serializa las derivaciones; anotar cuánto).
+5. **Bloqueo y autobloqueo:** en la adicional, «Bloquear ahora» y el autobloqueo al pasar a segundo plano vuelven al PIN; ver un video en la adicional y bloquear a mitad.
+6. **Importar en la adicional:** fotos de la galería y un archivo del selector; volver a la principal: no aparecen ahí; volver a la adicional: siguen ahí.
+7. **La principal sigue igual:** en la principal, Sincronización sigue subiendo lo nuevo; nada de la adicional aparece en Drive. Hacer de nuevo el **simulacro de restauración** (REPORTE «v2 · Fase 1») en otro teléfono/instalación limpia: restaura la principal completa y NO aparece la adicional.
+8. **Face ID:** con la adicional creada y Face ID activo, la pantalla del PIN NO lanza Face ID sola; tocar el botón de Face ID abre la PRINCIPAL (nunca la adicional).
+9. **Cambiar el PIN de la adicional** desde la principal (PIN principal + PIN actual de la adicional + nuevo) y comprobar que el viejo ya no abre.
+10. **Reinstalar en iOS con Keychain:** borrar la app e instalarla de nuevo (el Keychain sobrevive): debe arrancar en la bienvenida (onboarding), sin bóveda principal ni adicional; restaurar la principal y comprobar que no queda rastro de la adicional (Ajustes: «Desactivada»).
+11. **Eliminar la adicional** desde la principal: confirma, pide el PIN principal; después su PIN ya no abre nada y la principal sigue igual.
