@@ -45,7 +45,7 @@ Reglas: una fase a la vez; migraciones de BD incrementales (v7 → v8…), nunca
 | 8 | Bóveda señuelo: variante (a) «disimulo» (decisión del usuario 2026-11-18, sustituye a la de ambas del 17): segundo PIN que abre una bóveda SEPARADA; NO hace falta ocultar en disco ni en Drive cuántas bóvedas hay. Diseño final revisado por Opus independiente en `docs/DISENO_SENUELO.md` (2 críticos y 2 altos incorporados); mismas reglas que la fase 1 | Opus | 🧪 pasos 1–10 (abajo, D65–D71); ⬜ test de integración SQLCipher con dispositivo; 📝 iPhone sin probar (REPORTE «v2 · Fase 8») |
 | 11 | Kern: nombre visible e ícono (`CFBundleDisplayName`/`android:label` «Kern»; ícono `flutter_launcher_icons` 0.14.4 desde `assets/icon/kern.png`, adaptive en Android; applicationId y bundle id intactos) | Haiku | 🧪 analyze y `flutter build apk --debug` OK; ⬜ captura del emulador (la hace el usuario); 📝 iOS sin probar (nombre e ícono en pantalla de inicio, REPORTE «v2 · Fase 11») |
 
-Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (REPORTE.md "v2 · Fase 1") y después la rotación en el iPhone con la lista de pruebas. Pendiente de la fase: prueba de punta a punta en el emulador con Drive real (§10, a mano) y goldens de la pantalla. Hecho (🧪, D72–D74): contador «N/T archivos» del aviso, botón de borrar la cuenta anterior (M7) y limpieza manual de generaciones abandonadas (M11). Fase 8 (bóveda adicional) implementada en tests y emulador; pendiente: `flutter test integration_test/secondary_sqlcipher_test.dart -d ID_DISPOSITIVO` y la lista de iPhone de REPORTE «v2 · Fase 8». Después: fase 11.
+Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (REPORTE.md "v2 · Fase 1") y después la rotación en el iPhone con la lista de pruebas. La prueba de punta a punta con Drive real ya se hizo (REPORTE 2026-11-18). Pendiente: goldens de la pantalla. Hecho (🧪, D72–D74): contador «N/T archivos» del aviso, botón de borrar la cuenta anterior (M7) y limpieza manual de generaciones abandonadas (M11). Fase 8 (bóveda adicional) implementada en tests y emulador; pendiente: `flutter test integration_test/secondary_sqlcipher_test.dart -d ID_DISPOSITIVO` y la lista de iPhone de REPORTE «v2 · Fase 8». Después: fase 11.
 
 ### Fase 1 · pasos (ver docs/DISENO_ROTACION.md §11)
 | Paso | Qué | Estado |
@@ -61,7 +61,7 @@ Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (RE
 | 9 | Restauración multi-generación + puente + barrido por lista | ✅🧪 suite 953 verde |
 | 10 | `KeyRotationService` con inyección de cortes | ✅🧪 (10a hasta el corte + 10b borrado y finalización; 1027 tests; cableado a la app, sin UI aún) |
 | 11 | UI de rotación | 🧪 `key_rotation_screen.dart`, entradas en Ajustes, banner, "Comprobar mi código", Diagnóstico; `test/ui/key_rotation_screen_test.dart` (16) + `settings_test` ampliado |
-| 12 | Punta a punta en emulador + docs; PARAR: simulacro de restauración | 📝 docs (D60–D63, REPORTE, CONTEXTO, PLAN) hechas; ⬜ punta a punta con Drive real sin hacer (no autorizado en este paso) |
+| 12 | Punta a punta en emulador + docs; PARAR: simulacro de restauración | 📝 docs (D60–D63, REPORTE, CONTEXTO, PLAN) hechas; ✅ punta a punta con Drive real hecha el 2026-11-18 (REPORTE) |
 
 ### Fase 8 · pasos (ver docs/DISENO_SENUELO.md §12; D65–D71)
 | Paso | Qué | Estado |
@@ -76,4 +76,9 @@ Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (RE
 | 8 | UI: `SecondaryVaultScreen` y Ajustes reducido con textos neutros | ✅🧪 suite 1152; emulador: crear, entrar con el 2.º PIN (bóveda vacía y separada), importar, aislamiento OK |
 | 9 | Batería transversal: aislamiento, principal intacta, convivencia con la rotación, cortes, esquema, SQLCipher real | 🧪 `test/secondary/{isolation,primary_restore_intact,rotation_coexistence,crash_points,schema_upgrade_secondary}_test.dart`; ⬜ `integration_test/secondary_sqlcipher_test.dart` escrito, sin ejecutar (necesita dispositivo) |
 | 10 | Emulador y documentación (D65–D71) | 📝 DECISIONES D65–D71, REPORTE «v2 · Fase 8» (límites y pruebas de iPhone), CONTEXTO, PLAN; emulador: ver pasos 3–8 |
+
+### Cierre v2
+- Estado: **regresión emulador en curso; lista final redactada**.
+- Lista final de pruebas de iPhone (v2), en orden 0 → 11 (el 11 es opcional y va al final): `docs/REPORTE.md`, sección «Lista final de pruebas de iPhone (v2) — en orden». Todo sin probar en iOS.
+- Antes de cualquier rotación de la llave, el simulacro de restauración del ítem 9 debe salir bien.
 

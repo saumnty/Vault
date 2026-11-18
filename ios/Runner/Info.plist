@@ -19,9 +19,9 @@
 	</array>
 	<!-- iOS: permisos de fototeca para importar desde la galería (F4) -->
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Vault necesita acceso a tus fotos y videos para importarlos a la bóveda cifrada.</string>
+	<string>Para importar fotos y videos.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Vault puede guardar en tu fototeca los archivos que exportes desde la bóveda.</string>
+	<string>Para guardar en Fotos las copias que exportes.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
@@ -87,7 +87,7 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Vault usa Face ID para desbloquear tu bóveda cifrada sin escribir el PIN.</string>
+	<string>Para desbloquear con Face ID.</string>
 	<!-- iOS: F6b. AVPlayer reproduce desde el servidor HTTP propio en
 	     127.0.0.1 (loopback, token de 256 bits). NSAllowsLocalNetworking solo
 	     exime de ATS a localhost / direcciones locales; NO se activa

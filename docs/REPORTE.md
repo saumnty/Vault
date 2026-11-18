@@ -550,7 +550,7 @@ Si un archivo no tiene copia en ningún lado (ni su `.vault` en el teléfono ni 
 
 ### v2 · Fase 1 — pendientes cerrados (2026-11-18, D72–D74)
 - **Hecho (en tests, sin dispositivo):** (1) contador «Re-cifrando/Subiendo: N/T archivos» en el aviso y en la pantalla, derivado de la BD (sin migración); (2) botón «Borrar datos de la cuenta anterior» (M7); (3) «Limpiar restos de cambios de llave» (M11). Archivos: `rotation_repository.dart` (`progress`), `key_rotation_service.dart` (`progress`, `deleteOldAccountData`, `scanLeftovers`, `cleanLeftovers`), `generation_sweeper.dart` (`findAbandoned`, `findStale`, `sweepAbandoned`), `key_rotation_screen.dart`. Tests: `test/rotation/rotation_extras_test.dart` (fakes de rotación y `MultiAccountCloud`) y grupos nuevos de `test/ui/key_rotation_screen_test.dart`.
-- **Sigue sin probarse contra Google Drive real** (ni emulador ni iPhone): los tests usan nubes falsas. Sin goldens nuevos de la pantalla (siguen pendientes).
+- (Histórico, superado por la prueba real del 2026-11-18 más abajo.) La rotación se probó después contra Google Drive real en el emulador; los borrados M7/M11 se prueban en el cierre de v2. Sin goldens nuevos de la pantalla (siguen pendientes).
 - **Pruebas de iPhone (después de rotar, en este orden):**
   1. Durante la rotación, mira el aviso de la cuadrícula: debe decir «Cambiando la llave maestra · Re-cifrando: N/T archivos…» y luego «Subiendo: N/T…»; N sube y T coincide con tus archivos. Cierra y abre la app a mitad: el contador debe retomarse donde iba (no empezar en 0).
   2. Si migraste de cuenta antes y elegiste «Conservar» los datos de la cuenta anterior: en Rotar llave maestra aparece «Borrar datos de la cuenta anterior». Pruébalo primero cancelando el selector de cuentas (no debe borrar nada). Luego elige OTRA cuenta distinta de la anterior: debe decir «Elegiste otra cuenta» y no borrar. Por último elige la anterior: borra y vuelve a tu cuenta actual. Comprueba en Drive de ambas cuentas (Administrar apps > Vault) que la actual no cambió.
@@ -637,3 +637,133 @@ Usa un directorio temporal propio (no toca la bóveda de la app); ojo con la not
 3. Al abrir la app, el nombre en el selector de apps (multitarea) también es Kern.
 4. Confirmar que la app abre su bóveda normal: el bundle id no cambió, así que los datos y el Keychain se conservan.
 5. Anotar si la app pide algo nuevo al actualizar (no debería).
+
+---
+
+## Lista final de pruebas de iPhone (v2) — en orden
+
+> **Todo lo de esta lista está sin probar en iOS.** Se ejecuta en orden 0 → 1 → 1 bis (simulacro) → 2 … 11 → 12; el ítem 11 es opcional y el 12 (cerrar sesión de Google) va siempre al final. **Regla: nada de lo que borra datos (papelera, eliminar definitivamente, borrado de originales, cuenta anterior) se prueba antes del simulacro 1 bis. NUNCA desinstales la app de tu iPhone: borra la bóveda local y la adicional (esta no tiene copia).** Consolida y deduplica las secciones «Pruebas de iPhone» de cada fase (7, 4, 10, 5, 9, 6, 1, 8, 11) y la lista «Pruebas de iPhone (v2)». Cuando un ítem sale de una sección concreta, se indica entre paréntesis.
+
+- [ ] **0) Advertencia: nunca instalar una build antigua en el iPhone** *(sin probar en iOS)*
+  - Qué hacer: instala siempre el build más reciente de `dev-claude`, nunca uno anterior (D59).
+  - Debe pasar: el build nuevo abre la bóveda sin tocar datos. Un build viejo puede borrar y recrear la BD cuando esta viene de una versión más nueva (onDowngrade), perdiendo el índice local; Drive conserva los archivos, pero la restauración depende del código. Si instalaste uno viejo por error, no desbloquees la bóveda y avísame antes de seguir.
+
+- [ ] **1) Arranque, nombre e ícono «Kern»** *(sin probar en iOS; Fase 11)*
+  - Qué hacer: instala la build nueva (Codemagic + Sideloadly). Mira la pantalla de inicio, el selector de apps (multitarea) y el ícono. En una instalación limpia, haz la bienvenida (PIN con confirmación, código de recuperación, confirmar 4 caracteres; Face ID va en el ítem 2). Anota si la app pide algo nuevo al actualizar (no debería).
+  - Debe pasar: el nombre bajo el ícono y en multitarea es **Kern**, no «Vault». El ícono es fondo morado con «>|<» blanco, sin bordes blancos ni recorte raro. La app abre su bóveda normal: el bundle id no cambió, así que datos y Keychain se conservan.
+
+- [ ] **1 bis) Simulacro de restauración (OBLIGATORIO, antes de cualquier prueba que borre algo)** *(sin probar en iOS; Fases 1 y 8)*
+  - Qué hacer:
+    1. En el iPhone, con la bóveda actual y Drive «al día»: Ajustes > Seguridad > «Comprobar mi código» > escribe el del papel. Si dice «No coincide», PARA y avísame (no gastes intentos).
+    2. Anota cuántos archivos hay (cuadrícula, Papelera y etiquetas) y 2–3 concretos: uno grande, un video, uno de la Papelera y uno con etiqueta.
+    3. Restaura en OTRO aparato (el emulador Android o un teléfono/iPad prestado) con instalación LIMPIA: «Ya tengo una bóveda (restaurar)» > Google con la MISMA cuenta > código > PIN cualquiera. En ese aparato no importes, borres ni muevas nada (escribiría en tu Drive).
+    4. Retira ese aparato: Ajustes > «Cerrar sesión de Google» y desinstala la app allí (no en el iPhone).
+  - Debe pasar: «Este código es el vigente»; el otro aparato muestra las mismas carpetas, miniaturas, Papelera y etiquetas, y los archivos se abren (se descargan de Drive). No aparece nada de la bóveda adicional. Solo con el simulacro exitoso se siguen las pruebas que borran datos (6, 10) y, si decides rotar, la 11.
+
+- [ ] **2) Desbloqueo, Face ID, autobloqueo y privacidad del sistema** *(sin probar en iOS; Fases 7, 6 y 1)*
+  - Qué hacer:
+    1. Activa Face ID y desbloquea con el rostro. Luego, desde Ajustes, cambia el PIN (NO regeneres el código de recuperación: equivale a rotar la DEK, ítem 11, opcional). «Cerrar sesión de Google» va al final de la lista (ítem 12).
+    2. Ajusta el autobloqueo a 15 s. Sal de la app y vuelve antes del umbral y después.
+    3. Con cambios sin respaldar (p. ej. mover un archivo), pulsa «Bloquear ahora» y cronometra cuánto tarda en aparecer el PIN.
+    4. Abre el selector de apps con la bóveda abierta.
+    5. Monotonic (S-07): con 5 PIN incorrectos, espera la penalización de 30 s; cierra y reabre la app; la espera debe persistir. Luego adelanta la hora del iPhone SOLO unas horas (nunca días: la firma gratuita de Sideloadly caduca a los 7 días y la app podría no abrir): la espera no debe desaparecer. Restaura la hora automática de inmediato.
+    6. Respaldo de iCloud: Ajustes > [tu nombre] > iCloud > Administrar almacenamiento > Copias de seguridad > este iPhone > Kern.
+  - Debe pasar:
+    - El diálogo de permiso de Face ID dice solo «Para desbloquear con Face ID.» (sin la palabra «Vault»).
+    - Face ID abre sin PIN, y el PIN sigue sirviendo. Face ID y los selectores del sistema NO bloquean la app.
+    - A 15 s: al volver antes del umbral sigue abierta; después del umbral pide PIN.
+    - Bloqueo con cambios sin respaldar: el PIN aparece en menos de 1 s (S-17); los cambios se guardan y aparecen al desbloquear.
+    - Selector de apps: la vista previa es un candado sobre fondo oscuro, no el contenido.
+    - Copias de iCloud: Kern no ocupa espacio significativo (la carpeta está excluida).
+    - Espera por PIN incorrecto: persiste al cerrar la app y no se elimina al cambiar la hora.
+
+- [ ] **3) Importar con el selector propio** *(sin probar en iOS; Fases 4, 6 y 1)*
+  - Qué hacer:
+    1. Galería: Añadir > importa una foto y un video local en calidad Original; repite con 720p (marcado «Recomendado»).
+    2. Video que solo esté en iCloud («Optimizar almacenamiento» activo): impórtalo.
+    3. Importar archivo: Añadir > Importar archivo > elige un PDF de Archivos y otro de iCloud Drive.
+    4. Borrado de originales: debe estar APAGADO por defecto. Actívalo en Ajustes > Importación, espera a que los archivos estén «En la nube», pulsa «Borrar ahora» y confirma con el diálogo del sistema «Eliminar».
+    5. Videos ya importados sin miniatura: abre la bóveda (se regeneran al desbloquear) o usa Ajustes > Almacenamiento > «Regenerar miniaturas que faltan».
+  - Debe pasar:
+    - El permiso de Fotos dice «Para importar fotos y videos.» (sin «Vault»).
+    - Video local: miniatura (fotograma), ▶ y duración. Video de iCloud: descarga con progreso, se cifra y también tiene miniatura.
+    - Importar archivo: se importa y abre. Si falla, copia Ajustes > Acerca de > Diagnóstico.
+    - Borrado: la hoja solo ofrece archivos verificados en la nube; al terminar una importación aparece «Los originales siguen en tu galería…»; el diálogo es el de iOS (PhotoKit).
+    - Si alguna miniatura sigue sin salir: Diagnóstico (categoría `thumbs`) y mándame el texto copiado.
+
+- [ ] **4) Visor y gestos de video** *(sin probar en iOS; Fases 10, 6 y iOS ronda 1)*
+  - Qué hacer:
+    1. Abre una foto y un video. En el video: doble toque a la izquierda y a la derecha (±10 s), varios toques seguidos (acumulan) y toques cerca del inicio y del final.
+    2. Toque simple (muestra/oculta controles). Pellizco hasta 4x, arrastra con zoom y vuelve a 1x.
+    3. Cierra deslizando hacia abajo, con foto y con video, a 1x. Con zoom no debe cerrar; arrastrar sobre la barra de progreso del video tampoco; deslizar horizontal cambia de archivo.
+    4. Reproduce el video (streaming local con AVPlayer; ATS solo permite localhost) y haz seek.
+  - Debe pasar: ±10 s con racha (+10, +20, +30) y háptica; el toque simple muestra controles; el pellizco va de 1x a 4x; con zoom no se cierra ni cambia de archivo; un deslizamiento corto no cierra y uno largo sí; el video reproduce y el seek funciona.
+
+- [ ] **5) Guardar en Fotos** *(sin probar en iOS; Fase 4)*
+  - Qué hacer: abre una foto y un video > «Guardar en Fotos» > confirma. La primera vez iOS pide permiso de SOLO agregar. Repite denegando el permiso. Con el autobloqueo corto, el diálogo no debe bloquear la app.
+  - Debe pasar: el permiso dice «Para guardar en Fotos las copias que exportes.» (sin «Vault»); aparecen en Fotos y se abren; la app avisa antes de guardar que la copia queda SIN cifrar en tu galería; denegar el permiso muestra el aviso sin bloquear la app; el diálogo del permiso no bloquea.
+
+- [ ] **6) Papelera** *(sin probar en iOS; Fase 5)*
+  - Qué hacer: tras actualizar, abre la bóveda (la BD sube de versión sola). Borra una foto y una carpeta; revisa Ajustes > Papelera. Restaura ambas. Bórralas de nuevo y usa «Eliminar definitivamente». Si borras originales de la galería, comprueba que la Papelera no toca su original.
+  - Debe pasar: desaparecen de la cuadrícula y aparecen en Papelera con «Quedan 30 días»; restaurar devuelve cada una a su carpeta; tras eliminar definitivamente, el espacio de Drive (drive.google.com > Administrar aplicaciones > Vault) baja al sincronizar; todo lo que tienes sigue ahí.
+
+- [ ] **7) Etiquetas y filtros** *(sin probar en iOS; Fase 9)*
+  - Qué hacer: mantén pulsado un archivo > «Etiquetas» > crea «Prueba» y márcala en 2 archivos de carpetas distintas. Abre Filtros > etiqueta «Prueba». Combina con Fotos/Videos y un rango de fechas; escribe texto en la búsqueda; quita los chips. Ajustes > Etiquetas: renombra una y borra otra. Bloquea y desbloquea.
+  - Debe pasar: salen solo esos 2, aunque estén en carpetas distintas, con «Resultados en toda la bóveda»; las combinaciones filtran bien; renombrar o borrar etiquetas NO borra archivos; las etiquetas siguen tras bloquear (y tras restaurar, ítem 1 bis).
+
+- [ ] **8) Bóveda adicional (disimulo)** *(sin probar en iOS; Fase 8)*
+  - Qué hacer:
+    1. Antes: la principal se abre como siempre. Ajustes > Seguridad muestra «Bóveda adicional · Desactivada».
+    2. Crear: Ajustes > Seguridad > Bóveda adicional > Crear: PIN principal, PIN nuevo de 6 dígitos y confirmación. Si Face ID está activo, acepta «Desactivar (recomendado)». La pantalla debe decir que no tiene copia en Drive ni código de recuperación.
+    3. Entrar con cada PIN: bloquea; el PIN adicional abre una bóveda VACÍA (sin banner de nube, sin Sincronización en Ajustes, sin Cambiar PIN); bloquea; el PIN principal abre la de siempre con todos sus archivos. Un PIN incorrecto: «PIN incorrecto».
+    4. Tiempos: cronometra a ojo el desbloqueo con el principal, con el adicional y con uno incorrecto; anota las cifras.
+    5. En la adicional: «Bloquear ahora» y el autobloqueo al pasar a segundo plano vuelven al PIN. Pon un video a reproducir y bloquea a mitad.
+    6. En la adicional, importa fotos de la galería y un archivo del selector. Vuelve a la principal: no aparecen. Vuelve a la adicional: siguen ahí.
+    7. Con la adicional creada y Face ID activo: la pantalla del PIN NO lanza Face ID sola; el botón de Face ID abre la PRINCIPAL.
+    8. Cambia el PIN de la adicional desde la principal (PIN principal + PIN actual de la adicional + nuevo): el viejo ya no abre.
+    9. **SOLO en un aparato de pruebas (NUNCA en tu iPhone, desinstalar borra la bóveda local y la adicional, que no tiene copia):** reinstala la app (el Keychain sobrevive): debe arrancar en la bienvenida, sin bóveda principal ni adicional. Restaura la principal como en el ítem 1 bis y comprueba en Ajustes que la adicional figura «Desactivada».
+    10. Elimina la adicional desde la principal: confirma y pide el PIN principal. Su PIN ya no abre nada; la principal sigue igual.
+  - Debe pasar: cada PIN abre SU bóveda, sin que una muestre nada de la otra (PIN, archivos, Ajustes, Drive); los tiempos quedan anotados; Face ID nunca abre la adicional. Límites que conviene saber: Face ID o la huella abren la principal (por eso se recomienda apagarlos); si pierdes el teléfono o el PIN de la adicional, la adicional se pierde (no tiene copia).
+
+- [ ] **9) Drive: sincronización** *(sin probar en iOS; Fases 5, 9 y 1)*
+  - Qué hacer:
+    1. **No importes ni crees carpetas de prueba en la bóveda real: usa lo que ya hay.** Conecta Drive y espera a «Todo está al día» (sin pendientes ni errores; si hay errores, reintenta).
+    2. Mueve algo de carpeta que ya exista, pulsa «Bloquear ahora» y espera 1 min con Wi-Fi.
+    3. Revisa el espacio de Drive: la rotación (ítem 11) necesita aprox. el doble de lo que ocupa la bóveda.
+    4. **SOLO en un aparato de pruebas (NUNCA en tu iPhone: desinstalar borra la bóveda local y la adicional):** restauración con instalación limpia, código incorrecto y luego el correcto, modo avión durante la barra («No se pudo restaurar» + «Reintentar»), y otra cuenta de Google sin respaldo («No hay respaldo en esta cuenta de Google»).
+  - Debe pasar: sincronización «al día» sin volver a subir todo (revisa la hoja de Sincronización y el consumo de datos). En el aparato de pruebas: código incorrecto → «Código incorrecto» (cinco fallos bloquean 30 s y persiste al cerrar); correcto (minúsculas, espacios y guiones valen) → PIN nuevo → «Bóveda restaurada: N archivos y M carpetas».
+
+- [ ] **10) Limpieza de restos y borrar la cuenta anterior** *(sin probar en iOS; Fase 1, pendientes cerrados)*
+  - Requisito: haber migrado de cuenta (Ajustes > Sincronización y cuenta > «Cambiar de cuenta de Google», sección «Pasar a tu cuenta personal»). Si no migraste, omite el punto 2.
+  - Qué hacer:
+    1. Espacio libre: abre la hoja «Cambiar de cuenta de Google» sin pulsar «Empezar». Debe mostrar un número real (si dice «no se pudo comprobar», avísame).
+    2. Borrar la cuenta anterior (si elegiste «Conservar»): Ajustes > Seguridad > Rotar llave maestra (sin empezar la rotación) > «Borrar datos de la cuenta anterior». Prueba en este orden: (a) cancela el selector de cuentas; (b) elige OTRA cuenta distinta de la anterior; (c) elige la anterior.
+    3. Limpieza de restos: en Rotar llave maestra, «Limpiar restos de cambios de llave». Si nunca rotaste, es normal que no haya nada. Después abre varios archivos y haz «Comprobar mi código».
+  - Debe pasar:
+    - (1) La hoja muestra espacio libre real.
+    - (2a) Cancelar no borra nada. (2b) Dice «Elegiste otra cuenta» y no borra. (2c) Borra la cuenta anterior y vuelve a la actual.
+    - En Drive de ambas cuentas (Administrar aplicaciones > Vault): la cuenta actual NO cambió.
+    - (3) Sin restos: «No hay restos que limpiar» o cifras pequeñas. Tras limpiar, los archivos abren y «Comprobar mi código» sigue en «Este código es el vigente».
+    - Estas acciones son permanentes (no hay Papelera). Límites: la app no puede saber si otro teléfono está rotando justo ahora; si el selector de Google se cancela al volver, hay que iniciar sesión a mano.
+
+- [ ] **11) Rotar la llave maestra — AL FINAL Y OPCIONAL: solo si el código de recuperación se filtra; y, si se hace, SOLO después de un simulacro de restauración exitoso** *(sin probar en iOS; Fase 1)*
+  - Qué hacer:
+    0. Prerrequisito: ítem 1 bis completo con éxito y el código actual validado. Wi-Fi, cargador y la app abierta; no la mandes a segundo plano mucho rato.
+    1. Ajustes > Seguridad > «Rotar llave maestra»: lee la hoja previa (archivos, a subir, espacio libre en Drive). «Empezar» > PIN > anota el código NUEVO en papel, aparte del anterior (no tires el anterior todavía) > confirma los caracteres que pide.
+    2. Durante la rotación: fase en palabras, barra, banner en la cuadrícula y contador «Re-cifrando: N/T archivos» seguido de «Subiendo: N/T». Navega y abre algún archivo (debe funcionar). «Cambiar PIN» y «Cerrar sesión de Google» deben estar desactivados.
+    3. Cortes: a mitad del re-cifrado, cierra la app a la fuerza y vuelve a abrirla: pide PIN y continúa donde iba (el contador no empieza en 0). Bloquea y desbloquea con PIN. Activa el modo avión un momento: debe decir «En pausa: sin conexión» y seguir al volver la red.
+    4. Final: «Rotación terminada» > «Reactivar huella o Face ID» y comprueba que Face ID vuelve a abrir la bóveda.
+    5. «Comprobar mi código»: el NUEVO → «Este código es el vigente»; el ANTERIOR → «No coincide».
+    6. Ajustes > Acerca de > Diagnóstico: «Cambio de llave: ninguno».
+    7. Repite el simulacro (ítem 1 bis) con el código NUEVO: debe restaurar todo. Con el ANTERIOR la restauración debe fallar. Solo entonces destruye el papel del código anterior.
+    8. Si aparece «En pausa: …» con un botón, haz lo que diga. Si dice «hay un problema» o no avanza en mucho rato, manda el Diagnóstico ANTES de pulsar «Omitir los dañados» o «Descartar restos».
+    9. Si aparece «Sin ninguna copia (N)»: manda antes una captura y el Diagnóstico. «Continuar sin ellos» no se puede deshacer (quita los archivos también de la Papelera y de las etiquetas).
+  - Debe pasar: la rotación termina con «Rotación terminada»; el código nuevo es el único vigente en el teléfono y en Drive, y el simulacro con el código nuevo restaura todo; el anterior no abre nada. Recordatorio: las copias que alguien ya hubiera descargado con el código anterior no se pueden revocar.
+  - Estado: en Android (emulador) probada de punta a punta con corte de red y restauración limpia (2026-11-18); en iOS, sin probar.
+
+- [ ] **12) AL FINAL: cerrar sesión de Google** *(sin probar en iOS)*
+  - Qué hacer: Ajustes > Sincronización y cuenta > «Cerrar sesión de Google», solo cuando hayas terminado todas las pruebas anteriores. No lo hagas antes de la rotación (11): está desactivado durante ella.
+  - Debe pasar: la sincronización se detiene y la bóveda local sigue abriendo.
+
+### Pruebas de Drive real hechas en el emulador (cuenta de pruebas, nunca la del iPhone)
+_Ver la sección «v2 · Cierre — borrados permanentes contra Drive real» más abajo (se rellena tras la prueba)._

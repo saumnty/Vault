@@ -170,9 +170,13 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
 
   void _snack(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+    try {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(message)));
+    } on Object {
+      // Widget desactivado a mitad de una transición: el aviso es opcional.
+    }
   }
 
   void _toggleSearch() {

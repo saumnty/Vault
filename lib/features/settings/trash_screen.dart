@@ -43,9 +43,15 @@ class _TrashScreenState extends State<TrashScreen> {
   }
 
   void _snack(String text) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(text)));
+    if (!mounted) return;
+    try {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(text)));
+    } on Object {
+      // Widget desactivado a mitad (transición de ruta): el aviso es
+      // opcional y NUNCA debe dejar la pantalla bloqueada.
+    }
   }
 
   Future<void> _restore(TrashEntry e) async {
@@ -56,8 +62,9 @@ class _TrashScreenState extends State<TrashScreen> {
       _snack(ok ? 'Restaurado: ${e.name}' : 'Ya no estaba en la Papelera');
     } on Object {
       _snack('No se pudo restaurar');
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
-    if (mounted) setState(() => _busy = false);
     await _load();
   }
 
@@ -102,8 +109,9 @@ class _TrashScreenState extends State<TrashScreen> {
       _snack(done);
     } on Object {
       _snack('No se pudo completar');
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
-    if (mounted) setState(() => _busy = false);
     await _load();
   }
 
