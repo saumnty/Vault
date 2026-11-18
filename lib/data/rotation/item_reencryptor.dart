@@ -111,6 +111,9 @@ class DecryptingByteSource implements VaultByteSource {
 String _hex(List<int> bytes) =>
     bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
+/// Puntos internos del re-cifrado de un item (pruebas de cortes, §10.2-4).
+enum ReencryptStep { afterSource, afterPart, afterRename, afterSwap }
+
 class _SourceBad implements Exception {
   const _SourceBad(this.detail);
   final String detail;
@@ -144,6 +147,7 @@ class ItemReencryptor {
     this.isInUse,
     this.verifyFullPass = true,
     int Function()? nowMs,
+    this.onStep,
   }) : _resolve = resolvePath ?? AppPaths.resolve,
        _crypto = crypto ?? CryptoService(),
        _now = nowMs ?? (() => DateTime.now().millisecondsSinceEpoch);
@@ -155,6 +159,10 @@ class ItemReencryptor {
   final Directory Function() workDir;
   final bool Function(String itemId)? isInUse;
   final bool verifyFullPass;
+
+  /// Solo pruebas: se llama en cada [ReencryptStep] (puede lanzar para
+  /// simular un corte).
+  final void Function(ReencryptStep step)? onStep;
   final File Function(String) _resolve;
   final CryptoService _crypto;
   final int Function() _now;
@@ -221,6 +229,7 @@ class ItemReencryptor {
           detail: 'contentHash distinto',
         );
       }
+      onStep?.call(ReencryptStep.afterPart);
       final newFileId = await CryptoService.fileIdOfFile(newPart);
       if (verifyFullPass) {
         final again = await _plainDigest(newPart, to.files, newFileId);
@@ -255,6 +264,7 @@ class ItemReencryptor {
       // 5. Nombres definitivos (mismo directorio: atómico).
       await newPart.rename(newFile.path);
       if (thumbFileId != null) await newThumbPart.rename(newThumb.path);
+      onStep?.call(ReencryptStep.afterRename);
 
       // 6. Fila (condicional) + cola.
       final ok = await items.swapItemGeneration(
@@ -274,6 +284,7 @@ class ItemReencryptor {
         return const ReencryptResult(ReencryptOutcome.changed);
       }
       committed = true;
+      onStep?.call(ReencryptStep.afterSwap);
 
       // 7. Archivos de la generación vieja.
       final deferred = <String>[];
@@ -374,6 +385,7 @@ class ItemReencryptor {
     );
     final src = DecryptingByteSource(reader);
     try {
+      onStep?.call(ReencryptStep.afterSource);
       await _crypto.encryptSource(
         src,
         dest,
