@@ -178,9 +178,14 @@ void main() {
           enoughDriveSpace: false,
           signedIn: false,
           oldAccountKept: 'vieja@example.com',
+          noCopyItems: 4,
         ),
       );
       await _open(tester, env);
+      expect(
+        find.textContaining('4 archivo(s) no tienen ninguna copia'),
+        findsOne,
+      );
       expect(find.textContaining('2 archivo(s) sin subir'), findsOneWidget);
       expect(find.textContaining('no tiene espacio'), findsOneWidget);
       expect(find.textContaining('Inicia sesión con Google'), findsOneWidget);
@@ -332,9 +337,15 @@ void main() {
         resume: RotationPhase.reencrypting,
         error: '2 archivos no se pueden abrir',
       );
+      env.service.problems.value = const RotationProblems(
+        damaged: [RotationProblemItem(id: 'a', name: 'roto.jpg')],
+      );
       await _open(tester, env);
       expect(find.text('En pausa: hay un problema'), findsOneWidget);
       expect(find.text('2 archivos no se pueden abrir'), findsOneWidget);
+      expect(find.text('Dañados (1)'), findsOneWidget);
+      expect(find.text('roto.jpg'), findsOneWidget);
+      expect(find.text('Continuar sin ellos'), findsNothing);
       expect(find.text('Omitir los dañados'), findsOneWidget);
       expect(find.text('Reintentar'), findsOneWidget);
       await tester.tap(find.text('Omitir los dañados'));
@@ -342,6 +353,74 @@ void main() {
       expect(find.text('¿Omitir los archivos dañados?'), findsOneWidget);
       await tester.tap(find.text('Cancelar'));
       await _anim(tester);
+    });
+
+    testWidgets('sin ninguna copia: lista los nombres y "Continuar sin '
+        'ellos" pide confirmación antes de quitarlos', (tester) async {
+      final env = await _env(tester);
+      await _prepare(tester, env);
+      await _setPhase(
+        tester,
+        env,
+        RotationPhase.blockedCorrupt,
+        resume: RotationPhase.reencrypting,
+        error: '10 archivo(s) sin ninguna copia y 1 archivo(s) dañado(s)',
+      );
+      env.service.problems.value = RotationProblems(
+        missing: [
+          for (var i = 0; i < 10; i++)
+            RotationProblemItem(id: 'm$i', name: 'perdido_$i.jpg'),
+        ],
+        damaged: const [RotationProblemItem(id: 'd', name: 'roto.mp4')],
+      );
+      await _open(tester, env);
+      expect(find.text('Sin ninguna copia (10)'), findsOneWidget);
+      expect(find.text('perdido_0.jpg'), findsOneWidget);
+      expect(find.text('perdido_7.jpg'), findsOneWidget);
+      expect(find.text('perdido_8.jpg'), findsNothing);
+      expect(find.text('y 2 más'), findsOneWidget);
+      expect(find.text('Dañados (1)'), findsOneWidget);
+      expect(find.text('Omitir los dañados'), findsOneWidget);
+      expect(find.text('Reintentar'), findsOneWidget);
+
+      // Cancelar en la confirmación no quita nada.
+      await tester.tap(find.text('Continuar sin ellos'));
+      await _anim(tester);
+      expect(find.text('¿Continuar sin estos archivos?'), findsOneWidget);
+      expect(find.textContaining('NO se podrán recuperar'), findsOneWidget);
+      expect(find.textContaining('10 archivo(s)'), findsWidgets);
+      await tester.tap(find.text('Cancelar'));
+      await _anim(tester);
+      final svc = env.service as TestRotationService;
+      expect(svc.drops, 0);
+
+      await tester.tap(find.text('Continuar sin ellos'));
+      await _anim(tester);
+      await tester.tap(find.text('Quitar y continuar'));
+      await _settle(tester);
+      expect(svc.drops, 1);
+    });
+
+    testWidgets('tras reiniciar sin la llave: pide el PIN para ver la lista', (
+      tester,
+    ) async {
+      final env = await _env(tester);
+      await _prepare(tester, env);
+      await _setPhase(
+        tester,
+        env,
+        RotationPhase.blockedCorrupt,
+        resume: RotationPhase.reencrypting,
+        error: '1 archivo(s) sin ninguna copia',
+      );
+      await _open(tester, env);
+      expect(
+        find.byKey(const ValueKey('rotation-problems-loading')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Desbloquea con tu PIN'), findsOneWidget);
+      expect(find.text('Introducir PIN'), findsOneWidget);
+      expect(find.text('Continuar sin ellos'), findsNothing);
     });
 
     testWidgets('blockedSignIn: Reintentar tras iniciar sesión', (

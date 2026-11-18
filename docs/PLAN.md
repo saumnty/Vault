@@ -45,7 +45,7 @@ Reglas: una fase a la vez; migraciones de BD incrementales (v7 → v8…), nunca
 | 8 | Bóveda señuelo: variante (a) «disimulo» (decisión del usuario 2026-11-18, sustituye a la de ambas del 17): segundo PIN que abre una bóveda SEPARADA; NO hace falta ocultar en disco ni en Drive cuántas bóvedas hay. Diseño con Opus + revisión independiente antes de codificar; mismas reglas que la fase 1 | Opus | ⬜ |
 | 11 | Kern: nombre visible e ícono | Haiku | ⬜ |
 
-Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (REPORTE.md "v2 · Fase 1") y después la rotación en el iPhone con la lista de pruebas. Pendiente de la fase: prueba de punta a punta en el emulador con Drive real (§10, a mano), limpieza manual de generaciones abandonadas (M11), "Continuar sin ellos" en la hoja previa, botón de borrar la cuenta anterior desde el aviso M7 y goldens de la pantalla. Después: fase 8.
+Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (REPORTE.md "v2 · Fase 1") y después la rotación en el iPhone con la lista de pruebas. Pendiente de la fase: prueba de punta a punta en el emulador con Drive real (§10, a mano), limpieza manual de generaciones abandonadas (M11), botón de borrar la cuenta anterior desde el aviso M7 y goldens de la pantalla. Después: fase 8.
 
 ### Fase 1 · pasos (ver docs/DISENO_ROTACION.md §11)
 | Paso | Qué | Estado |

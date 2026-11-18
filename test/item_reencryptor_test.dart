@@ -309,10 +309,26 @@ void main() {
     expect(f.existsSync(), isTrue, reason: 'no se borra la única copia');
   });
 
-  test('sin ninguna copia: corrupt', () async {
+  test('sin ninguna copia: missing y nada cambia', () async {
     final item = await addItem('x2', _plain(10));
     AppPaths.resolve(item.encryptedPath).deleteSync();
-    expect((await run(item)).outcome, ReencryptOutcome.corrupt);
+    expect((await run(item)).outcome, ReencryptOutcome.missing);
+    expect((await env.items.getItem('x2'))!.keyGen, 1);
+  });
+
+  test('copia de Drive borrada (404) y sin local: missing', () async {
+    final item = await addItem('x4', _plain(10), inCloud: true);
+    AppPaths.resolve(item.encryptedPath).deleteSync();
+    await env.cloud.delete(item.driveFileId!);
+    expect((await run(item)).outcome, ReencryptOutcome.missing);
+  });
+
+  test('local dañada y sin copia en Drive: missing', () async {
+    final item = await addItem('x5', _plain(5000));
+    final f = AppPaths.resolve(item.encryptedPath);
+    f.writeAsBytesSync(f.readAsBytesSync()..[40] ^= 1);
+    expect((await run(item)).outcome, ReencryptOutcome.missing);
+    expect(f.existsSync(), isTrue, reason: 'el reencryptor no borra nada');
   });
 
   test('contentHash distinto: corrupt (no se registra nada)', () async {

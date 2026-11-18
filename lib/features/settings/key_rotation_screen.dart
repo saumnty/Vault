@@ -81,6 +81,60 @@ class _KeyRotationScreenState extends State<KeyRotationScreen> {
   RotationPlan? _plan;
   bool _busy = false;
 
+  /// Carga de la lista de archivos con problema (tras reiniciar la app).
+  bool _loadingProblems = false;
+  String? _problemsError;
+  bool _problemsNeedPin = false;
+
+  void _ensureProblems() {
+    if (_loadingProblems || _problemsError != null) return;
+    _loadingProblems = true;
+    unawaited(
+      Future<void>(() async {
+        String? error;
+        var needPin = false;
+        try {
+          await _s.loadProblems();
+        } on RotationException catch (e) {
+          error = e.message;
+          needPin = _s.session.keyring?.isDual != true;
+        } on Object {
+          error =
+              'No se pudo comprobar qué archivos fallan (¿sin conexión?). '
+              'Pulsa Reintentar.';
+        }
+        _loadingProblems = false;
+        if (mounted) {
+          setState(() {
+            _problemsError = error;
+            _problemsNeedPin = needPin;
+          });
+        }
+      }),
+    );
+  }
+
+  Future<void> _dropMissing() async {
+    final n = _s.problems.value?.missing.length ?? 0;
+    final ok = await showConfirmSheet(
+      context,
+      title: '¿Continuar sin estos archivos?',
+      message:
+          '$n archivo(s) no tienen ninguna copia, ni en este teléfono ni en tu '
+          'Google Drive. Se quitarán de la bóveda (también de la Papelera y '
+          'de sus etiquetas) y NO se podrán recuperar. Si la copia puede '
+          'aparecer (por ejemplo, estabas sin conexión), pulsa "Reintentar" '
+          'en su lugar.',
+      confirmLabel: 'Quitar y continuar',
+      destructive: true,
+    );
+    if (!ok || !mounted) return;
+    await _guard(() async {
+      await _s.dropMissingItems();
+      unawaited(_s.resume());
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -247,7 +301,16 @@ class _KeyRotationScreenState extends State<KeyRotationScreen> {
         }
       },
     );
-    if (ok) unawaited(_s.resume());
+    if (!ok || !mounted) return;
+    if (_problemsNeedPin) {
+      // Lista de problemas pendiente de la llave: se vuelve a cargar.
+      setState(() {
+        _problemsError = null;
+        _problemsNeedPin = false;
+      });
+      return;
+    }
+    unawaited(_s.resume());
   }
 
   Future<void> _reactivateBiometric() async {
@@ -299,6 +362,7 @@ class _KeyRotationScreenState extends State<KeyRotationScreen> {
                   child: ListenableBuilder(
                     listenable: Listenable.merge([
                       _s.status,
+                      _s.problems,
                       _auth.rotationStore.record,
                     ]),
                     builder: (context, _) {
@@ -456,11 +520,62 @@ class _KeyRotationScreenState extends State<KeyRotationScreen> {
       primary('Ver otro código nuevo', Icons.key_outlined, _newCodeAgain);
     } else if (phase == RotationPhase.blockedCorrupt &&
         rec.resumePhase == RotationPhase.reencrypting) {
-      primary('Omitir los dañados', Icons.report_outlined, _skipCorrupt);
+      final probs = _s.problems.value;
+      if (probs == null) {
+        _ensureProblems();
+        out.addAll([
+          Text(
+            _problemsError ?? 'Comprobando qué archivos fallan…',
+            key: const ValueKey('rotation-problems-loading'),
+            style: AppTypography.bodySecondary,
+          ),
+          const SizedBox(height: AppSpacing.md),
+        ]);
+        if (_problemsNeedPin) {
+          primary('Introducir PIN', Icons.pin_outlined, _enterPin);
+        }
+      } else {
+        if (probs.missing.isNotEmpty) {
+          out.addAll([
+            _ProblemList(
+              key: const ValueKey('rotation-missing'),
+              title: 'Sin ninguna copia (${probs.missing.length})',
+              text:
+                  'No están ni en este teléfono ni en tu Google Drive: no se '
+                  'pueden recuperar.',
+              items: probs.missing,
+            ),
+            const SizedBox(height: AppSpacing.md),
+          ]);
+          primary('Continuar sin ellos', Icons.playlist_remove, _dropMissing);
+        }
+        if (probs.damaged.isNotEmpty) {
+          out.addAll([
+            _ProblemList(
+              key: const ValueKey('rotation-damaged'),
+              title: 'Dañados (${probs.damaged.length})',
+              text:
+                  'Tienen copia pero no se puede abrir. Al omitirlos, su copia '
+                  'de Drive se conserva aparte.',
+              items: probs.damaged,
+            ),
+            const SizedBox(height: AppSpacing.md),
+          ]);
+          primary('Omitir los dañados', Icons.report_outlined, _skipCorrupt);
+        }
+      }
       out.add(
         AppTextButton(
           label: 'Reintentar',
-          onPressed: () => unawaited(_s.retry()),
+          onPressed: _busy
+              ? null
+              : () {
+                  setState(() {
+                    _problemsError = null;
+                    _problemsNeedPin = false;
+                  });
+                  unawaited(_s.retry());
+                },
         ),
       );
     } else if (phase == RotationPhase.blockedForeign) {
@@ -573,6 +688,63 @@ class _Block extends StatelessWidget {
   }
 }
 
+/// Lista de archivos con problema (solo nombres visibles al usuario; nunca
+/// van a logs ni al Diagnóstico).
+class _ProblemList extends StatelessWidget {
+  const _ProblemList({
+    super.key,
+    required this.title,
+    required this.text,
+    required this.items,
+  });
+
+  /// Nombres que se muestran antes de "y N más".
+  static const int maxShown = 8;
+
+  final String title;
+  final String text;
+  final List<RotationProblemItem> items;
+
+  @override
+  Widget build(BuildContext context) {
+    final shown = items.take(maxShown).toList();
+    final rest = items.length - shown.length;
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: AppRadii.mdAll,
+      ),
+      child: Padding(
+        padding: AppSpacing.card,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Semantics(
+              header: true,
+              child: Text(title, style: AppTypography.titleSmall),
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            Text(text, style: AppTypography.bodySecondary),
+            const SizedBox(height: AppSpacing.sm),
+            for (final i in shown)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: AppSpacing.xxs),
+                child: Text(
+                  i.name,
+                  style: AppTypography.body,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            if (rest > 0)
+              Text('y $rest más', style: AppTypography.bodySecondary),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _PlanBlock extends StatelessWidget {
   const _PlanBlock({required this.plan});
   final RotationPlan plan;
@@ -590,6 +762,10 @@ class _PlanBlock extends StatelessWidget {
       if (!plan.enoughDriveSpace)
         'Tu Google Drive no tiene espacio para la copia nueva. Libera espacio '
             'antes de empezar.',
+      if (plan.noCopyItems > 0)
+        '${plan.noCopyItems} archivo(s) no tienen ninguna copia (ni en el '
+            'teléfono ni en Drive). Durante el cambio podrás continuar sin '
+            'ellos.',
       if (plan.lostThumbnails > 0)
         '${plan.lostThumbnails} miniatura(s) no se pueden recuperar: esos '
             'archivos quedarán con su ícono.',

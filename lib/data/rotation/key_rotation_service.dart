@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../core/crypto/auth_controller.dart';
 import '../../core/crypto/crypto_service.dart';
+import '../../core/crypto/key_hierarchy.dart';
 import '../../core/logging/vault_log.dart';
 import '../../core/services/app_paths.dart';
 import '../../core/session/vault_session.dart';
@@ -48,6 +49,40 @@ enum RotationCrashPoint {
   blobDeleted,
   finalizeSwept,
   finalizeBeforeRecord,
+
+  /// Tras quitar UN item sin copia ("Continuar sin ellos", D64).
+  missingDropped,
+}
+
+/// Un archivo con problema al re-cifrar (para la UI; el nombre NUNCA va a
+/// logs, Diagnóstico ni al registro de la rotación).
+@immutable
+class RotationProblemItem {
+  const RotationProblemItem({required this.id, required this.name});
+  final String id;
+  final String name;
+}
+
+/// Archivos que frenan el re-cifrado (`blockedCorrupt` con `resumePhase =
+/// reencrypting`).
+@immutable
+class RotationProblems {
+  const RotationProblems({this.missing = const [], this.damaged = const []});
+
+  /// Sin NINGUNA copia (ni en el teléfono ni en Drive): "Continuar sin
+  /// ellos" los quita de la bóveda (D64).
+  final List<RotationProblemItem> missing;
+
+  /// Con copia que no abre: "Omitir los dañados" (cuarentena, M6).
+  final List<RotationProblemItem> damaged;
+
+  bool get isEmpty => missing.isEmpty && damaged.isEmpty;
+
+  /// Texto para el registro (solo cuentas, sin nombres).
+  String get summary => [
+    if (missing.isNotEmpty) '${missing.length} archivo(s) sin ninguna copia',
+    if (damaged.isNotEmpty) '${damaged.length} archivo(s) dañado(s)',
+  ].join(' y ');
 }
 
 /// Estado para la UI.
@@ -96,7 +131,13 @@ class RotationPlan {
     required this.enoughDriveSpace,
     required this.signedIn,
     this.oldAccountKept,
+    this.noCopyItems = 0,
   });
+
+  /// Archivos sin ninguna copia conocida (ni `.vault` local ni copia en
+  /// Drive): no impiden empezar; durante el re-cifrado se pregunta qué
+  /// hacer con ellos ("Continuar sin ellos", D64).
+  final int noCopyItems;
 
   final int items;
 
@@ -199,6 +240,10 @@ class KeyRotationService {
     const RotationStatus(),
   );
 
+  /// Archivos que frenan el re-cifrado (solo en memoria; tras reiniciar la
+  /// app se recalculan con [loadProblems]).
+  final ValueNotifier<RotationProblems?> problems = ValueNotifier(null);
+
   bool _running = false;
   bool get isRunning => _running;
   bool _stopRequested = false;
@@ -281,6 +326,7 @@ class KeyRotationService {
     }
     await repo.clear();
     await auth.abandonRotation();
+    problems.value = null;
     status.value = const RotationStatus();
   }
 
@@ -294,6 +340,7 @@ class KeyRotationService {
     final state = await repo.load();
     if (state == null || state.rotationId != rec.id) await repo.clear();
     await auth.discardForeignRotation();
+    problems.value = null;
     status.value = const RotationStatus();
   }
 
@@ -304,9 +351,14 @@ class KeyRotationService {
     var cloudOnly = 0;
     var pending = 0;
     var lostThumbs = 0;
+    var noCopy = 0;
     for (final i in all) {
       final f = _resolve(i.encryptedPath);
       final local = f.existsSync();
+      if (!local && i.driveFileId == null) {
+        noCopy++;
+        continue;
+      }
       final size = i.cloudSize ?? (local ? f.lengthSync() : i.fileSize);
       upload += size;
       if (!local) cloudOnly += size;
@@ -343,6 +395,7 @@ class KeyRotationService {
       enoughDriveSpace: enough,
       signedIn: cloud.currentAccountEmail != null,
       oldAccountKept: await prefs.getOldAccountKept(),
+      noCopyItems: noCopy,
     );
   }
 
@@ -354,6 +407,7 @@ class KeyRotationService {
 
   /// Sale de un bloqueo (`blocked*`) y reanuda.
   Future<void> retry() async {
+    problems.value = null;
     final rec = await _store.load();
     if (rec == null || !rec.phase.isBlocked) return resume();
     await _store.save(
@@ -599,7 +653,9 @@ class KeyRotationService {
       final lb = _resolve(b.encryptedPath).existsSync() ? 0 : 1;
       return la != lb ? la - lb : a.fileSize.compareTo(b.fileSize);
     });
-    final corrupt = <String>[];
+    final listed = await _listedOldFileItems();
+    final missing = <RotationProblemItem>[];
+    final damaged = <RotationProblemItem>[];
     var skipped = 0;
     var done = 0;
     for (final item in pending) {
@@ -625,8 +681,11 @@ class KeyRotationService {
         to: to,
         cancel: _token,
       );
-      if (r.outcome == ReencryptOutcome.corrupt) {
-        corrupt.add(item.id);
+      final problem = _problemOf(item, r, listed);
+      if (problem == ReencryptOutcome.missing) {
+        missing.add(RotationProblemItem(id: item.id, name: item.name));
+      } else if (problem == ReencryptOutcome.corrupt) {
+        damaged.add(RotationProblemItem(id: item.id, name: item.name));
       } else {
         done++;
         status.value = RotationStatus(
@@ -639,13 +698,13 @@ class KeyRotationService {
       }
       _crash(RotationCrashPoint.itemDone);
     }
-    if (corrupt.isNotEmpty) {
-      await _block(
-        RotationPhase.blockedCorrupt,
-        '${corrupt.length} archivo(s) dañado(s)',
-      );
+    final found = RotationProblems(missing: missing, damaged: damaged);
+    if (!found.isEmpty) {
+      problems.value = found;
+      await _block(RotationPhase.blockedCorrupt, found.summary);
       return false;
     }
+    problems.value = null;
     if (skipped > 0 || (await items.getItemsByKeyGen(rec.fromGen)).isNotEmpty) {
       _message('Cierra los archivos abiertos para terminar de re-cifrar.');
       return false;
@@ -657,28 +716,136 @@ class KeyRotationService {
   /// "Omitir" en `blockedCorrupt` durante el re-cifrado (M6): los items que
   /// siguen sin poder re-cifrarse quedan perdidos (`error`, generación
   /// nueva, sin archivo) y su blob viejo en cuarentena (no se borra).
-  Future<int> skipCorruptItems() async {
+  Future<int> skipCorruptItems() => _resolveProblems(ReencryptOutcome.corrupt, (
+    item,
+    rec,
+  ) async {
+    await repo.quarantineItem(item.id);
+    await repo.markItemLost(item.id, fromGen: rec.fromGen, toGen: rec.toGen);
+  });
+
+  /// "Continuar sin ellos" (D64): quita de la bóveda los items SIN NINGUNA
+  /// copia. Antes de quitar cada uno se vuelve a intentar re-cifrarlo (si la
+  /// copia apareció, se re-cifra y se queda). Lo que aún exista de él en
+  /// Drive (su miniatura) se borra por lista tras el corte; lo local
+  /// (miniatura, `.vault` que no abre) se borra aquí. Devuelve cuántos
+  /// se quitaron.
+  Future<int> dropMissingItems() =>
+      _resolveProblems(ReencryptOutcome.missing, (item, rec) async {
+        for (final rel in [item.encryptedPath, ?item.thumbPath]) {
+          await _delete(_resolve(rel));
+        }
+        if (await repo.dropMissingItem(item.id, fromGen: rec.fromGen)) {
+          _crash(RotationCrashPoint.missingDropped);
+        }
+      });
+
+  /// Recalcula [problems] (p. ej. tras reiniciar la app en `blockedCorrupt`):
+  /// vuelve a intentar los items pendientes; los que se re-cifran salen de
+  /// la lista. Lanza [RotationException] si hace falta el PIN.
+  Future<RotationProblems> loadProblems() async {
     final rec = await _store.load();
-    if (rec == null ||
-        rec.phase != RotationPhase.blockedCorrupt ||
-        rec.resumePhase != RotationPhase.reencrypting) {
-      throw const RotationException('No hay archivos dañados que omitir.');
-    }
-    final ring = session.keyring!;
-    var skipped = 0;
+    if (!_blockedReencrypting(rec)) return const RotationProblems();
+    final current = problems.value;
+    if (current != null) return current;
+    final (from, to) = _dualKeys(rec!);
+    final listed = await _listedOldFileItems();
+    final missing = <RotationProblemItem>[];
+    final damaged = <RotationProblemItem>[];
     for (final item in await items.getItemsByKeyGen(rec.fromGen)) {
+      if (isInUse?.call(item.id) ?? false) continue;
       final r = await reencryptor.reencrypt(
         item,
         fromGen: rec.fromGen,
-        from: ring.forGen(rec.fromGen),
+        from: from,
         toGen: rec.toGen,
-        to: ring.forGen(rec.toGen),
+        to: to,
       );
-      if (r.outcome != ReencryptOutcome.corrupt) continue;
-      await repo.quarantineItem(item.id);
-      await repo.markItemLost(item.id, fromGen: rec.fromGen, toGen: rec.toGen);
-      skipped++;
+      final p = RotationProblemItem(id: item.id, name: item.name);
+      switch (_problemOf(item, r, listed)) {
+        case ReencryptOutcome.missing:
+          missing.add(p);
+        case ReencryptOutcome.corrupt:
+          damaged.add(p);
+        default:
+          break;
+      }
     }
+    return problems.value = RotationProblems(
+      missing: missing,
+      damaged: damaged,
+    );
+  }
+
+  static bool _blockedReencrypting(RotationRecord? rec) =>
+      rec != null &&
+      rec.phase == RotationPhase.blockedCorrupt &&
+      rec.resumePhase == RotationPhase.reencrypting;
+
+  (KeyHierarchy, KeyHierarchy) _dualKeys(RotationRecord rec) {
+    final ring = session.keyring;
+    final from = ring?.forGenOrNull(rec.fromGen);
+    final to = ring?.forGenOrNull(rec.toGen);
+    if (ring == null || !ring.isDual || from == null || to == null) {
+      throw const RotationException(
+        'Desbloquea con tu PIN para continuar el cambio de llave.',
+      );
+    }
+    return (from, to);
+  }
+
+  /// Ids de items cuyo `.vault` de la generación vieja SÍ está en Drive
+  /// (en la lista exacta del conjunto viejo).
+  Future<Set<String>> _listedOldFileItems() async => {
+    for (final o in await repo.oldFiles())
+      if (o.kind == 'file' && o.itemId != null) o.itemId!,
+  };
+
+  /// Clasifica el resultado de un re-cifrado: `missing`, `corrupt` o `null`
+  /// (sin problema). Un "sin copia" cuyo blob viejo SÍ está en la lista de
+  /// Drive se trata como dañado (M6: el blob se conserva en cuarentena;
+  /// nunca se quita algo que todavía exista).
+  static ReencryptOutcome? _problemOf(
+    VaultItemModel item,
+    ReencryptResult r,
+    Set<String> listed,
+  ) => switch (r.outcome) {
+    ReencryptOutcome.missing =>
+      listed.contains(item.id)
+          ? ReencryptOutcome.corrupt
+          : ReencryptOutcome.missing,
+    ReencryptOutcome.corrupt => ReencryptOutcome.corrupt,
+    _ => null,
+  };
+
+  /// Aplica [act] a cada item que, RE-INTENTADO ahora, sigue en la categoría
+  /// [kind]; los demás problemas se quedan. Al terminar vuelve a
+  /// `reencrypting` (si queda otro problema, el re-cifrado vuelve a parar).
+  Future<int> _resolveProblems(
+    ReencryptOutcome kind,
+    Future<void> Function(VaultItemModel item, RotationRecord rec) act,
+  ) async {
+    final rec = await _store.load();
+    if (!_blockedReencrypting(rec)) {
+      throw const RotationException('No hay archivos con problemas.');
+    }
+    final (from, to) = _dualKeys(rec!);
+    final listed = await _listedOldFileItems();
+    var n = 0;
+    for (final item in await items.getItemsByKeyGen(rec.fromGen)) {
+      if (isInUse?.call(item.id) ?? false) continue;
+      final r = await reencryptor.reencrypt(
+        item,
+        fromGen: rec.fromGen,
+        from: from,
+        toGen: rec.toGen,
+        to: to,
+      );
+      if (_problemOf(item, r, listed) != kind) continue;
+      await act(item, rec);
+      n++;
+    }
+    problems.value = null;
     await _store.save(
       (await _store.load())!.copyWith(
         phase: RotationPhase.reencrypting,
@@ -687,7 +854,7 @@ class KeyRotationService {
         updatedAt: _now(),
       ),
     );
-    return skipped;
+    return n;
   }
 
   Future<bool> _uploading(RotationRecord rec) async {
@@ -993,7 +1160,9 @@ class KeyRotationService {
     final remote = {for (final f in await cloud.list()) f.id: f};
     var missing = 0;
     for (final i in await items.getItemsByKeyGen(rec.toGen)) {
-      if (lost.contains(i.id)) continue;
+      // Perdidos (M6) y, por la misma razón, cualquier fila sin ninguna copia
+      // (nunca se podrá verificar; contarla atascaría la rotación).
+      if (lost.contains(i.id) || _noCopyAnywhere(i)) continue;
       if (!await _verifiedItem(i, rec.toGen, remote)) missing++;
     }
     return missing;
@@ -1125,21 +1294,33 @@ class KeyRotationService {
     return true;
   }
 
+  /// A4. Un item SIN NINGUNA copia (ni `.vault` local ni `driveFileId`) no
+  /// cuenta como pendiente: nunca podrá subirse y esperar por él atascaría
+  /// la rotación para siempre (p. ej. un perdido de una rotación anterior).
+  /// Se decide sobre él al re-cifrar ("Continuar sin ellos", D64).
   Future<bool> _nothingPending() async {
-    for (final j in await queue.all()) {
-      if (j.kind == SyncJobKind.file || j.kind == SyncJobKind.thumb) {
-        return false;
-      }
-    }
+    final noCopy = <String>{};
     for (final s in const [
       SyncStatus.pendiente,
       SyncStatus.subiendo,
       SyncStatus.error,
     ]) {
-      if ((await items.getItemsBySyncStatus(s)).isNotEmpty) return false;
+      for (final i in await items.getItemsBySyncStatus(s)) {
+        if (!_noCopyAnywhere(i)) return false;
+        noCopy.add(i.id);
+      }
+    }
+    for (final j in await queue.all()) {
+      if ((j.kind == SyncJobKind.file || j.kind == SyncJobKind.thumb) &&
+          !noCopy.contains(j.itemId)) {
+        return false;
+      }
     }
     return true;
   }
+
+  bool _noCopyAnywhere(VaultItemModel i) =>
+      i.driveFileId == null && !_resolve(i.encryptedPath).existsSync();
 
   Future<bool> _waitSyncIdle() async {
     final deadline = _now() + syncIdleTimeout.inMilliseconds;
@@ -1206,6 +1387,7 @@ class KeyRotationService {
   Future<void> _publish({bool keepMessage = false}) async {
     final rec = await _store.load();
     if (rec == null) {
+      problems.value = null;
       // Recién terminada: se conserva "Rotación terminada" para la UI.
       if (!status.value.finished) status.value = const RotationStatus();
       return;

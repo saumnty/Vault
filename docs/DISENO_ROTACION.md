@@ -304,6 +304,7 @@ Pantallas (`lib/features/settings/key_rotation_screen.dart`, en el estilo de `ac
 | Caso | Respuesta |
 |---|---|
 | Fuente `gen 1` local no autentica | Copia de Drive. Si también falla → `blockedCorrupt` con la lista; "Omitir" = cuarentena (M6), nunca se borra el blob |
+| Sin NINGUNA copia (local ausente o que no abre, y en Drive sin `driveFileId` o 404, y su `.vault` viejo fuera de `rotation_old_files`) — añadido en D64 | `blockedCorrupt` con la lista "Sin ninguna copia"; "Continuar sin ellos" quita la fila (+ etiquetas y cola) en una transacción y lo local; lo que quede en Drive se borra por lista tras el corte; "Reintentar" |
 | SHA del claro ≠ `contentHash` | `blockedCorrupt` (sería un error de programa); "Reintentar" / "Omitir" (cuarentena) |
 | `.k2` nuevo no verifica | se borra y se reintenta 2 veces; disco lleno → `blockedLocalSpace` |
 | Exportación de la BD no verifica | se borra `.tmp`; la `db` original queda intacta; `blockedCorrupt` + Diagnóstico |

@@ -254,6 +254,32 @@ CREATE TRIGGER IF NOT EXISTS rot_folders_del AFTER DELETE ON folders BEGIN
     });
   }
 
+  /// D64 ("Continuar sin ellos"): quita de la bóveda un item SIN NINGUNA
+  /// copia, en una transacción: la fila (solo si sigue en [fromGen]; el
+  /// trigger cuenta la baja, así la cardinalidad sigue cuadrando), sus
+  /// etiquetas y sus trabajos de subida. NO toca `rotation_old_files`: lo
+  /// que quede de él en Drive (p. ej. su miniatura) pertenece al conjunto
+  /// viejo y se borra por lista DESPUÉS del corte. Devuelve `false` si la
+  /// fila ya no estaba en [fromGen].
+  Future<bool> dropMissingItem(String itemId, {required int fromGen}) async {
+    final db = await _dbProvider();
+    return db.transaction((txn) async {
+      final n = await txn.delete(
+        'vault_items',
+        where: 'id = ? AND keyGen = ?',
+        whereArgs: [itemId, fromGen],
+      );
+      if (n == 0) return false;
+      await txn.delete('item_tags', where: 'itemId = ?', whereArgs: [itemId]);
+      await txn.delete(
+        'sync_queue',
+        where: "itemId = ? AND kind IN ('file', 'thumb')",
+        whereArgs: [itemId],
+      );
+      return true;
+    });
+  }
+
   /// Ids de items en cuarentena.
   Future<Set<String>> quarantinedItemIds() async {
     final db = await _dbProvider();

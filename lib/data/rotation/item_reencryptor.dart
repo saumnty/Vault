@@ -29,9 +29,14 @@ enum ReencryptOutcome {
   /// en la siguiente vuelta.
   changed,
 
-  /// Ni la copia local ni la de Drive abren o coinciden (§9): el servicio
-  /// pasa a `blockedCorrupt` y el usuario decide ("Omitir").
+  /// Hay copia pero ninguna abre o coincide (§9): el servicio pasa a
+  /// `blockedCorrupt` y el usuario decide ("Omitir", cuarentena M6).
   corrupt,
+
+  /// No hay NINGUNA copia utilizable: el `.vault` local falta (o no abre) y
+  /// en Drive no hay copia registrada (sin `driveFileId` o 404). El usuario
+  /// decide "Continuar sin ellos" (D64) o "Reintentar". Nada cambia.
+  missing,
 }
 
 class ReencryptResult {
@@ -234,8 +239,8 @@ class ItemReencryptor {
       }
       if (digest == null) {
         return const ReencryptResult(
-          ReencryptOutcome.corrupt,
-          detail: 'sin copia que abra',
+          ReencryptOutcome.missing,
+          detail: 'sin ninguna copia',
         );
       }
       final expected = fresh.contentHash?.toLowerCase();

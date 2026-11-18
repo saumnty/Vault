@@ -93,9 +93,20 @@ class TestRotationService extends KeyRotationService {
 
   final RotationPlan? fixedPlan;
 
+  /// Llamadas a "Continuar sin ellos" (sin BD: solo se registran).
+  int drops = 0;
+
   @override
   Future<RotationPlan> plan() async =>
       fixedPlan ?? (throw UnimplementedError('sin BD'));
+
+  @override
+  Future<int> dropMissingItems() async {
+    drops++;
+    final n = problems.value?.missing.length ?? 0;
+    problems.value = null;
+    return n;
+  }
 }
 
 /// Repositorio de la rotación sin BD (cancelar/descartar no tocan nada).
