@@ -2,6 +2,8 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import 'package:cryptography/cryptography.dart';
 import 'package:path/path.dart' as p;
 
@@ -101,11 +103,25 @@ class DecryptingByteSource implements VaultByteSource {
 
   void _wipe() {
     final b = _block;
-    if (b != null) b.fillRange(0, b.length, 0);
+    if (b != null) wipeBlock(b);
     _block = null;
   }
 
   void dispose() => _wipe();
+}
+
+/// Pone a cero un bloque en claro (mejor esfuerzo). Con el AES NATIVO el
+/// bloque llega como una vista de solo lectura y no se puede modificar
+/// (`UnsupportedError`): en ese caso solo se suelta la referencia. Hallado en
+/// la prueba real de la fase 1 en el emulador (los tests usaban un backend con
+/// listas modificables).
+@visibleForTesting
+void wipeBlock(Uint8List b) {
+  try {
+    b.fillRange(0, b.length, 0);
+  } on UnsupportedError {
+    // vista de solo lectura: nada que borrar desde aquí
+  }
 }
 
 String _hex(List<int> bytes) =>
@@ -256,7 +272,7 @@ class ItemReencryptor {
             await newThumbPart.writeAsBytes(enc, flush: true);
             thumbFileId = CryptoService.fileIdOfHeader(enc);
           } finally {
-            plainThumb.fillRange(0, plainThumb.length, 0);
+            wipeBlock(plainThumb);
           }
         }
       }
@@ -409,7 +425,7 @@ class ItemReencryptor {
       for (var i = 0; i < reader.blockCount; i++) {
         final block = await reader.decryptBlock(i);
         sink.add(block);
-        block.fillRange(0, block.length, 0);
+        wipeBlock(block);
       }
     } finally {
       await reader.close();

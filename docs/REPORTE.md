@@ -545,3 +545,26 @@ Objetivo: comprobar con tus datos reales que tu código ACTUAL restaura la bóve
 
 ## Nota de pruebas (2026-11-17): los tests de integración borran la app del emulador
 `flutter test integration_test/... -d emulator-5554` reinstala la app (mismo paquete) y se lleva las llaves del almacén seguro: la bóveda de pruebas del emulador queda sin llaves (la app vuelve al onboarding). No afecta al iPhone ni a ningún build real. Para pruebas manuales de la bóveda en el emulador, correr los tests de integración ANTES y crear/restaurar la bóveda de pruebas después.
+
+## v2 · Fase 1 — Prueba real de punta a punta en el emulador (2026-11-18)
+Cuenta de Google de pruebas (distinta de la del iPhone, confirmado por el usuario), bóveda nueva con 6 archivos (3 fotos y 3 videos, incluido uno de 24 MB, calidad original), PIN de pruebas, Drive de esa cuenta vaciado antes (restos de la bóveda de pruebas anterior, que la rotación habría tomado por «otro dispositivo»).
+
+**Recorrido:** rotar (PIN → código nuevo B → confirmación por posiciones) → re-cifrar → subir → **corte de red (Wi-Fi y datos) a mitad de la subida** → «La subida no avanza. Reintenta en un momento.» y pausa → **force-stop** → red de vuelta → abrir, desbloquear, «Continuar» → pasa el corte («Tu código NUEVO ya es el único que vale») → borrado de la copia anterior → «Rotación terminada».
+
+**Resultados**
+| Comprobación | Resultado |
+|---|---|
+| Bóveda tras rotar | los 6 archivos abren; el video de 24 MB reproduce en streaming; banner desaparece; localmente solo `*.k2.vault` y una BD (sin `db.k1`) |
+| Drive tras rotar | **14 archivos exactos**: 1 `recovery_backup.k2.json`, 1 `vault_db.k2.snapshot`, 6 `.k2.thumb`, 6 `.k2.vault`. Sin archivos de la llave vieja, sin respaldo viejo, sin puente |
+| Restauración limpia (app desinstalada) con el código VIEJO | **Falla**: «Código incorrecto» |
+| Restauración limpia con el código NUEVO | **Funciona**: «6 archivos y 0 carpetas recuperados»; el video grande se descarga de Drive (verificado), se descifra y reproduce |
+| Reanudar tras corte de red + force-stop | OK |
+
+**Defectos encontrados y corregidos** (ninguno lo habían visto los tests, de ahí el valor de la prueba real):
+1. **Crítico:** `DecryptingByteSource._wipe` y dos sitios más ponían a cero el bloque en claro con `fillRange`, pero con el AES NATIVO (Android/iOS) el bloque llega como vista de solo lectura → `UnsupportedError` y la rotación se quedaba en pausa en «Re-cifrando». Corregido con `wipeBlock` (tolera vistas de solo lectura) en los 3 sitios; tests nuevos: `wipeBlock` y re-cifrado completo con un AES que devuelve vistas de solo lectura (`_ReadOnlyBackend`). El estado quedó guardado y la rotación se reanudó sola al reinstalar el build corregido.
+2. **Cosmético:** tras reanudar seguía visible el aviso viejo «La subida no avanza…»; ahora se limpia en cuanto la rotación vuelve a avanzar.
+
+**Límites de esta prueba**
+- Las **revisiones** de Drive no se pueden listar con la interfaz de la app: se confía en que `files.delete` (permanente) las borre, como en S-04. Cubierto con revisiones en el fake de los tests (`everyVersion`).
+- Solo Android. iOS sigue sin probar; el simulacro y las pruebas del iPhone de arriba siguen vigentes.
+- Para esta prueba se usaron dos parches temporales (vaciar y listar Drive de la cuenta de pruebas), **no cometidos**.

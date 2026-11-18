@@ -8,6 +8,7 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
+import 'package:vault/core/crypto/aes_gcm_backend.dart';
 import 'package:vault/core/crypto/crypto_service.dart';
 import 'package:vault/core/crypto/key_hierarchy.dart';
 import 'package:vault/core/crypto/vault_file_format.dart' show VaultByteSource;
@@ -65,6 +66,7 @@ class _RacingRepo extends VaultDataRepository {
 }
 
 void main() {
+  wipeRegressionTests();
   late F6Env env;
   late KeyHierarchy k1;
   late KeyHierarchy k2;
@@ -192,6 +194,21 @@ void main() {
       }
     }
   }
+
+  test(
+    'con un AES que devuelve vistas de SOLO LECTURA (como el nativo)',
+    () async {
+      final plain = _plain(2 * 1024 * 1024 + 5);
+      final item = await addItem('ro1', plain);
+      final old = AesGcmBackend.current;
+      AesGcmBackend.current = _ReadOnlyBackend(DartAesGcmBackend());
+      addTearDown(() => AesGcmBackend.current = old);
+      final r = await run(item);
+      expect(r.outcome, ReencryptOutcome.done);
+      AesGcmBackend.current = old;
+      expect(await openNew((await env.items.getItem(item.id))!), plain);
+    },
+  );
 
   for (final size in [0, 1, 1024 * 1024, 3 * 1024 * 1024 + 1]) {
     test(
@@ -382,4 +399,46 @@ bool _contains(List<int> hay, List<int> needle) {
     return true;
   }
   return false;
+}
+
+// Regresión (prueba real de la fase 1 en el emulador): con el AES nativo el
+// bloque en claro es una vista de SOLO LECTURA y fillRange lanzaba
+// UnsupportedError, dejando la rotación en pausa.
+void wipeRegressionTests() {
+  test('wipeBlock tolera vistas de solo lectura y borra las modificables', () {
+    final ro = Uint8List.fromList([1, 2, 3]).asUnmodifiableView();
+    wipeBlock(ro); // no lanza
+    expect(ro, [1, 2, 3]);
+    final rw = Uint8List.fromList([1, 2, 3]);
+    wipeBlock(rw);
+    expect(rw, [0, 0, 0]);
+  });
+}
+
+/// AES que devuelve el claro como vista NO modificable (lo que hace el
+/// backend nativo en Android/iOS) para cazar escrituras sobre ese claro.
+class _ReadOnlyBackend implements AesGcmBackend {
+  _ReadOnlyBackend(this._inner);
+  final AesGcmBackend _inner;
+
+  @override
+  String get name => 'solo-lectura';
+
+  @override
+  Future<SecretBox> encrypt(
+    List<int> clearText, {
+    required SecretKey secretKey,
+    required List<int> nonce,
+    List<int> aad = const <int>[],
+  }) => _inner.encrypt(clearText, secretKey: secretKey, nonce: nonce, aad: aad);
+
+  @override
+  Future<List<int>> decrypt(
+    SecretBox secretBox, {
+    required SecretKey secretKey,
+    List<int> aad = const <int>[],
+  }) async {
+    final out = await _inner.decrypt(secretBox, secretKey: secretKey, aad: aad);
+    return Uint8List.fromList(out).asUnmodifiableView();
+  }
 }

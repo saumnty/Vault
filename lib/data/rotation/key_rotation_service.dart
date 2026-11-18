@@ -380,6 +380,10 @@ class KeyRotationService {
       while (!_stopRequested) {
         final rec = await _store.load();
         if (rec == null || rec.phase.isBlocked) break;
+        // Un aviso de una pausa anterior ("la subida no avanza"…) ya no
+        // aplica en cuanto la rotación vuelve a avanzar (hallado en la prueba
+        // real: el mensaje viejo seguía visible tras reanudar).
+        _lastMessage = null;
         _emit(rec, running: true);
         if (!await _step(rec)) break;
       }

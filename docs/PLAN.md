@@ -42,7 +42,7 @@ Reglas: una fase a la vez; migraciones de BD incrementales (v7 → v8…), nunca
 | 9 | Etiquetas, filtros y búsqueda (BD v9) | Sonnet | 🧪 BD v9 incremental, `TagRepository`, filtros globales, hoja de etiquetas, Ajustes > Etiquetas; tests + emulador |
 | 6 | Selector de archivos propio (sin file_picker; S-02 residual, S-18) | Sonnet | 🧪 canal `vault/picker` (Kotlin probado en emulador; Swift sin compilar), `encryptSource`, `file_picker` fuera; tests |
 | 1 | Rotar la DEK (S-11), diseño revisado por Opus; PARAR al terminar | Opus | 🧪 pasos 1–11 implementados y en tests (D60–D63); ⬜ rotación real contra Drive sin probar; PARADA: simulacro de restauración del usuario (REPORTE "v2 · Fase 1") antes de rotar en el iPhone |
-| 8 | Bóveda señuelo: variante elegida por el usuario (2026-11-17) = AMBAS: segundo PIN que abre otra bóveda + negable (disco y Drive no revelan cuántas bóvedas hay). Diseño con Opus + revisión independiente antes de codificar | Opus | ⬜ |
+| 8 | Bóveda señuelo: variante (a) «disimulo» (decisión del usuario 2026-11-18, sustituye a la de ambas del 17): segundo PIN que abre una bóveda SEPARADA; NO hace falta ocultar en disco ni en Drive cuántas bóvedas hay. Diseño con Opus + revisión independiente antes de codificar; mismas reglas que la fase 1 | Opus | ⬜ |
 | 11 | Kern: nombre visible e ícono | Haiku | ⬜ |
 
 Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (REPORTE.md "v2 · Fase 1") y después la rotación en el iPhone con la lista de pruebas. Pendiente de la fase: prueba de punta a punta en el emulador con Drive real (§10, a mano), limpieza manual de generaciones abandonadas (M11), "Continuar sin ellos" en la hoja previa, botón de borrar la cuenta anterior desde el aviso M7 y goldens de la pantalla. Después: fase 8.
