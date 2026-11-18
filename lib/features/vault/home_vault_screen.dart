@@ -523,6 +523,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                     if (_services.rotation != null && !c.isSelecting)
                       RotationBanner(
                         record: _services.rotation!.auth.rotationStore.record,
+                        progress: _services.rotation!.progress,
                         onTap: _openRotation,
                       ),
                     if (_pendingOriginals > 0 && !c.isSelecting)

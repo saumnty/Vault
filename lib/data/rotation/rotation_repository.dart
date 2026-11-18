@@ -63,6 +63,32 @@ class RotationDbState {
   int get expectedFolders => frozenFolders + foldersInserted - foldersDeleted;
 }
 
+/// Avance de la rotación leído de lo ya persistido (D72): ninguna columna
+/// nueva. `done` = items ya en la generación nueva (re-cifrados); `uploaded`
+/// = de ellos, los que ya constan `en_nube`; `total` = cardinalidad esperada
+/// (`rotation_state`: congelados + altas − bajas).
+class RotationProgress {
+  const RotationProgress({
+    required this.done,
+    required this.uploaded,
+    required this.total,
+  });
+
+  final int done;
+  final int uploaded;
+  final int total;
+
+  @override
+  bool operator ==(Object other) =>
+      other is RotationProgress &&
+      other.done == done &&
+      other.uploaded == uploaded &&
+      other.total == total;
+
+  @override
+  int get hashCode => Object.hash(done, uploaded, total);
+}
+
 /// Un archivo del conjunto VIEJO de Drive (lista exacta, A5).
 class RotationOldFile {
   const RotationOldFile({
@@ -300,6 +326,25 @@ CREATE TRIGGER IF NOT EXISTS rot_folders_del AFTER DELETE ON folders BEGIN
       where: 'driveId = ?',
       whereArgs: [driveId],
     );
+  }
+
+  /// Avance (contador del aviso, D72) o `null` si no hay rotación en la BD
+  /// (todavía no congelada, ya terminada o cancelada).
+  Future<RotationProgress?> progress() async {
+    final db = await _dbProvider();
+    final rows = await db.query('rotation_state', where: 'id = 1');
+    if (rows.isEmpty) return null;
+    final state = RotationDbState.fromMap(rows.first);
+    final r = (await db.rawQuery(
+      'SELECT COUNT(*) AS n, '
+      "COALESCE(SUM(CASE WHEN syncStatus = 'en_nube' THEN 1 ELSE 0 END), 0) "
+      'AS up FROM vault_items WHERE keyGen = ?',
+      [state.toGen],
+    )).first;
+    final total = state.expectedItems < 0 ? 0 : state.expectedItems;
+    final done = (r['n'] as int).clamp(0, total);
+    final uploaded = (r['up'] as int).clamp(0, done);
+    return RotationProgress(done: done, uploaded: uploaded, total: total);
   }
 
   /// Cuentas actuales (para la guarda de cardinalidad, C1).

@@ -548,6 +548,15 @@ Si un archivo no tiene copia en ningún lado (ni su `.vault` en el teléfono ni 
 - Tests: `test/rotation/rotation_missing_test.dart` (9: quitar uno con etiqueta y miniatura y terminar con B OK / A falla y nada con la llave vieja; reintentar con la copia de vuelta; mezcla dañado + sin copia; copia local dañada sin Drive; `.vault` en Drive sin `driveFileId` → dañado, nunca se quita; corte tras quitar el primero de dos, con y sin escritura perdida; perdido de una rotación anterior en la segunda rotación; llamada fuera de bloqueo), `test/item_reencryptor_test.dart` (resultado `missing`), `test/ui/key_rotation_screen_test.dart` (lista, "y N más", confirmación, PIN tras reiniciar, aviso de la hoja previa).
 - iPhone: si aparece "Sin ninguna copia", mándame antes una captura y el Diagnóstico; "Continuar sin ellos" no se puede deshacer.
 
+### v2 · Fase 1 — pendientes cerrados (2026-11-18, D72–D74)
+- **Hecho (en tests, sin dispositivo):** (1) contador «Re-cifrando/Subiendo: N/T archivos» en el aviso y en la pantalla, derivado de la BD (sin migración); (2) botón «Borrar datos de la cuenta anterior» (M7); (3) «Limpiar restos de cambios de llave» (M11). Archivos: `rotation_repository.dart` (`progress`), `key_rotation_service.dart` (`progress`, `deleteOldAccountData`, `scanLeftovers`, `cleanLeftovers`), `generation_sweeper.dart` (`findAbandoned`, `findStale`, `sweepAbandoned`), `key_rotation_screen.dart`. Tests: `test/rotation/rotation_extras_test.dart` (fakes de rotación y `MultiAccountCloud`) y grupos nuevos de `test/ui/key_rotation_screen_test.dart`.
+- **Sigue sin probarse contra Google Drive real** (ni emulador ni iPhone): los tests usan nubes falsas. Sin goldens nuevos de la pantalla (siguen pendientes).
+- **Pruebas de iPhone (después de rotar, en este orden):**
+  1. Durante la rotación, mira el aviso de la cuadrícula: debe decir «Cambiando la llave maestra · Re-cifrando: N/T archivos…» y luego «Subiendo: N/T…»; N sube y T coincide con tus archivos. Cierra y abre la app a mitad: el contador debe retomarse donde iba (no empezar en 0).
+  2. Si migraste de cuenta antes y elegiste «Conservar» los datos de la cuenta anterior: en Rotar llave maestra aparece «Borrar datos de la cuenta anterior». Pruébalo primero cancelando el selector de cuentas (no debe borrar nada). Luego elige OTRA cuenta distinta de la anterior: debe decir «Elegiste otra cuenta» y no borrar. Por último elige la anterior: borra y vuelve a tu cuenta actual. Comprueba en Drive de ambas cuentas (Administrar apps > Vault) que la actual no cambió.
+  3. «Limpiar restos de cambios de llave» tras terminar una rotación: debe decir «No hay restos que limpiar» o mostrar cifras pequeñas; tras limpiar, abre varios archivos y haz «Comprobar mi código» (debe seguir válido).
+- **Límites honestos:** el contador cuenta items, no bytes (un video grande avanza a saltos). La limpieza no puede saber si otro teléfono está rotando justo ahora; el borrado de la cuenta anterior depende del selector de Google (si se cancela al volver, hay que iniciar sesión a mano); ambos son permanentes (sin papelera). Si la guarda del barrido no se cumple (la copia vigente aún no está completa en Drive) solo se limpia lo abandonado.
+
 ## Nota de pruebas (2026-11-17): los tests de integración borran la app del emulador
 `flutter test integration_test/... -d emulator-5554` reinstala la app (mismo paquete) y se lleva las llaves del almacén seguro: la bóveda de pruebas del emulador queda sin llaves (la app vuelve al onboarding). No afecta al iPhone ni a ningún build real. Para pruebas manuales de la bóveda en el emulador, correr los tests de integración ANTES y crear/restaurar la bóveda de pruebas después.
 
@@ -616,3 +625,15 @@ Usa un directorio temporal propio (no toca la bóveda de la app); ojo con la not
 9. **Cambiar el PIN de la adicional** desde la principal (PIN principal + PIN actual de la adicional + nuevo) y comprobar que el viejo ya no abre.
 10. **Reinstalar en iOS con Keychain:** borrar la app e instalarla de nuevo (el Keychain sobrevive): debe arrancar en la bienvenida (onboarding), sin bóveda principal ni adicional; restaurar la principal y comprobar que no queda rastro de la adicional (Ajustes: «Desactivada»).
 11. **Eliminar la adicional** desde la principal: confirma, pide el PIN principal; después su PIN ya no abre nada y la principal sigue igual.
+
+## v2 · Fase 11 — Kern: nombre e ícono (2026-11-18)
+* Nombre visible «Kern» (iOS `CFBundleDisplayName`/`CFBundleName`; Android `android:label`). Sin cambios en `PRODUCT_BUNDLE_IDENTIFIER`, `applicationId`, textos internos ni Google Cloud.
+* Ícono: `assets/icon/kern.png` (1024×1024, sin transparencia, fondo #7C3AED, «>|<» blanco) y `assets/icon/kern_foreground.png` (adaptive Android, dentro del 66 % central). Generado con `dart run flutter_launcher_icons` (0.14.4, exacta). Regenerado `AppIcon.appiconset` y los `mipmap-*`. Detalle en D «Fase 11: Kern» de DECISIONES.md.
+* Verificación: `flutter analyze` y `flutter build apk --debug` (ver PLAN). iOS sin compilar ni probar.
+
+### Pruebas de iPhone — Kern
+1. Tras instalar la build nueva (Codemagic/Sideloadly): en la pantalla de inicio el nombre bajo el ícono es **Kern**, no «Vault».
+2. El ícono es el fondo morado con «>|<» blanco, sin bordes blancos ni recorte raro (iOS lo enmascara en cuadrado redondeado).
+3. Al abrir la app, el nombre en el selector de apps (multitarea) también es Kern.
+4. Confirmar que la app abre su bóveda normal: el bundle id no cambió, así que los datos y el Keychain se conservan.
+5. Anotar si la app pide algo nuevo al actualizar (no debería).

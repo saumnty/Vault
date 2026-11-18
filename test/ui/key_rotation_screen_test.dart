@@ -5,6 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/core/crypto/auth_controller.dart';
 import 'package:vault/core/crypto/key_recovery_service.dart';
 import 'package:vault/data/rotation/key_rotation_service.dart';
+import 'package:vault/data/rotation/rotation_repository.dart'
+    show RotationProgress;
 import 'package:vault/data/sync/network_monitor.dart';
 import 'package:vault/features/settings/key_rotation_screen.dart';
 
@@ -534,6 +536,202 @@ void main() {
       expect(find.textContaining('en pausa'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('rotation-banner')));
       expect(taps, 1);
+    });
+  });
+
+  group('Contador (D72)', () {
+    testWidgets('el aviso muestra 37/120 archivos al re-cifrar y al subir', (
+      tester,
+    ) async {
+      final env = await _env(tester);
+      final progress = ValueNotifier<RotationProgress?>(null);
+      await tester.pumpWidget(
+        testApp(
+          Scaffold(
+            body: RotationBanner(
+              record: env.auth.rotationStore.record,
+              progress: progress,
+              onTap: () {},
+            ),
+          ),
+        ),
+      );
+      await _prepare(tester, env);
+      await _setPhase(tester, env, RotationPhase.reencrypting);
+      expect(find.text('Cambiando la llave maestra · Mantén Vault abierta.'),
+          findsOneWidget);
+
+      progress.value = const RotationProgress(done: 37, uploaded: 5, total: 120);
+      await tester.pump();
+      expect(find.textContaining('Re-cifrando: 37/120 archivos'), findsOneWidget);
+
+      await _setPhase(tester, env, RotationPhase.uploading);
+      expect(find.textContaining('Subiendo: 5/120 archivos'), findsOneWidget);
+
+      // Fases sin contador y bloqueos: sin cifras.
+      await _setPhase(tester, env, RotationPhase.rekeyingDb);
+      expect(find.textContaining('/120'), findsNothing);
+      await _setPhase(
+        tester,
+        env,
+        RotationPhase.blockedQuota,
+        resume: RotationPhase.uploading,
+      );
+      expect(find.textContaining('en pausa'), findsOneWidget);
+    });
+
+    testWidgets('la pantalla usa el avance persistido', (tester) async {
+      final env = await _env(tester);
+      await _prepare(tester, env);
+      await _setPhase(tester, env, RotationPhase.reencrypting);
+      env.service.progress.value = const RotationProgress(
+        done: 37,
+        uploaded: 0,
+        total: 120,
+      );
+      await _open(tester, env);
+      expect(
+        tester.widget<Text>(find.byKey(const ValueKey('rotation-counter'))).data,
+        'Re-cifrando: 37/120 archivos',
+      );
+      final bar = tester.widget<LinearProgressIndicator>(
+        find.byKey(const ValueKey('rotation-progress')),
+      );
+      expect(bar.value, closeTo(37 / 120, 1e-9));
+    });
+
+    test('rotationCounter: solo en re-cifrado y subida, con total > 0', () {
+      const p = RotationProgress(done: 3, uploaded: 2, total: 10);
+      expect(rotationCounter(RotationPhase.reencrypting, p)!.done, 3);
+      expect(rotationCounter(RotationPhase.uploading, p)!.done, 2);
+      expect(rotationCounter(RotationPhase.freezing, p), isNull);
+      expect(rotationCounter(RotationPhase.uploadingSnapshot, p), isNull);
+      expect(rotationCounter(RotationPhase.reencrypting, null), isNull);
+      expect(
+        rotationCounter(
+          RotationPhase.reencrypting,
+          const RotationProgress(done: 0, uploaded: 0, total: 0),
+        ),
+        isNull,
+      );
+    });
+  });
+
+  group('Mantenimiento: cuenta anterior (M7) y restos (M11)', () {
+    testWidgets('borrar la cuenta anterior: solo aparece con cuenta anterior '
+        'y pide confirmación clara', (tester) async {
+      final env = await _env(
+        tester,
+        plan: const RotationPlan(
+          items: 1,
+          uploadBytes: 1,
+          cloudOnlyBytes: 0,
+          pendingUploads: 0,
+          lostThumbnails: 0,
+          quota: null,
+          enoughDriveSpace: true,
+          signedIn: true,
+          oldAccountKept: 'vieja@example.com',
+        ),
+      );
+      final svc = env.service as TestRotationService;
+      await _open(tester, env);
+      await tester.tap(find.text('Borrar datos de la cuenta anterior'));
+      await _anim(tester);
+      expect(find.text('¿Borrar los datos de la cuenta anterior?'), findsOne);
+      expect(find.textContaining('PARA SIEMPRE'), findsOneWidget);
+      expect(find.textContaining('que guarda vieja@example.com'), findsOne);
+      expect(find.textContaining('cuenta actual, que no se toca'), findsOne);
+      await tester.tap(find.text('Cancelar'));
+      await _anim(tester);
+      expect(svc.oldAccountDeletes, 0);
+
+      await tester.tap(find.text('Borrar datos de la cuenta anterior'));
+      await _anim(tester);
+      await tester.tap(find.text('Elegir cuenta y borrar'));
+      await _settle(tester);
+      expect(svc.oldAccountDeletes, 1);
+      expect(find.textContaining('borrados (3 archivos)'), findsOneWidget);
+    });
+
+    testWidgets('sin cuenta anterior no hay botón; si falla, lo dice', (
+      tester,
+    ) async {
+      final env = await _env(tester, plan: _plan);
+      await _open(tester, env);
+      expect(find.text('Borrar datos de la cuenta anterior'), findsNothing);
+      expect(find.text('Limpiar restos de cambios de llave'), findsOneWidget);
+    });
+
+    testWidgets('un error de la cuenta se muestra y no rompe la pantalla', (
+      tester,
+    ) async {
+      final env = await _env(
+        tester,
+        plan: const RotationPlan(
+          items: 1,
+          uploadBytes: 1,
+          cloudOnlyBytes: 0,
+          pendingUploads: 0,
+          lostThumbnails: 0,
+          quota: null,
+          enoughDriveSpace: true,
+          signedIn: true,
+          oldAccountKept: 'vieja@example.com',
+        ),
+      );
+      (env.service as TestRotationService).deleteOldFailure =
+          const RotationException('Elegiste otra cuenta.');
+      await _open(tester, env);
+      await tester.tap(find.text('Borrar datos de la cuenta anterior'));
+      await _anim(tester);
+      await tester.tap(find.text('Elegir cuenta y borrar'));
+      await _settle(tester);
+      expect(find.text('Elegiste otra cuenta.'), findsOneWidget);
+    });
+
+    testWidgets('limpiar restos: sin restos avisa; con restos confirma con '
+        'cifras y limpia', (tester) async {
+      final env = await _env(tester, plan: _plan);
+      final svc = env.service as TestRotationService;
+      await _open(tester, env);
+      await tester.tap(find.text('Limpiar restos de cambios de llave'));
+      await _settle(tester);
+      expect(find.text('No hay restos que limpiar'), findsOneWidget);
+      expect(svc.cleans, 0);
+
+      svc.scan = const LeftoversScan(
+        cloudAbandoned: 4,
+        cloudStale: 2,
+        cloudBytes: 3 * settingsMb,
+        localFiles: 5,
+      );
+      await tester.tap(find.text('Limpiar restos de cambios de llave'));
+      await _anim(tester);
+      expect(find.text('¿Limpiar restos de cambios de llave?'), findsOne);
+      expect(find.textContaining('6 archivo(s) de tu Google Drive'), findsOne);
+      expect(find.textContaining('5 del teléfono'), findsOneWidget);
+      await tester.tap(find.text('Cancelar'));
+      await _anim(tester);
+      expect(svc.cleans, 0);
+
+      await tester.tap(find.text('Limpiar restos de cambios de llave'));
+      await _anim(tester);
+      await tester.tap(find.text('Limpiar'));
+      await _settle(tester);
+      expect(svc.cleans, 1);
+      expect(find.textContaining('Limpieza hecha: 6 en Drive'), findsOne);
+    });
+
+    testWidgets('durante una rotación no se ofrece la limpieza', (
+      tester,
+    ) async {
+      final env = await _env(tester);
+      await _prepare(tester, env);
+      await _setPhase(tester, env, RotationPhase.reencrypting);
+      await _open(tester, env);
+      expect(find.text('Limpiar restos de cambios de llave'), findsNothing);
+      expect(find.text('Borrar datos de la cuenta anterior'), findsNothing);
     });
   });
 

@@ -100,6 +100,28 @@ class TestRotationService extends KeyRotationService {
   Future<RotationPlan> plan() async =>
       fixedPlan ?? (throw UnimplementedError('sin BD'));
 
+  /// Limpiezas (sin BD ni nube reales: solo se registran las llamadas).
+  int oldAccountDeletes = 0;
+  int cleans = 0;
+  LeftoversScan scan = const LeftoversScan();
+  Object? deleteOldFailure;
+
+  @override
+  Future<int> deleteOldAccountData() async {
+    oldAccountDeletes++;
+    if (deleteOldFailure != null) throw deleteOldFailure!;
+    return 3;
+  }
+
+  @override
+  Future<LeftoversScan> scanLeftovers() async => scan;
+
+  @override
+  Future<LeftoversScan> cleanLeftovers() async {
+    cleans++;
+    return scan;
+  }
+
   @override
   Future<int> dropMissingItems() async {
     drops++;

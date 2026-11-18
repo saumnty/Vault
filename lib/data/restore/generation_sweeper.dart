@@ -34,6 +34,61 @@ class GenerationSweeper {
 
   final CloudStorage cloud;
 
+  /// M11 (limpieza manual, D73): nombres `.kN` con `N > currentGen` cuya
+  /// generación NO tiene `recovery_backup.kN.json` (sin respaldo nadie puede
+  /// restaurar con ella: es el resto de una rotación interrumpida y
+  /// cancelada o de otra rama abandonada). Nunca incluye la cuarentena
+  /// `lost_*`, ni nada de generaciones `<= currentGen`, ni nombres ajenos a
+  /// Vault. Solo lee la lista.
+  Future<List<CloudFile>> findAbandoned({required int currentGen}) async {
+    final all = await cloud.list();
+    final withBackup = <int>{
+      for (final f in all)
+        if (CloudNames.parse(f.name)?.kind == CloudNameKind.recoveryBackup)
+          CloudNames.parse(f.name)!.gen,
+    };
+    return [
+      for (final f in all)
+        if (_isAbandoned(CloudNames.parse(f.name), currentGen, withBackup)) f,
+    ];
+  }
+
+  static bool _isAbandoned(CloudNameInfo? i, int currentGen, Set<int> backed) =>
+      i != null &&
+      i.kind != CloudNameKind.quarantine &&
+      i.kind != CloudNameKind.recoveryBackup &&
+      i.kind != CloudNameKind.bridgeBackup &&
+      i.gen > currentGen &&
+      !backed.contains(i.gen);
+
+  /// Generaciones anteriores a [currentGen] que [sweep] borraría (sin la
+  /// guarda; para la vista previa de la limpieza manual).
+  Future<List<CloudFile>> findStale({required int currentGen}) async {
+    return [
+      for (final f in await cloud.list())
+        if (_isStale(CloudNames.parse(f.name), currentGen)) f,
+    ];
+  }
+
+  static bool _isStale(CloudNameInfo? i, int currentGen) =>
+      i != null && i.kind != CloudNameKind.quarantine && i.gen < currentGen;
+
+  /// Borra [findAbandoned] (permanente). Devuelve cuántos archivos.
+  Future<int> sweepAbandoned({required int currentGen}) async {
+    final victims = await findAbandoned(currentGen: currentGen);
+    var n = 0;
+    for (final f in victims) {
+      try {
+        await cloud.delete(f.id);
+        n++;
+      } on CloudNotFoundException {
+        // ya no estaba
+      }
+    }
+    VaultLog.d('Limpieza de generaciones abandonadas: $n', category: 'sync');
+    return n;
+  }
+
   Future<SweepResult> sweep({
     required int currentGen,
     required String localRecoveryBackupJson,

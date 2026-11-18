@@ -17,6 +17,7 @@ import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
 import '../repositories/vault_data_repository.dart';
 import '../repositories/vault_database.dart';
+import '../restore/generation_sweeper.dart';
 import '../sync/network_monitor.dart';
 import '../sync/sync_preferences.dart';
 import '../sync/sync_queue_repository.dart';
@@ -161,6 +162,38 @@ class RotationPlan {
   final String? oldAccountKept;
 }
 
+/// Restos de generaciones que no son la vigente (limpieza manual, M11/D73).
+@immutable
+class LeftoversScan {
+  const LeftoversScan({
+    this.cloudAbandoned = 0,
+    this.cloudStale = 0,
+    this.cloudBytes = 0,
+    this.localFiles = 0,
+    this.staleSkipped = false,
+  });
+
+  /// Archivos de Drive con generación MAYOR que la vigente y sin respaldo.
+  final int cloudAbandoned;
+
+  /// Archivos de Drive de generaciones MENORES que la vigente.
+  final int cloudStale;
+
+  /// Lo que ocupan en Drive (los dos anteriores).
+  final int cloudBytes;
+
+  /// Archivos locales de una generación distinta a la de su item.
+  final int localFiles;
+
+  /// Solo en el resultado: los de generaciones menores NO se borraron porque
+  /// la guarda del barrido no se cumplió (el conjunto vigente no está
+  /// completo en Drive).
+  final bool staleSkipped;
+
+  int get cloudFiles => cloudAbandoned + cloudStale;
+  bool get isEmpty => cloudFiles == 0 && localFiles == 0;
+}
+
 class RotationException implements Exception {
   const RotationException(this.message);
   final String message;
@@ -244,6 +277,13 @@ class KeyRotationService {
   /// app se recalculan con [loadProblems]).
   final ValueNotifier<RotationProblems?> problems = ValueNotifier(null);
 
+  /// Avance (`37/120 archivos`) leído de lo persistido (D72); `null` si no
+  /// hay rotación o aún no se congeló la cardinalidad.
+  final ValueNotifier<RotationProgress?> progress = ValueNotifier(null);
+
+  /// Una operación manual de limpieza está en curso (excluye una rotación).
+  bool _maintenance = false;
+
   bool _running = false;
   bool get isRunning => _running;
   bool _stopRequested = false;
@@ -282,6 +322,11 @@ class KeyRotationService {
   }) async {
     if (await migrationActive?.call() ?? false) {
       throw const RotationException('Hay un cambio de cuenta en curso.');
+    }
+    if (_maintenance) {
+      throw const RotationException(
+        'Hay una limpieza en curso. Espera a que termine.',
+      );
     }
     final email =
         cloud.currentAccountEmail ?? (await cloud.signInSilently())?.email;
@@ -392,6 +437,9 @@ class KeyRotationService {
         quota == null ||
         limit == null ||
         limit - quota.usedBytes >= upload + upload ~/ 20;
+    // M7: si la cuenta anterior es la que se usa ahora, no hay nada que
+    // ofrecer borrar (nunca se borra la cuenta actual).
+    final kept = await prefs.getOldAccountKept();
     return RotationPlan(
       items: all.length,
       uploadBytes: upload,
@@ -401,9 +449,235 @@ class KeyRotationService {
       quota: quota,
       enoughDriveSpace: enough,
       signedIn: cloud.currentAccountEmail != null,
-      oldAccountKept: await prefs.getOldAccountKept(),
+      oldAccountKept: kept != null && kept != cloud.currentAccountEmail
+          ? kept
+          : null,
       noCopyItems: noCopy,
     );
+  }
+
+  // ------------------------------------------------- avance (contador, D72)
+
+  /// Relee el avance de la BD (barato: dos conteos). Con la BD cerrada o sin
+  /// rotación deja el valor anterior / `null`; nunca lanza.
+  Future<void> refreshProgress() async {
+    try {
+      if (_store.record.value == null) {
+        progress.value = null;
+        return;
+      }
+      final p = await repo.progress();
+      if (p != progress.value) progress.value = p;
+    } on Object {
+      // BD no disponible (bloqueada a mitad): se conserva lo último.
+    }
+  }
+
+  // --------------------------------------- cuenta anterior (M7) y restos (M11)
+
+  /// D72/D73: solo con la bóveda principal abierta, sin rotación ni cambio
+  /// de cuenta en curso ni otra limpieza.
+  Future<void> _requireIdleForMaintenance() async {
+    if (!session.isUnlockedAs(VaultSlot.primary)) {
+      throw const RotationException('Desbloquea tu bóveda para continuar.');
+    }
+    if (_running ||
+        _maintenance ||
+        _store.record.value != null ||
+        await _store.load() != null) {
+      throw const RotationException(
+        'Hay un cambio de llave en curso. Termínalo antes de limpiar.',
+      );
+    }
+    if (await migrationActive?.call() ?? false) {
+      throw const RotationException('Hay un cambio de cuenta en curso.');
+    }
+  }
+
+  /// M7 (D72): borra de forma PERMANENTE los datos de Vault que conserva la
+  /// cuenta de Google ANTERIOR de un cambio de cuenta. Pide elegir esa
+  /// cuenta, comprueba que el correo es el guardado (y distinto del actual)
+  /// ANTES de borrar nada, y al terminar (o fallar) vuelve a la cuenta
+  /// actual. Devuelve cuántos archivos se borraron. Solo la principal (el
+  /// almacenamiento va además envuelto en `SlotGuardedCloudStorage`).
+  Future<int> deleteOldAccountData() async {
+    await _requireIdleForMaintenance();
+    final old = await prefs.getOldAccountKept();
+    if (old == null) {
+      throw const RotationException(
+        'No hay datos de una cuenta anterior que borrar.',
+      );
+    }
+    final current =
+        cloud.currentAccountEmail ?? (await cloud.signInSilently())?.email;
+    if (current == null) {
+      throw const RotationException(
+        'Inicia sesión con tu cuenta actual para continuar.',
+      );
+    }
+    if (current == old) {
+      throw const RotationException(
+        'Esa es la cuenta que usas ahora: no se borra nada.',
+      );
+    }
+    _maintenance = true;
+    final wasPaused = sync.pausedForMigration;
+    // La sincronización normal NO puede subir nada a la cuenta anterior
+    // mientras esté iniciada.
+    sync.pausedForMigration = true;
+    sync.cancel();
+    Object? failure;
+    var deleted = 0;
+    try {
+      await _waitSyncIdle();
+      await cloud.signOut();
+      final account = await cloud.signIn();
+      if (account.email != old || account.email == current) {
+        throw RotationException(
+          'Elegiste otra cuenta. Para borrar, inicia sesión con $old.',
+        );
+      }
+      for (final f in await cloud.list()) {
+        if (CloudNames.parse(f.name) == null) continue; // nada ajeno a Vault
+        try {
+          await cloud.delete(f.id);
+          deleted++;
+        } on CloudNotFoundException {
+          // ya no estaba
+        }
+      }
+      await prefs.clearOldAccountKept();
+      VaultLog.d(
+        'Datos de la cuenta anterior borrados: $deleted',
+        category: 'rotation',
+      );
+    } on Object catch (e) {
+      failure = e;
+    } finally {
+      // Siempre de vuelta a la cuenta actual (nunca se queda la anterior).
+      try {
+        if (cloud.currentAccountEmail != current) {
+          if (cloud.currentAccountEmail != null) await cloud.signOut();
+          final back = await cloud.signIn();
+          if (back.email != current && failure == null) {
+            failure = RotationException(
+              'Datos borrados. Inicia sesión con $current para seguir '
+              'sincronizando.',
+            );
+          }
+        }
+      } on Object catch (e) {
+        failure ??= RotationException(
+          'Inicia sesión con $current para seguir sincronizando.',
+        );
+        VaultLog.e('Volver a la cuenta actual', e, 'rotation');
+      }
+      sync.pausedForMigration = wasPaused;
+      _maintenance = false;
+      unawaited(
+        sync.refreshCounts().catchError((Object _) {
+          // BD cerrada (bloqueo a mitad): el resumen se rehace al desbloquear
+        }),
+      );
+    }
+    if (failure != null) throw failure;
+    return deleted;
+  }
+
+  /// Vista previa de la limpieza manual (M11, D73): no borra nada.
+  Future<LeftoversScan> scanLeftovers() async {
+    await _requireIdleForMaintenance();
+    final gen = await auth.currentKeyGen();
+    await _requireCloudAccount();
+    final sweeper = GenerationSweeper(cloud: cloud);
+    final abandoned = await sweeper.findAbandoned(currentGen: gen);
+    final stale = await sweeper.findStale(currentGen: gen);
+    return LeftoversScan(
+      cloudAbandoned: abandoned.length,
+      cloudStale: stale.length,
+      cloudBytes: [...abandoned, ...stale].fold(0, (a, f) => a + f.size),
+      localFiles: (await _localStale()).length,
+    );
+  }
+
+  /// Borra los restos (Drive y teléfono). Vuelve a comprobar que no hay
+  /// rotación justo antes de borrar. Las generaciones MENORES a la vigente
+  /// solo se borran con la guarda de [GenerationSweeper.sweep]; las MAYORES
+  /// solo si no tienen respaldo (nadie restaura con ellas).
+  Future<LeftoversScan> cleanLeftovers() async {
+    await _requireIdleForMaintenance();
+    final gen = await auth.currentKeyGen();
+    await _requireCloudAccount();
+    _maintenance = true;
+    try {
+      final sweeper = GenerationSweeper(cloud: cloud);
+      final abandoned = await sweeper.findAbandoned(currentGen: gen);
+      final stale = await sweeper.findStale(currentGen: gen);
+      var staleSkipped = false;
+      var cloudStale = 0;
+      if (stale.isNotEmpty) {
+        final local = await auth.exportRecoveryBackup();
+        final r = local == null
+            ? SweepResult.guardFailed
+            : await sweeper.sweep(
+                currentGen: gen,
+                localRecoveryBackupJson: local,
+              );
+        staleSkipped = r == SweepResult.guardFailed;
+        if (!staleSkipped) cloudStale = stale.length;
+      }
+      final cloudAbandoned = await sweeper.sweepAbandoned(currentGen: gen);
+      var local = 0;
+      for (final f in await _localStale()) {
+        await _delete(f);
+        local++;
+      }
+      return LeftoversScan(
+        cloudAbandoned: cloudAbandoned,
+        cloudStale: cloudStale,
+        cloudBytes: [
+          ...abandoned,
+          if (!staleSkipped) ...stale,
+        ].fold(0, (a, f) => a + f.size),
+        localFiles: local,
+        staleSkipped: staleSkipped,
+      );
+    } finally {
+      _maintenance = false;
+    }
+  }
+
+  Future<void> _requireCloudAccount() async {
+    final email =
+        cloud.currentAccountEmail ?? (await cloud.signInSilently())?.email;
+    if (email == null) {
+      throw const RotationException(
+        'Inicia sesión con Google para limpiar los restos de Drive.',
+      );
+    }
+  }
+
+  /// Archivos locales `<id>[.kN].vault|thumb` de un item que EXISTE pero cuya
+  /// generación no es la de su fila (restos de una rotación). No toca los de
+  /// items sin fila (otro barrido), ni `.part`.
+  Future<List<File>> _localStale() async {
+    final gens = {for (final i in await items.getAllItems()) i.id: i.keyGen};
+    final out = <File>[];
+    for (final dir in [AppPaths.vaultDir, AppPaths.thumbsDir]) {
+      if (!dir.existsSync()) continue;
+      for (final f in dir.listSync().whereType<File>()) {
+        final name = f.uri.pathSegments.last;
+        final info = CloudNames.parse(name);
+        if (info == null || info.itemId == null) continue;
+        if (info.kind != CloudNameKind.file &&
+            info.kind != CloudNameKind.thumb) {
+          continue;
+        }
+        final cur = gens[info.itemId];
+        if (cur != null && cur != info.gen) out.add(f);
+      }
+    }
+    return out;
   }
 
   /// Detiene el flujo (se reanuda con [resume]). Lo llama el bloqueo.
@@ -708,6 +982,7 @@ class KeyRotationService {
           itemsDone: done,
           itemsTotal: pending.length,
         );
+        await refreshProgress();
       }
       _crash(RotationCrashPoint.itemDone);
     }
@@ -1144,6 +1419,7 @@ class KeyRotationService {
         return false;
       }
       await sync.run(manual: true);
+      await refreshProgress();
       final phase = sync.summary.value.phase;
       if (phase == SyncPhase.offline ||
           phase == SyncPhase.waitingWifi ||
@@ -1408,12 +1684,14 @@ class KeyRotationService {
       running: running,
       message: rec.lastError ?? _lastMessage,
     );
+    unawaited(refreshProgress());
   }
 
   Future<void> _publish({bool keepMessage = false}) async {
     final rec = await _store.load();
     if (rec == null) {
       problems.value = null;
+      progress.value = null;
       // Recién terminada: se conserva "Rotación terminada" para la UI.
       if (!status.value.finished) status.value = const RotationStatus();
       return;
@@ -1423,5 +1701,6 @@ class KeyRotationService {
       message: rec.lastError ?? (keepMessage ? status.value.message : null),
       needsPin: status.value.needsPin,
     );
+    await refreshProgress();
   }
 }

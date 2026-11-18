@@ -894,6 +894,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             if (_rotation != null)
                               RotationBanner(
                                 record: _rotation!.auth.rotationStore.record,
+                                progress: _rotation!.progress,
                                 onTap: () =>
                                     _openRotation(RotationReason.rotateKey),
                               ),

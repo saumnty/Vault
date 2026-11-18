@@ -10,6 +10,7 @@ import '../../core/theme/app_radii.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
 import '../../data/rotation/key_rotation_service.dart';
+import '../../data/rotation/rotation_repository.dart' show RotationProgress;
 import '../../shared/format.dart';
 import '../../shared/navigation/app_page_route.dart';
 import '../../shared/widgets/app_buttons.dart';
@@ -37,6 +38,23 @@ String rotationPhaseLabel(RotationPhase p) => switch (p) {
   RotationPhase.blockedForeign =>
     'Hay restos de un cambio de llave que no es de esta bóveda',
 };
+
+/// Contador `37/120 archivos` (D72) a partir del avance persistido: durante
+/// el re-cifrado cuenta los ya re-cifrados; durante la subida, los ya subidos.
+/// `null` en las demás fases o sin cifras.
+({int done, int total, String text})? rotationCounter(
+  RotationPhase phase,
+  RotationProgress? p,
+) {
+  if (p == null || p.total <= 0) return null;
+  final (done, verb) = switch (phase) {
+    RotationPhase.reencrypting => (p.done, 'Re-cifrando'),
+    RotationPhase.uploading => (p.uploaded, 'Subiendo'),
+    _ => (-1, ''),
+  };
+  if (done < 0) return null;
+  return (done: done, total: p.total, text: '$verb: $done/${p.total} archivos');
+}
 
 /// Qué código sirve en este momento (tabla del §8).
 String rotationCodeAdvice(RotationRecord rec) {
@@ -143,6 +161,7 @@ class _KeyRotationScreenState extends State<KeyRotationScreen> {
 
   Future<void> _init() async {
     final rec = await _auth.rotationRecord();
+    unawaited(_s.refreshProgress());
     if (rec == null) {
       try {
         final plan = await _s.plan();
@@ -315,6 +334,64 @@ class _KeyRotationScreenState extends State<KeyRotationScreen> {
     unawaited(_s.resume());
   }
 
+  /// M7 (D72): borra lo que conserva la cuenta de Google anterior.
+  Future<void> _deleteOldAccount() async {
+    final old = _plan?.oldAccountKept;
+    if (old == null) return;
+    final ok = await showConfirmSheet(
+      context,
+      title: '¿Borrar los datos de la cuenta anterior?',
+      message:
+          'Se borrarán PARA SIEMPRE (sin papelera ni versiones) todos los '
+          'archivos de Vault que guarda $old. Primero elige esa cuenta de '
+          'Google; al terminar volverás a la cuenta actual, que no se toca. '
+          'Después, esa cuenta ya no podrá restaurar tu bóveda.',
+      confirmLabel: 'Elegir cuenta y borrar',
+      destructive: true,
+    );
+    if (!ok || !mounted) return;
+    await _guard(() async {
+      final n = await _s.deleteOldAccountData();
+      _snack('Datos de la cuenta anterior borrados ($n archivos)');
+      final plan = await _s.plan();
+      if (mounted) setState(() => _plan = plan);
+    });
+  }
+
+  /// M11 (D73): limpieza manual de generaciones que no son la vigente.
+  Future<void> _cleanLeftovers() async {
+    await _guard(() async {
+      final scan = await _s.scanLeftovers();
+      if (scan.isEmpty) {
+        _snack('No hay restos que limpiar');
+        return;
+      }
+      if (!mounted) return;
+      final ok = await showConfirmSheet(
+        context,
+        title: '¿Limpiar restos de cambios de llave?',
+        message:
+            'Se borrarán PARA SIEMPRE ${scan.cloudFiles} archivo(s) de tu '
+            'Google Drive (${formatBytes(scan.cloudBytes)}) y '
+            '${scan.localFiles} del teléfono que pertenecen a una llave que '
+            'ya no se usa (restos de un cambio de llave interrumpido). No se '
+            'toca nada de la llave vigente. No lo hagas si estás cambiando la '
+            'llave desde otro teléfono.',
+        confirmLabel: 'Limpiar',
+        destructive: true,
+      );
+      if (!ok || !mounted) return;
+      final r = await _s.cleanLeftovers();
+      _snack(
+        r.staleSkipped
+            ? 'Limpieza parcial: la copia vigente aún no está completa en '
+                  'Drive, no se borró lo anterior.'
+            : 'Limpieza hecha: ${r.cloudFiles} en Drive y ${r.localFiles} en '
+                  'el teléfono.',
+      );
+    });
+  }
+
   Future<void> _reactivateBiometric() async {
     await _guard(() async {
       await _auth.enableBiometricUnlock();
@@ -365,6 +442,7 @@ class _KeyRotationScreenState extends State<KeyRotationScreen> {
                     listenable: Listenable.merge([
                       _s.status,
                       _s.problems,
+                      _s.progress,
                       _auth.rotationStore.record,
                     ]),
                     builder: (context, _) {
@@ -442,6 +520,24 @@ class _KeyRotationScreenState extends State<KeyRotationScreen> {
         label: 'Ahora no',
         onPressed: () => Navigator.of(context).maybePop(),
       ),
+      const SizedBox(height: AppSpacing.lg),
+      _Block(
+        title: 'Mantenimiento',
+        lines: [
+          'Si un cambio de llave se interrumpió, pueden quedar archivos de '
+              'una llave que ya no se usa.',
+        ],
+      ),
+      const SizedBox(height: AppSpacing.sm),
+      if (plan?.oldAccountKept != null)
+        AppTextButton(
+          label: 'Borrar datos de la cuenta anterior',
+          onPressed: _busy ? null : _deleteOldAccount,
+        ),
+      AppTextButton(
+        label: 'Limpiar restos de cambios de llave',
+        onPressed: _busy ? null : _cleanLeftovers,
+      ),
     ];
   }
 
@@ -449,7 +545,11 @@ class _KeyRotationScreenState extends State<KeyRotationScreen> {
     final phase = rec.phase;
     final effective = rec.effectivePhase;
     final blocked = phase.isBlocked;
-    final total = st.itemsTotal;
+    // D72: el contador sale de lo persistido (sobrevive a reiniciar la app);
+    // la cifra en memoria del re-cifrado en curso es el respaldo.
+    final counter = rotationCounter(effective, _s.progress.value);
+    final total = counter?.total ?? st.itemsTotal;
+    final doneCount = counter?.done ?? st.itemsDone;
     return [
       Semantics(
         header: true,
@@ -466,7 +566,7 @@ class _KeyRotationScreenState extends State<KeyRotationScreen> {
           borderRadius: AppRadii.pillAll,
           child: LinearProgressIndicator(
             key: const ValueKey('rotation-progress'),
-            value: total > 0 ? st.itemsDone / total : null,
+            value: total > 0 ? doneCount / total : null,
             minHeight: AppSizes.progressBarHeight,
             color: AppColors.accent,
             backgroundColor: AppColors.surfaceHighest,
@@ -474,7 +574,11 @@ class _KeyRotationScreenState extends State<KeyRotationScreen> {
         ),
       if (total > 0) ...[
         const SizedBox(height: AppSpacing.xs),
-        Text('${st.itemsDone} de $total', style: AppTypography.caption),
+        Text(
+          counter?.text ?? '$doneCount de $total',
+          key: const ValueKey('rotation-counter'),
+          style: AppTypography.caption,
+        ),
       ],
       if ((rec.lastError ?? st.message) != null) ...[
         const SizedBox(height: AppSpacing.sm),
@@ -842,21 +946,34 @@ class _PlanBlock extends StatelessWidget {
 
 /// Aviso en la cuadrícula y en Ajustes mientras hay un cambio de llave.
 class RotationBanner extends StatelessWidget {
-  const RotationBanner({super.key, required this.record, required this.onTap});
+  const RotationBanner({
+    super.key,
+    required this.record,
+    required this.onTap,
+    this.progress,
+  });
 
   final ValueListenable<RotationRecord?> record;
   final VoidCallback onTap;
 
+  /// Avance persistido (D72) para el contador «37/120 archivos».
+  final ValueListenable<RotationProgress?>? progress;
+
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<RotationRecord?>(
-      valueListenable: record,
-      builder: (context, rec, _) {
+    return ListenableBuilder(
+      listenable: Listenable.merge([record, ?progress]),
+      builder: (context, _) {
+        final rec = record.value;
         if (rec == null) return const SizedBox.shrink();
+        final counter = rotationCounter(rec.effectivePhase, progress?.value);
         final text = rec.phase.isBlocked
             ? 'Cambio de llave maestra en pausa. Toca para ver qué hacer.'
             : rec.phase == RotationPhase.prepared
             ? 'Cambio de llave maestra: falta confirmar tu código nuevo.'
+            : counter != null
+            ? 'Cambiando la llave maestra · ${counter.text} · Mantén Vault '
+                  'abierta.'
             : 'Cambiando la llave maestra · Mantén Vault abierta.';
         return Padding(
           padding: AppSpacing.pageHorizontal,
