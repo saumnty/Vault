@@ -1,10 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
+import '../logging/diagnostics_buffer.dart';
+import '../security/platform_security.dart';
+import '../services/app_paths.dart';
 import '../session/vault_session.dart';
 import 'biometric_key_store.dart';
 import 'crypto_debug.dart';
@@ -33,6 +37,48 @@ class RotationInProgressException implements Exception {
   @override
   String toString() => 'RotationInProgressException: $message';
 }
+
+/// Fase 8 (D71): el PIN elegido no se puede usar (igual o demasiado parecido
+/// al de la otra bóveda). El mensaje es NEUTRO: no dice por qué.
+class PinNotAllowedException implements Exception {
+  const PinNotAllowedException([this.reason = PinNotAllowedReason.collision]);
+  final PinNotAllowedReason reason;
+
+  /// Texto para el usuario (no revela nada de la otra bóveda).
+  static const String message = 'Ese PIN no está disponible. Elige otro.';
+
+  @override
+  String toString() => 'PinNotAllowedException(${reason.name})';
+}
+
+/// Motivo interno (pruebas y registro; la UI muestra siempre
+/// [PinNotAllowedException.message]).
+enum PinNotAllowedReason {
+  /// Igual al PIN de la otra bóveda.
+  collision,
+
+  /// Difiere en menos de 2 posiciones del principal (6 dígitos).
+  tooClose,
+
+  /// Empieza por el PIN principal heredado (4-5 dígitos): un "Entrar"
+  /// temprano abriría la principal (M6).
+  prefix,
+}
+
+/// Fase 8: la operación sobre la bóveda secundaria no se puede hacer (ya
+/// existe, no existe, está dañada, o la sesión no es la principal).
+class SecondaryVaultException implements Exception {
+  const SecondaryVaultException(this.message);
+  final String message;
+  @override
+  String toString() => 'SecondaryVaultException: $message';
+}
+
+/// Estado de la bóveda secundaria (Ajustes de la principal).
+enum SecondaryVaultStatus { none, active, damaged }
+
+/// Resultado de [AuthController.changeSecondaryPin].
+enum ChangeSecondaryPinResult { changed, wrongPrimaryPin, wrongSecondaryPin }
 
 /// Un desbloqueo en curso fue cancelado porque se bloqueó la app ([lock])
 /// mientras se derivaba la llave: la sesión NO se abre.
@@ -99,7 +145,11 @@ class AuthController {
     VaultSession? session,
     Random? random,
     RotationKeyStore? rotationStore,
-  }) : _storage = storage ?? FlutterSecureKeyValueStore(),
+    Future<void> Function(String absolutePath)? excludeFromBackup,
+  }) : _excludeFromBackup =
+           excludeFromBackup ??
+           ((path) => PlatformSecurity.instance.excludeFromBackup([path])),
+       _storage = storage ?? FlutterSecureKeyValueStore(),
        _biometrics = biometricStore ?? SystemBiometricKeyStore(),
        _kdf = kdfParams,
        _session = session ?? VaultSession(),
@@ -145,6 +195,14 @@ class AuthController {
   /// Fase 8 (D67): marca C1 de la BD de la bóveda SECUNDARIA.
   static const String altDbCreatedKey = 'vault.v1.alt.db_created';
 
+  /// Fase 8 (D65/D66): DEK de la bóveda SECUNDARIA envuelta con su PIN
+  /// ([WrapPurpose.altPin], mismos parámetros de Argon2id que la principal).
+  /// Su PRESENCIA marca que la secundaria existe.
+  static const String altPinEnvelopeKey = 'vault.v1.alt.pin_envelope';
+
+  /// Todas las claves de la bóveda secundaria (se borran juntas).
+  static const List<String> allAltKeys = [altPinEnvelopeKey, altDbCreatedKey];
+
   /// Marca C1 de la BD de la bóveda [slot].
   static String dbCreatedKeyFor(VaultSlot slot) => switch (slot) {
     VaultSlot.primary => dbCreatedKey,
@@ -170,6 +228,14 @@ class AuthController {
   late final PinAttemptLimiter _restoreLimiter;
   late final KeyRecoveryService _recovery;
   final RotationKeyStore _rotation;
+
+  /// iOS: excluye del respaldo de iCloud la raíz de la secundaria al crearla
+  /// (M2: el arranque solo la excluye si ya existe).
+  final Future<void> Function(String absolutePath) _excludeFromBackup;
+
+  /// Última bóveda abierta (B5: el diagnóstico en memoria se vacía al
+  /// cambiar de bóveda).
+  VaultSlot? _lastOpenedSlot;
 
   /// Llaves de la DEK NUEVA mientras la rotación está en `prepared`..
   /// `freezing` (solo en memoria, nunca en la sesión: hasta congelar, todo lo
@@ -353,15 +419,33 @@ class AuthController {
     final sw = Stopwatch()..start();
     cryptoDebugLog('unlock#$id: inicio (${pin.length} dígitos)');
     try {
-      final dek = await _verifyPin(pin, id);
-      if (dek == null) {
+      // A2 (fase 8): con la sesión ABIERTA solo se prueba la envoltura de la
+      // bóveda abierta y nunca se cambia de bóveda. Con la principal abierta
+      // es exactamente el camino de siempre (una derivación).
+      final open = _session.slot;
+      final (VaultSlot, Uint8List)? hit;
+      if (open == VaultSlot.secondary) {
+        final d = await _verifyAltOnly(pin);
+        hit = d == null ? null : (VaultSlot.secondary, d);
+      } else if (open == VaultSlot.primary) {
+        final d = await _verifyPin(pin, id);
+        hit = d == null ? null : (VaultSlot.primary, d);
+      } else {
+        hit = await _verifyPinAny(pin, id);
+      }
+      if (hit == null) {
         cryptoDebugLog(
           'unlock#$id: fin INCORRECTO (${sw.elapsedMilliseconds} ms)',
         );
         return false;
       }
+      final (slot, dek) = hit;
       try {
-        await _openSession(dek, gen, pin: pin);
+        if (slot == VaultSlot.primary) {
+          await _openSession(dek, gen, pin: pin);
+        } else {
+          await _openSecondary(dek, gen);
+        }
         cryptoDebugLog('unlock#$id: fin OK (${sw.elapsedMilliseconds} ms)');
         return true;
       } finally {
@@ -373,6 +457,26 @@ class AuthController {
       );
       rethrow;
     }
+  }
+
+  /// A2 (fase 8): reautenticación DENTRO de la sesión principal (pantalla de
+  /// la rotación: recupera la llave nueva con el PIN). Solo prueba la
+  /// envoltura principal y nunca cambia de bóveda. Exige la principal
+  /// abierta ([StateError] si no). `false` = PIN incorrecto (cuenta intento).
+  Future<bool> reauthPrimary(String pin) {
+    final gen = _lockGeneration;
+    return _serialized(() async {
+      _requirePrimarySession(strict: true);
+      final dek = await _verifyPin(pin, ++_attemptSeq);
+      if (dek == null) return false;
+      try {
+        _requirePrimarySession(strict: true); // B6
+        await _openSession(dek, gen, pin: pin);
+        return true;
+      } finally {
+        dek.fillRange(0, dek.length, 0);
+      }
+    });
   }
 
   // Desbloqueo por PIN en vuelo (para fusionar duplicados).
@@ -423,10 +527,33 @@ class AuthController {
   }) async {
     _checkPin(newPin);
     return _serialized(() async {
+      _requirePrimarySession();
       await _requireNoRotation();
       final dek = await _verifyPin(oldPin, ++_attemptSeq);
       if (dek == null) return false;
       try {
+        // Fase 8 (D71): el PIN nuevo no puede abrir la secundaria (un Argon2id
+        // más; sin oráculo: exige el PIN principal). Mensaje neutro.
+        String? altRaw;
+        try {
+          altRaw = await _storage.read(altPinEnvelopeKey);
+        } on Object {
+          altRaw = null;
+        }
+        if (altRaw != null) {
+          final raw = await _storage.read(pinEnvelopeKey);
+          final kdf = WrappedKey.decode(
+            raw!,
+            expectedPurpose: WrapPurpose.pin,
+          ).kdf;
+          final alt = _usableAlt(altRaw, kdf);
+          final opened = await alt?.unwrap(utf8.encode(newPin));
+          if (opened != null) {
+            opened.fillRange(0, opened.length, 0);
+            throw const PinNotAllowedException();
+          }
+        }
+        _requirePrimarySession(); // B6
         // ÚNICO flujo (junto con crear/restaurar) que genera un salt nuevo
         // para la envoltura del PIN.
         final envelope = await _wrapWithPin(dek, newPin);
@@ -481,6 +608,407 @@ class AuthController {
   }
 
   // ---------------------------------------------------------------------
+  // Bóveda secundaria (fase 8, docs/DISENO_SENUELO.md §3, §6, §8)
+  // ---------------------------------------------------------------------
+
+  /// Envoltura de la secundaria UTILIZABLE para desbloquear: decodifica con
+  /// propósito `altPin` y sus parámetros de Argon2id son EXACTAMENTE los de
+  /// la envoltura principal (M3: una envoltura manipulada nunca ralentiza ni
+  /// tumba el desbloqueo de la principal). `null` si no existe o no vale
+  /// (G6: jamás impide abrir la principal).
+  WrappedKey? _usableAlt(String? raw, Argon2Params primaryKdf) {
+    if (raw == null) return null;
+    try {
+      final w = WrappedKey.decode(raw, expectedPurpose: WrapPurpose.altPin);
+      // Los de la envoltura principal o los de la app (si algún día cambian
+      // los de producción, un cambio de PIN de la principal no la invalida).
+      return w.kdf == primaryKdf || w.kdf == _kdf ? w : null;
+    } on Object {
+      return null;
+    }
+  }
+
+  /// Con la sesión BLOQUEADA (pantalla del PIN). Sin secundaria es
+  /// EXACTAMENTE [_verifyPin] (una derivación, G1). Con secundaria:
+  ///
+  /// * las dos derivaciones se lanzan SIEMPRE y EN PARALELO y se decide al
+  ///   terminar ambas: el tiempo no depende de cuál acierta (D66);
+  /// * un solo contador de intentos (el de siempre), pesimista;
+  /// * C1: solo acertar la PRINCIPAL lo pone a cero; acertar la secundaria
+  ///   deshace únicamente su propio incremento (vuelve al estado previo).
+  Future<(VaultSlot, Uint8List)?> _verifyPinAny(String pin, int id) async {
+    final raw = await _storage.read(pinEnvelopeKey);
+    if (raw == null) {
+      cryptoDebugLog('unlock#$id: NO hay envoltura del PIN guardada');
+      throw StateError('No hay bóveda en este dispositivo');
+    }
+    String? altRaw;
+    try {
+      altRaw = await _storage.read(altPinEnvelopeKey);
+    } on Object {
+      altRaw = null; // G6: la secundaria nunca impide abrir la principal
+    }
+    if (altRaw == null) {
+      final d = await _verifyPin(pin, id);
+      return d == null ? null : (VaultSlot.primary, d);
+    }
+    await _limiter.ensureNotLocked();
+    final before = await _limiter.rawState();
+    await _limiter.registerFailure();
+    final envelope = WrappedKey.decode(raw, expectedPurpose: WrapPurpose.pin);
+    final alt = _usableAlt(altRaw, envelope.kdf);
+    if (alt == null) {
+      // Dañada (o con otros parámetros): solo la principal, sin derivar la
+      // otra. Se nota en el tiempo; la secundaria no se puede usar igualmente.
+      final dek = await envelope.unwrap(utf8.encode(pin));
+      if (dek == null) return null;
+      await _limiter.reset();
+      return (VaultSlot.primary, dek);
+    }
+    final secret = utf8.encode(pin);
+    Future<Uint8List?> safe(Future<Uint8List?> f) async {
+      try {
+        return await f;
+      } on Object {
+        return null;
+      }
+    }
+
+    final results = await Future.wait<Object?>([
+      envelope.unwrap(secret).then<Object?>((v) => v, onError: (Object e) => e),
+      safe(alt.unwrap(secret)),
+    ]);
+    final res = results[0];
+    final s = results[1] as Uint8List?;
+    if (res != null && res is! Uint8List) {
+      // Error de la principal (como hoy): se propaga sin dejar la otra.
+      s?.fillRange(0, s.length, 0);
+      throw res;
+    }
+    final p = res as Uint8List?;
+    if (p != null) {
+      s?.fillRange(0, s.length, 0);
+      await _limiter.reset();
+      return (VaultSlot.primary, p);
+    }
+    if (s != null) {
+      await _limiter.restoreRaw(before);
+      return (VaultSlot.secondary, s);
+    }
+    return null;
+  }
+
+  /// Con la SECUNDARIA abierta (A2): prueba solo su envoltura. Cuenta como
+  /// intento; acertar devuelve el contador a su estado previo (C1).
+  Future<Uint8List?> _verifyAltOnly(String pin) async {
+    final primary = await _storage.read(pinEnvelopeKey);
+    final altRaw = await _storage.read(altPinEnvelopeKey);
+    if (primary == null) throw StateError('No hay bóveda en este dispositivo');
+    final alt = _usableAlt(
+      altRaw,
+      WrappedKey.decode(primary, expectedPurpose: WrapPurpose.pin).kdf,
+    );
+    await _limiter.ensureNotLocked();
+    final before = await _limiter.rawState();
+    await _limiter.registerFailure();
+    if (alt == null) return null;
+    final d = await alt.unwrap(utf8.encode(pin));
+    if (d != null) await _limiter.restoreRaw(before);
+    return d;
+  }
+
+  /// Abre la sesión de la SECUNDARIA (generación 1, sin rotación: NO se lee
+  /// ni se toca nada de la rotación de la principal).
+  Future<void> _openSecondary(Uint8List dek, int gen) async {
+    final keys = await KeyHierarchy.fromDek(dek);
+    _openChecked(VaultKeyring.single(1, keys), gen, slot: VaultSlot.secondary);
+  }
+
+  /// Estas operaciones son de la principal: con la secundaria abierta, nunca
+  /// (B6: se repite tras cada `await` largo antes de escribir). [strict]:
+  /// exige además la principal ABIERTA.
+  void _requirePrimarySession({bool strict = false}) {
+    final open = _session.slot;
+    if (open == VaultSlot.secondary || (strict && open != VaultSlot.primary)) {
+      throw StateError('Disponible solo en la bóveda principal desbloqueada');
+    }
+  }
+
+  /// Reglas del PIN secundario contra el principal, en memoria (D71, M6).
+  static void _checkAltPinRules(String alt, String primary) {
+    if (alt.length != minNewPinLength || !RegExp(r'^\d+$').hasMatch(alt)) {
+      throw ArgumentError('El PIN debe tener $minNewPinLength dígitos');
+    }
+    if (alt == primary) {
+      throw const PinNotAllowedException(PinNotAllowedReason.collision);
+    }
+    if (primary.length == alt.length) {
+      var diff = 0;
+      for (var i = 0; i < alt.length; i++) {
+        if (alt[i] != primary[i]) diff++;
+      }
+      if (diff < 2) {
+        throw const PinNotAllowedException(PinNotAllowedReason.tooClose);
+      }
+    } else if (alt.startsWith(primary)) {
+      throw const PinNotAllowedException(PinNotAllowedReason.prefix);
+    }
+  }
+
+  /// `true` si existe la clave de la secundaria (aunque esté dañada). Un
+  /// error del almacén cuenta como "existe" (lado seguro: p. ej. la pantalla
+  /// del PIN no lanza sola la biometría).
+  Future<bool> hasSecondaryVault() async {
+    try {
+      return await _storage.read(altPinEnvelopeKey) != null;
+    } on Object {
+      return true;
+    }
+  }
+
+  /// Estado de la secundaria para Ajustes de la principal.
+  Future<SecondaryVaultStatus> secondaryStatus() async {
+    final String? raw;
+    final String? created;
+    try {
+      raw = await _storage.read(altPinEnvelopeKey);
+      created = await _storage.read(altDbCreatedKey);
+    } on Object {
+      return SecondaryVaultStatus.damaged;
+    }
+    if (raw == null) return SecondaryVaultStatus.none;
+    final primary = await _storage.read(pinEnvelopeKey);
+    if (primary == null) return SecondaryVaultStatus.damaged;
+    final Argon2Params kdf;
+    try {
+      kdf = WrappedKey.decode(primary, expectedPurpose: WrapPurpose.pin).kdf;
+    } on FormatException {
+      return SecondaryVaultStatus.damaged;
+    }
+    if (_usableAlt(raw, kdf) == null) return SecondaryVaultStatus.damaged;
+    if (!AppPaths.isInitialized) return SecondaryVaultStatus.active;
+    final paths = VaultPaths.secondary;
+    if (!paths.exists) return SecondaryVaultStatus.damaged;
+    if (created == 'true' && !File(paths.dbFilePath).existsSync()) {
+      return SecondaryVaultStatus.damaged;
+    }
+    return SecondaryVaultStatus.active;
+  }
+
+  /// Crea la bóveda secundaria (§8). Exige la principal ABIERTA, sin
+  /// rotación y SIN la clave de la secundaria (aunque esté dañada: primero
+  /// hay que eliminarla). Verifica [primaryPin] (cuenta intento); `false` si
+  /// es incorrecto. Lanza [PinNotAllowedException] si [newPin] no cumple
+  /// las reglas (§6.10) y [SecondaryVaultException] si ya existe.
+  ///
+  /// Orden: (biometría apagada si se pide) → directorio → borrar la marca C1
+  /// → envoltura (la ÚLTIMA escritura, con relectura). No abre la sesión de
+  /// la secundaria: su BD se crea en su primer desbloqueo.
+  Future<bool> createSecondaryVault({
+    required String primaryPin,
+    required String newPin,
+    bool disableBiometrics = false,
+  }) => _serialized(() async {
+    _requirePrimarySession(strict: true);
+    await _requireNoRotation();
+    // M4: lectura sin error y clave AUSENTE (un error del almacén aborta).
+    if (await _storage.read(altPinEnvelopeKey) != null) {
+      throw const SecondaryVaultException('Ya hay una bóveda secundaria');
+    }
+    if (newPin.length != minNewPinLength) {
+      throw ArgumentError('El PIN debe tener $minNewPinLength dígitos');
+    }
+    final dekP = await _verifyPin(primaryPin, ++_attemptSeq);
+    if (dekP == null) return false;
+    final dekS = randomBytes(32, _random);
+    try {
+      _requirePrimarySession(strict: true); // B6
+      _checkAltPinRules(newPin, primaryPin);
+      final primaryKeys = await KeyHierarchy.fromDek(dekP);
+      final primaryCheck = primaryKeys.keyCheck;
+      primaryKeys.destroy();
+      final altKeys = await KeyHierarchy.fromDek(dekS);
+      final altCheck = altKeys.keyCheck;
+      altKeys.destroy();
+      if (altCheck == primaryCheck) {
+        throw StateError('La DEK secundaria coincide con la principal');
+      }
+      final rawPrimary = await _storage.read(pinEnvelopeKey);
+      final kdf = WrappedKey.decode(
+        rawPrimary!,
+        expectedPurpose: WrapPurpose.pin,
+      ).kdf;
+      final envelope = await WrappedKey.wrap(
+        dek: dekS,
+        secret: utf8.encode(newPin),
+        purpose: WrapPurpose.altPin,
+        kdf: kdf,
+        random: _random,
+      );
+      _requirePrimarySession(strict: true); // B6
+      // Directorio (restos de una creación o un borrado interrumpidos: ya
+      // sin envoltura, comprobado arriba).
+      if (!AppPaths.isInitialized) {
+        throw StateError('AppPaths.init() no fue llamado');
+      }
+      final paths = VaultPaths.secondary;
+      _deleteSecondaryDir();
+      paths.ensureDirs();
+      try {
+        await _excludeFromBackup(paths.root.path);
+      } on Object {
+        // iOS: se repite en cada arranque (si existe).
+      }
+      // M5: la biometría se apaga ANTES de que exista la secundaria.
+      if (disableBiometrics) await disableBiometricUnlock();
+      await _storage.delete(altDbCreatedKey);
+      final encoded = envelope.encode();
+      for (var i = 0; i < 3; i++) {
+        await _storage.write(altPinEnvelopeKey, encoded);
+        if (await _storage.read(altPinEnvelopeKey) == encoded) return true;
+      }
+      throw StateError('No se pudo guardar la bóveda secundaria');
+    } finally {
+      dekP.fillRange(0, dekP.length, 0);
+      dekS.fillRange(0, dekS.length, 0);
+    }
+  });
+
+  /// Cambia el PIN de la secundaria DESDE LA PRINCIPAL (C2: dentro de la
+  /// secundaria no existe esta opción, así no hay oráculo). Exige la
+  /// principal abierta, [primaryPin] (cuenta intento) y el PIN secundario
+  /// actual [currentAltPin] (cuenta en el MISMO límite; acertarlo devuelve
+  /// el contador a su estado previo, C1). [newAltPin] sigue las reglas del
+  /// §6.10 (comparado en memoria con [primaryPin]). Misma DEK, envoltura
+  /// nueva con los parámetros de la principal, escrita con relectura.
+  Future<ChangeSecondaryPinResult> changeSecondaryPin({
+    required String primaryPin,
+    required String currentAltPin,
+    required String newAltPin,
+  }) => _serialized(() async {
+    _requirePrimarySession(strict: true);
+    final altRaw = await _storage.read(altPinEnvelopeKey);
+    if (altRaw == null) {
+      throw const SecondaryVaultException('No hay bóveda secundaria');
+    }
+    if (newAltPin.length != minNewPinLength) {
+      throw ArgumentError('El PIN debe tener $minNewPinLength dígitos');
+    }
+    final dekP = await _verifyPin(primaryPin, ++_attemptSeq);
+    if (dekP == null) return ChangeSecondaryPinResult.wrongPrimaryPin;
+    dekP.fillRange(0, dekP.length, 0);
+    _requirePrimarySession(strict: true); // B6
+    final rawPrimary = await _storage.read(pinEnvelopeKey);
+    final kdf = WrappedKey.decode(
+      rawPrimary!,
+      expectedPurpose: WrapPurpose.pin,
+    ).kdf;
+    final alt = _usableAlt(altRaw, kdf);
+    if (alt == null) {
+      throw const SecondaryVaultException('La bóveda secundaria está dañada');
+    }
+    _checkAltPinRules(newAltPin, primaryPin);
+    await _limiter.ensureNotLocked();
+    final before = await _limiter.rawState();
+    await _limiter.registerFailure();
+    final dekS = await alt.unwrap(utf8.encode(currentAltPin));
+    if (dekS == null) return ChangeSecondaryPinResult.wrongSecondaryPin;
+    try {
+      await _limiter.restoreRaw(before);
+      final envelope = await WrappedKey.wrap(
+        dek: dekS,
+        secret: utf8.encode(newAltPin),
+        purpose: WrapPurpose.altPin,
+        kdf: kdf,
+        random: _random,
+      );
+      _requirePrimarySession(strict: true); // B6
+      final encoded = envelope.encode();
+      for (var i = 0; i < 3; i++) {
+        await _storage.write(altPinEnvelopeKey, encoded);
+        if (await _storage.read(altPinEnvelopeKey) == encoded) {
+          return ChangeSecondaryPinResult.changed;
+        }
+      }
+      throw StateError('No se pudo guardar el PIN nuevo');
+    } finally {
+      dekS.fillRange(0, dekS.length, 0);
+    }
+  });
+
+  /// Elimina la secundaria (§6.13), también si está dañada y durante una
+  /// rotación de la principal. Exige la principal abierta y [primaryPin]
+  /// (cuenta intento); `false` si es incorrecto. Orden: la envoltura
+  /// PRIMERO (con relectura) → la marca C1 → el directorio `alt/` (solo
+  /// texto cifrado).
+  Future<bool> deleteSecondaryVault(String primaryPin) => _serialized(() async {
+    _requirePrimarySession(strict: true);
+    final dek = await _verifyPin(primaryPin, ++_attemptSeq);
+    if (dek == null) return false;
+    dek.fillRange(0, dek.length, 0);
+    _requirePrimarySession(strict: true); // B6
+    var gone = false;
+    for (var i = 0; i < 3 && !gone; i++) {
+      await _storage.delete(altPinEnvelopeKey);
+      gone = await _storage.read(altPinEnvelopeKey) == null;
+    }
+    if (!gone) throw StateError('No se pudo eliminar la bóveda secundaria');
+    await _storage.delete(altDbCreatedKey);
+    if (AppPaths.isInitialized) _deleteSecondaryDir();
+    return true;
+  });
+
+  /// Borra `Documents/alt/` comprobando que es exactamente esa ruta.
+  static void _deleteSecondaryDir() {
+    final root = VaultPaths.secondary.root;
+    final docs = AppPaths.baseDir.path;
+    final norm = root.path.replaceAll('\\', '/');
+    if (!norm.endsWith('/${VaultPaths.secondaryRootName}') ||
+        root.parent.path.replaceAll('\\', '/') != docs.replaceAll('\\', '/')) {
+      throw StateError('Ruta inesperada para la bóveda secundaria');
+    }
+    if (root.existsSync()) root.deleteSync(recursive: true);
+  }
+
+  /// Arranque (§9, D65): reconcilia la secundaria con la decisión ya tomada
+  /// sobre la principal ([primaryExists]). Nunca cambia esa decisión, nunca
+  /// borra ante un ERROR del almacén (M4, lanza) y nunca borra una
+  /// secundaria "Dañada" (filas 4 y 5). Sin secundaria no escribe nada (G1).
+  ///
+  /// 1. Sin principal: claves `alt` y `alt/` fuera.
+  /// 2. Principal, sin envoltura `alt` y con `alt/`: `alt/` y la marca fuera.
+  /// 3. Envoltura `alt` (aunque ilegible) y sin `alt/`: claves `alt` fuera.
+  ///
+  /// Corre en el arranque, antes de cualquier desbloqueo: NO pasa por la cola
+  /// de operaciones (no espera a nada de una sesión anterior).
+  Future<void> reconcileSecondaryAtStartup({
+    required bool primaryExists,
+  }) async {
+    if (!AppPaths.isInitialized) return;
+    final envelope = await _storage.read(altPinEnvelopeKey); // M4: lanza
+    final created = await _storage.read(altDbCreatedKey);
+    final dirExists = VaultPaths.secondary.exists;
+    Future<void> dropKeys() async {
+      if (envelope != null) await _storage.delete(altPinEnvelopeKey);
+      if (created != null) await _storage.delete(altDbCreatedKey);
+    }
+
+    if (!primaryExists) {
+      await dropKeys();
+      if (dirExists) _deleteSecondaryDir();
+      return;
+    }
+    if (envelope == null) {
+      if (dirExists) {
+        _deleteSecondaryDir();
+        if (created != null) await _storage.delete(altDbCreatedKey);
+      }
+      return;
+    }
+    if (!dirExists) await dropKeys();
+  }
+
+  // ---------------------------------------------------------------------
   // Recuperación
   // ---------------------------------------------------------------------
 
@@ -502,10 +1030,12 @@ class AuthController {
   /// reemplazaría el respaldo local que la rotación gestiona.
   Future<String?> regenerateRecoveryCode(String pin) {
     return _serialized(() async {
+      _requirePrimarySession();
       await _requireNoRotation();
       final dek = await _verifyPin(pin, ++_attemptSeq);
       if (dek == null) return null;
       try {
+        _requirePrimarySession(); // B6
         final code = _recovery.generateRecoveryCode();
         final backup = await _recovery.createBackup(dek, code);
         await _storage.write(recoveryBackupKey, backup.toJsonString());
@@ -718,6 +1248,8 @@ class AuthController {
   /// Guarda una copia de la DEK en el almacén biométrico del SO. Requiere la
   /// bóveda desbloqueada. Puede lanzar [BiometricCancelledException].
   Future<void> enableBiometricUnlock() async {
+    // Fase 8 (D69): la biometría solo guarda la DEK de la PRINCIPAL.
+    _requirePrimarySession(strict: true);
     if (await _biometrics.availability() != BiometricAvailability.available) {
       throw StateError('La biometría no está disponible en este dispositivo');
     }
@@ -780,12 +1312,22 @@ class AuthController {
   }
 
   /// Abre la sesión salvo que se haya bloqueado desde que empezó el desbloqueo.
-  void _openChecked(VaultKeyring ring, int gen) {
+  void _openChecked(
+    VaultKeyring ring,
+    int gen, {
+    VaultSlot slot = VaultSlot.primary,
+  }) {
     if (gen != _lockGeneration) {
       ring.destroy();
       throw const UnlockCancelledException();
     }
-    _session.openKeyring(ring);
+    _session.openKeyring(ring, slot: slot);
+    // B5 (fase 8): al cambiar de bóveda, el diagnóstico en memoria de la
+    // anterior (entradas tardías) no se ve en la nueva.
+    if (_lastOpenedSlot != null && _lastOpenedSlot != slot) {
+      DiagnosticsBuffer.instance.clear();
+    }
+    _lastOpenedSlot = slot;
   }
 
   Future<void> _safeDeleteBiometricKey() async {
@@ -969,6 +1511,7 @@ class AuthController {
     required String accountEmail,
     RotationReason reason = RotationReason.rotateKey,
   }) => _serialized(() async {
+    _requirePrimarySession();
     await _requireNoRotation();
     final fromGen = await currentKeyGen();
     if (toGen <= fromGen) {
@@ -1037,6 +1580,7 @@ class AuthController {
   /// es incorrecto.
   Future<String?> regenerateNextRecoveryCode(String pin) =>
       _serialized(() async {
+        _requirePrimarySession();
         final rec = await _rotation.load();
         if (rec == null || rec.phase != RotationPhase.prepared) {
           throw const RotationInProgressException(
@@ -1076,6 +1620,7 @@ class AuthController {
   /// conjunto viejo hasta el corte (A2). Devuelve `false` si [code] no es el
   /// de esta rotación. Exige la sesión abierta con la DEK vieja.
   Future<bool> confirmRotationCode(String code) => _serialized(() async {
+    _requirePrimarySession();
     final rec = await _rotation.load();
     if (rec == null) throw const RotationInProgressException('No hay rotación');
     if (rec.phase == RotationPhase.confirmed &&
@@ -1158,6 +1703,7 @@ class AuthController {
   /// ([hasNextKeys]); si no, lanza [RotationInProgressException] y hay que
   /// desbloquear con el PIN.
   Future<void> enterReencrypting() => _serialized(() async {
+    _requirePrimarySession();
     var rec = await _rotation.load();
     if (rec == null) throw const RotationInProgressException('No hay rotación');
     final ring = _session.keyring;
@@ -1205,6 +1751,7 @@ class AuthController {
   /// DEK nueva; se borran las envolturas `next_*` y la sesión queda solo con
   /// la nueva (la vieja se destruye). Idempotente.
   Future<void> switchPrimary() => _serialized(() async {
+    _requirePrimarySession();
     final rec = await _rotation.load();
     if (rec == null) throw const RotationInProgressException('No hay rotación');
     if (rec.effectivePhase != RotationPhase.switchingLocal) {
@@ -1238,6 +1785,7 @@ class AuthController {
   /// almacén seguro; el REGISTRO lo último. Devuelve si la biometría estaba
   /// activa antes (para ofrecer reactivarla). Idempotente.
   Future<bool> finishRotation() => _serialized(() async {
+    _requirePrimarySession();
     final rec = await _rotation.load();
     if (rec == null) return false;
     if (rec.effectivePhase != RotationPhase.finalizingLocal) {
@@ -1266,6 +1814,7 @@ class AuthController {
   Future<bool> verifyLocalRecoveryCode(String code) async {
     if (RecoveryCode.normalize(code) == null) return false;
     return _serialized(() async {
+      _requirePrimarySession();
       final raw = await _storage.read(recoveryBackupKey);
       if (raw == null) return false;
       await _restoreLimiter.ensureNotLocked();

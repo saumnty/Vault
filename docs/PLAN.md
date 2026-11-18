@@ -71,7 +71,7 @@ Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (RE
 | 3 | BD por bóveda (`VaultDatabase.secondaryInstance`), comprobaciones de época en `_open`/`rekeyTo` | ✅🧪 suite 1087; emulador: principal idéntica, sin `alt/` |
 | 4 | Guardas solo-principal: `SlotGuardedCloudStorage`, sync, sin conexión, `onDataChanged`, rotación, migración | ✅🧪 |
 | 5 | Época en operaciones largas (importar, regenerar, Papelera, caché, descargas, exportar, re-cifrado) + arnés de cruce | ✅🧪 suite 1109; emulador: archivos, Papelera y restaurar OK |
-| 6 | `AuthController` y arranque: `altPin`, desbloqueo en paralelo (C1), `reauthPrimary`, crear/cambiar/eliminar, `_reconcileSecondary` | ⬜ |
+| 6 | `AuthController` y arranque: `altPin`, desbloqueo en paralelo (C1), `reauthPrimary`, crear/cambiar/eliminar, `_reconcileSecondary` | ✅🧪 suite 1142; emulador: desbloqueo normal con 1 derivación, sin `alt/` |
 | 7 | `VaultServices.secondary()` y navegación por bóveda en `main.dart`, sin biometría automática | ⬜ |
 | 8 | UI: `SecondaryVaultScreen` y Ajustes reducido con textos neutros | ⬜ |
 | 9 | Batería transversal: aislamiento, principal intacta, convivencia con la rotación, cortes, esquema, SQLCipher real | ⬜ |

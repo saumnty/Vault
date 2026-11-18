@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import '../../core/crypto/auth_controller.dart';
+import '../../core/logging/vault_log.dart';
 import '../../core/services/app_paths.dart';
 import '../repositories/vault_database.dart';
 import 'restore_service.dart';
@@ -44,6 +45,14 @@ abstract final class VaultBootstrap {
     }
     if (!hasVault && sweepOrphans) {
       await RestoreService.sweepOrphans(dbPath: dbPath);
+    }
+    // Fase 8 (§9): la bóveda secundaria se reconcilia DESPUÉS y nunca cambia
+    // la decisión sobre la principal. Un error del almacén no borra nada
+    // (M4) ni impide arrancar.
+    try {
+      await auth.reconcileSecondaryAtStartup(primaryExists: hasVault);
+    } on Object catch (e) {
+      VaultLog.e('Reconciliación de la bóveda secundaria omitida', e);
     }
     return hasVault;
   }

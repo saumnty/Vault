@@ -217,6 +217,16 @@ class PinAttemptLimiter {
   }
 
   Future<void> reset() => _store.delete(key);
+
+  /// Estado persistido tal cual (C1, fase 8): el desbloqueo lo lee ANTES de
+  /// su incremento pesimista para poder deshacer SOLO ese incremento.
+  Future<String?> rawState() => _store.read(key);
+
+  /// Vuelve exactamente al estado [raw] leído con [rawState] (fallos, espera
+  /// y lecturas monotónicas); `null` = sin estado. A diferencia de [reset],
+  /// conserva los fallos previos y la espera en curso.
+  Future<void> restoreRaw(String? raw) =>
+      raw == null ? _store.delete(key) : _store.write(key, raw);
 }
 
 class _AttemptState {

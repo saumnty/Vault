@@ -124,6 +124,10 @@ class _PinScreenState extends State<PinScreen> with WidgetsBindingObserver {
     final lockout = vaultExists
         ? await _authController.pinLockoutRemaining()
         : null;
+    // Fase 8 (D69): con una bóveda secundaria, la biometría (que abre la
+    // principal) NO se lanza sola: solo con su botón.
+    final autoBiometric =
+        biometricEnabled && !await _authController.hasSecondaryVault();
     if (!mounted) return;
     setState(() {
       _hasVault = vaultExists;
@@ -132,7 +136,7 @@ class _PinScreenState extends State<PinScreen> with WidgetsBindingObserver {
       _statusMessage = vaultExists ? _enterPin : _createPin;
     });
     if (lockout != null) _startLockout(lockout);
-    if (biometricEnabled && lockout == null) {
+    if (autoBiometric && lockout == null) {
       if (_inForeground) {
         await _unlockWithBiometrics();
       } else {

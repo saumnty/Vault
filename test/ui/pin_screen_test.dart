@@ -250,4 +250,29 @@ void main() {
     expect(env.authenticated, 0); // el onboarding decide cuándo entrar
     expect(await env.controller.isOnboardingPending(), isTrue);
   });
+
+  for (final withSecondary in [false, true]) {
+    testWidgets('D69: biometría automática ${withSecondary ? 'NO' : 'sí'} '
+        '${withSecondary ? 'con' : 'sin'} bóveda secundaria', (tester) async {
+      usePhoneSize(tester);
+      final env = _Env();
+      await tester.runAsync(() async {
+        await env.controller.createVault('123456');
+        await env.controller.enableBiometricUnlock();
+        env.controller.lock();
+      });
+      // Basta con que exista la clave de la secundaria.
+      if (withSecondary) {
+        env.store.data[AuthController.altPinEnvelopeKey] = 'x';
+      }
+      env.bio.reads = 0;
+      await tester.pumpWidget(env.screen());
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await tester.pump();
+      expect(env.bio.reads, withSecondary ? 0 : 1);
+      await tester.pump(const Duration(seconds: 1)); // animación de entrada
+    });
+  }
 }

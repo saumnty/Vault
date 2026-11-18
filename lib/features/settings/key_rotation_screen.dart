@@ -295,7 +295,9 @@ class _KeyRotationScreenState extends State<KeyRotationScreen> {
       message: 'Hace falta para continuar el cambio de llave.',
       onSubmit: (pin) async {
         try {
-          return await _auth.unlockWithPin(pin) ? null : 'PIN incorrecto';
+          // A2 (fase 8): reautenticación en la sesión principal; nunca
+          // cambia de bóveda (el PIN de la secundaria aquí es "incorrecto").
+          return await _auth.reauthPrimary(pin) ? null : 'PIN incorrecto';
         } on PinLockedOutException catch (e) {
           return _lockout(e);
         }

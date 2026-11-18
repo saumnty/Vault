@@ -9,7 +9,11 @@ import 'kdf.dart';
 
 /// Propósito de una envoltura de la DEK. Se autentica como AAD, de modo que
 /// una envoltura de PIN no puede hacerse pasar por una de recuperación.
-enum WrapPurpose { pin, recovery }
+///
+/// Fase 8 (D66): [altPin] = DEK de la bóveda SECUNDARIA envuelta con su PIN
+/// (AAD `vault.dek.v1|altPin`). Una envoltura copiada a la clave de la otra
+/// bóveda no se decodifica (propósito distinto).
+enum WrapPurpose { pin, recovery, altPin }
 
 /// La DEK envuelta (cifrada) con una KEK derivada por Argon2id.
 ///
