@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../../core/crypto/aes_gcm_backend.dart';
 import '../../core/crypto/argon2_backend.dart';
+import '../../core/crypto/key_rotation_store.dart';
 import '../../core/logging/diagnostics_buffer.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
@@ -39,6 +40,7 @@ class DiagnosticsHeader {
     required this.aes,
     required this.argon2,
     required this.mode,
+    this.rotation = 'ninguno',
   });
 
   final String version;
@@ -47,9 +49,20 @@ class DiagnosticsHeader {
   final String argon2;
   final String mode;
 
+  /// Estado del cambio de llave maestra (fase y generaciones; nada más).
+  final String rotation;
+
   String toText() =>
       'Versión: $version\nPlataforma: $platform\nAES: $aes\n'
-      'Argon2: $argon2\nModo: $mode';
+      'Argon2: $argon2\nModo: $mode\nCambio de llave: $rotation';
+}
+
+/// Fase del cambio de llave para el diagnóstico (sin datos personales: ni
+/// correo, ni ids, ni mensajes con nombres).
+String rotationDiagnosticsLabel(RotationRecord? rec) {
+  if (rec == null) return 'ninguno';
+  final resume = rec.resumePhase == null ? '' : ' → ${rec.resumePhase!.name}';
+  return '${rec.phase.name}$resume (gen ${rec.fromGen} → ${rec.toGen})';
 }
 
 /// Reúne el encabezado real (versión, SO, backends, modo).
@@ -74,6 +87,7 @@ Future<DiagnosticsHeader> loadDiagnosticsHeader({
     aes: _safe(() => aesBackendLabel(AesGcmBackend.current)),
     argon2: _safe(() => argon2BackendLabel(Argon2Backend.current)),
     mode: kReleaseMode ? 'release' : (kProfileMode ? 'profile' : 'debug'),
+    rotation: rotationDiagnosticsLabel(RotationKeyStore.shared.record.value),
   );
 }
 

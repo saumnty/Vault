@@ -9,6 +9,7 @@ import 'package:vault/data/gallery/video_compressor.dart';
 import 'package:vault/data/cloud/cloud_storage.dart';
 import 'package:vault/data/sync/storage_service.dart';
 import 'package:vault/data/sync/sync_preferences.dart';
+import 'package:vault/features/settings/widgets/settings_widgets.dart';
 import 'package:vault/features/vault/home_vault_screen.dart';
 
 import '../support/settings_support.dart';
@@ -21,7 +22,7 @@ const mb = settingsMb;
 /// Pantalla alta para que ListView construya todas las secciones.
 void _useTallPhone(WidgetTester tester) {
   tester.view.devicePixelRatio = 2;
-  tester.view.physicalSize = const Size(390 * 2, 2600 * 2);
+  tester.view.physicalSize = const Size(390 * 2, 3000 * 2);
   addTearDown(tester.view.reset);
 }
 
@@ -107,17 +108,23 @@ void main() {
     tester,
   ) async {
     await _open(tester);
-    expect(find.textContaining('carpeta oculta de tu Google Drive'),
-        findsOneWidget);
+    expect(
+      find.textContaining('carpeta oculta de tu Google Drive'),
+      findsOneWidget,
+    );
     await tester.ensureVisible(find.text('Más información'));
     await tester.tap(find.text('Más información'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('Administrar aplicaciones > Vault'),
-        findsOneWidget);
+    expect(
+      find.textContaining('Administrar aplicaciones > Vault'),
+      findsOneWidget,
+    );
     expect(find.textContaining('verificación en dos pasos'), findsOneWidget);
     // El interruptor de borrar originales usa el mismo texto aclaratorio.
-    expect(find.textContaining('Apagado por defecto. Solo se borran'),
-        findsOneWidget);
+    expect(
+      find.textContaining('Apagado por defecto. Solo se borran'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('sin servicios de nube/almacenamiento oculta esas secciones', (
@@ -351,6 +358,82 @@ void main() {
       await _submitPin(tester, '246800');
       await _submitPin(tester, '246800');
       expect(find.textContaining('Demasiados intentos'), findsOneWidget);
+    });
+  });
+
+  group('Rotación de la llave maestra (S-11)', () {
+    Future<SettingsTestEnv> openWithRotation(WidgetTester tester) async {
+      _useTallPhone(tester);
+      final e = SettingsTestEnv();
+      await tester.runAsync(e.init);
+      addTearDown(e.dispose);
+      await tester.pumpWidget(e.screen(rotation: e.rotationService()));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await tester.pumpAndSettle();
+      return e;
+    }
+
+    testWidgets('entradas en Seguridad: rotar, código nuevo, comprobar', (
+      tester,
+    ) async {
+      await openWithRotation(tester);
+      expect(find.text('Rotar llave maestra'), findsOneWidget);
+      expect(find.text('Generar nuevo código de recuperación'), findsOneWidget);
+      expect(
+        find.textContaining('el código actual no abrirá nada'),
+        findsOneWidget,
+      );
+      expect(find.text('Comprobar mi código'), findsOneWidget);
+      expect(find.byKey(const ValueKey('rotation-banner')), findsNothing);
+    });
+
+    testWidgets('con una rotación en curso: aviso, PIN y cerrar sesión '
+        'deshabilitados', (tester) async {
+      final e = await openWithRotation(tester);
+      await tester.runAsync(() async {
+        await e.auth.unlockWithPin(pin);
+        await e.auth.prepareRotation(pin, toGen: 2, accountEmail: 'x@y');
+      });
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('rotation-banner')), findsOneWidget);
+      expect(find.text('Cambio de llave en curso'), findsOneWidget);
+      expect(
+        find.text('Disponible al terminar el cambio de llave maestra'),
+        findsOneWidget,
+      );
+      for (final t in ['Cambiar PIN', 'Cerrar sesión de Google']) {
+        final tile = tester.widget<SettingsTile>(
+          find.ancestor(of: find.text(t), matching: find.byType(SettingsTile)),
+        );
+        expect(tile.onTap, isNull, reason: t);
+      }
+    });
+
+    testWidgets('Comprobar mi código: vigente y no coincide', (tester) async {
+      final e = await openWithRotation(tester);
+      final code = await tester.runAsync(() async {
+        // Un código conocido para esta bóveda.
+        final c = (await e.auth.regenerateRecoveryCode(pin))!;
+        return c;
+      });
+      for (final (typed, expected) in [
+        (code!, 'Este código es el vigente'),
+        ('ABCD-EFGH-JKMN-PQRS-TUVW-XYZ2', 'No coincide'),
+      ]) {
+        await tester.tap(find.text('Comprobar mi código'));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField).last, typed);
+        await tester.tap(find.text('Comprobar'));
+        await _crypto(tester);
+        await tester.pumpAndSettle();
+        expect(find.text(expected), findsOneWidget);
+        ScaffoldMessenger.of(
+          tester.element(find.text('Ajustes')),
+        ).hideCurrentSnackBar();
+        await tester.pumpAndSettle();
+      }
     });
   });
 

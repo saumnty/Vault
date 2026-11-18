@@ -10,6 +10,7 @@ import 'package:vault/data/models/folder_model.dart';
 import 'package:vault/data/models/sync_status.dart';
 import 'package:vault/data/models/vault_item_model.dart';
 import 'package:vault/data/repositories/vault_data_repository.dart';
+import 'package:vault/data/rotation/key_rotation_service.dart';
 import 'package:vault/data/sync/storage_service.dart';
 import 'package:vault/data/sync/sync_service.dart';
 import 'package:vault/data/tags/tag_repository.dart';
@@ -225,6 +226,7 @@ VaultServices fakeServices(
   SyncService? sync,
   StorageService? storage,
   TagRepository? tags,
+  KeyRotationService? rotation,
 }) {
   final c = calls ?? ServiceCalls();
   return VaultServices(
@@ -244,6 +246,7 @@ VaultServices fakeServices(
     sync: sync,
     storage: storage,
     tags: tags,
+    rotation: rotation,
   );
 }
 

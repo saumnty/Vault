@@ -7,7 +7,7 @@ Estado detallado de fases: ver `PLAN.md`. Esta especificación es la vigente (co
 - Rama `dev-claude`; nunca push ni main sin petición del usuario.
 - Pruebas locales en emulador Android (Pixel_7). iOS se compila en Codemagic + Sideloadly; lo específico de iOS va con `// iOS:` y `Platform.isIOS`.
 - No inventar APIs: verificar paquetes en pub.dev y fijar versión.
-- Sin datos reales aún: se pueden cambiar formatos/esquemas sin migración (confirmar antes de borrar).
+- HAY datos reales en un iPhone (desde iOS ronda 1): migraciones de BD siempre incrementales, nunca recrear tablas ni borrar datos sin confirmar; una bóveda gen 1 debe seguir funcionando exactamente igual.
 - Acción manual del usuario (Google Cloud, SHA-1, Codemagic, Apple ID) → detenerse con instrucciones.
 
 ## Diseño (identidad)
@@ -58,3 +58,4 @@ F0 auditoría · F1 llaves · F2 .vault v2 · F3 BD · F3.5 rediseño UI · F4 i
 - v2 fase 5 (Papelera, D56): BD v8 (`deletedAt`/`trashRoot`), `TrashService` (30 días, `delete_remote` solo al borrar de verdad), Ajustes > Papelera. Siguiente: fase 9 (etiquetas/filtros/búsqueda, BD v9).
 - v2 fase 9 (D57): BD v9 (`tags`, `item_tags`), `TagRepository`, filtros globales (`ItemFilter`), UI de etiquetas/filtros. Siguiente: fase 6 (selector de archivos propio).
 - v2 fase 6 (D58): `file_picker` fuera; selector propio `vault/picker` (`lib/data/picker/document_picker.dart`, Kotlin en MainActivity, Swift `VaultDocumentPicker` en AppDelegate sin probar) + `encryptSource`. Siguiente: fase 1 (rotar DEK).
+- v2 fase 1 (S-11, D59–D63, diseño `docs/DISENO_ROTACION.md`): rotación de la DEK por generaciones (gen 1 = nombres de siempre; gen N ≥ 2 con `.kN`; `vault_items.keyGen` manda; BD v10 incremental con `keyGen`, `rotation_state`, `rotation_old_files`). `VaultKeyring` en la sesión (una o dos llaves), `RotationKeyStore` (registro de la rotación en el almacén seguro; la DEK nueva solo en memoria hasta cambiar la envoltura del PIN), `KeyRotationService` (máquina de estados `prepared` → … → `finalizingLocal` + `blocked*`, reanudable tras cualquier corte), `ItemReencryptor`, `VaultDatabase.rekeyTo` (copia + `rename`), guarda "nunca crear BD vacía con bóveda" (`VaultBootstrap`), restauración multi-generación con puente y aviso M8. UI: Ajustes > Seguridad ("Rotar llave maestra" = "Generar nuevo código de recuperación", "Comprobar mi código"), `key_rotation_screen.dart`, banner, Diagnóstico. "Cambiar PIN" y "Cerrar sesión" bloqueados durante la rotación. Rotación real contra Drive sin probar: PARADA hasta el simulacro de restauración del usuario (REPORTE.md "v2 · Fase 1"). Siguiente tras la parada: fase 8.

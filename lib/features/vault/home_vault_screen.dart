@@ -17,6 +17,7 @@ import '../gallery/gallery_picker_screen.dart';
 import '../gallery/import_options_sheet.dart';
 import '../gallery/import_progress_sheet.dart';
 import '../gallery/originals_pending_banner.dart';
+import '../settings/key_rotation_screen.dart';
 import '../settings/settings_environment.dart';
 import '../settings/settings_screen.dart';
 import '../sync/sync_cloud_button.dart';
@@ -133,6 +134,15 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
   }
 
   /// Mismo flujo de Ajustes: lista verificada + confirmación del sistema.
+  /// Banner del cambio de llave maestra (S-11): abre su pantalla.
+  Future<void> _openRotation() async {
+    final rotation = _services.rotation;
+    if (rotation == null) return;
+    await Navigator.of(context).push<void>(
+      AppPageRoute<void>(builder: (_) => KeyRotationScreen(service: rotation)),
+    );
+  }
+
   Future<void> _deleteOriginalsNow() async {
     final gallery = _services.gallery;
     if (gallery == null) return;
@@ -503,6 +513,11 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                           await c.setFilter(f);
                         },
                         onClear: c.clearFilters,
+                      ),
+                    if (_services.rotation != null && !c.isSelecting)
+                      RotationBanner(
+                        record: _services.rotation!.auth.rotationStore.record,
+                        onTap: _openRotation,
                       ),
                     if (_pendingOriginals > 0 && !c.isSelecting)
                       OriginalsPendingBanner(

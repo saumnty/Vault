@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,6 +11,11 @@ import 'package:vault/core/services/cache_manager.dart';
 import 'package:vault/core/session/vault_session.dart';
 import 'package:vault/data/gallery/import_preferences.dart';
 import 'package:vault/data/repositories/vault_data_repository.dart';
+import 'package:vault/data/repositories/vault_database.dart';
+import 'package:vault/data/rotation/item_reencryptor.dart';
+import 'package:vault/data/rotation/key_rotation_service.dart';
+import 'package:vault/data/rotation/rotation_repository.dart';
+import 'package:vault/data/sync/network_monitor.dart';
 import 'package:vault/data/sync/offline_service.dart';
 import 'package:vault/data/sync/storage_service.dart';
 import 'package:vault/data/sync/sync_preferences.dart';
@@ -65,6 +72,41 @@ class FakeStorage implements StorageService {
     calls.add('free');
     return next;
   }
+}
+
+/// Servicio de rotación con un plan fijo (sin BD: [plan] falla si no hay).
+class TestRotationService extends KeyRotationService {
+  TestRotationService({
+    this.fixedPlan,
+    required super.auth,
+    required super.session,
+    required super.db,
+    required super.items,
+    required super.queue,
+    required super.sync,
+    required super.cloud,
+    required super.network,
+    required super.prefs,
+    required super.repo,
+    required super.reencryptor,
+  });
+
+  final RotationPlan? fixedPlan;
+
+  @override
+  Future<RotationPlan> plan() async =>
+      fixedPlan ?? (throw UnimplementedError('sin BD'));
+}
+
+/// Repositorio de la rotación sin BD (cancelar/descartar no tocan nada).
+class NoDbRotationRepository extends RotationRepository {
+  int clears = 0;
+
+  @override
+  Future<RotationDbState?> load() async => null;
+
+  @override
+  Future<void> clear() async => clears++;
 }
 
 class SettingsTestEnv {
@@ -137,14 +179,48 @@ class SettingsTestEnv {
     sync.dispose();
   }
 
-  Widget screen({bool withSync = true, bool withStorage = true}) => testApp(
+  Widget screen({
+    bool withSync = true,
+    bool withStorage = true,
+    KeyRotationService? rotation,
+  }) => testApp(
     SettingsScreen(
       env: env,
       services: fakeServices(
         FakeVaultRepository(),
         sync: withSync ? sync : null,
         storage: withStorage ? storage : null,
+        rotation: rotation,
       ),
+    ),
+  );
+
+  /// Servicio de rotación sobre este [auth] (para la UI de Ajustes; no toca
+  /// la BD salvo que se use de verdad).
+  KeyRotationService rotationService({
+    NetworkMonitor? network,
+    RotationRepository? repo,
+    RotationPlan? plan,
+  }) => TestRotationService(
+    fixedPlan: plan,
+    auth: auth,
+    session: VaultSession.create(),
+    db: VaultDatabase.forTesting(
+      session: VaultSession.create(),
+      opener: (path, {password, required options}) =>
+          throw UnimplementedError(),
+    ),
+    items: VaultDataRepository(),
+    queue: SyncQueueRepository(),
+    sync: sync,
+    cloud: cloud,
+    network: network ?? FakeNetworkMonitor(),
+    prefs: SyncPreferences(store),
+    repo: repo ?? NoDbRotationRepository(),
+    reencryptor: ItemReencryptor(
+      items: VaultDataRepository(),
+      cloud: cloud,
+      workDir: () => Directory.systemTemp,
     ),
   );
 }

@@ -11,6 +11,9 @@ import '../../core/theme/app_typography.dart';
 import '../../data/cloud/cloud_storage.dart';
 import '../../data/gallery/video_compressor.dart';
 import '../../data/migration/account_migration_service.dart';
+import '../../data/rotation/key_rotation_service.dart';
+import '../onboarding/widgets/recovery_code_field.dart';
+import 'key_rotation_screen.dart';
 import '../../data/sync/storage_service.dart';
 import '../../data/sync/sync_service.dart';
 import '../../shared/format.dart';
@@ -82,9 +85,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _regenBusy = false;
   bool _signingIn = false;
 
+  KeyRotationService? get _rotation => widget.services.rotation;
+
+  /// Hay un cambio de llave maestra registrado (S-11).
+  bool get _rotating => _rotation?.auth.rotationStore.record.value != null;
+
+  void _onRotationChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// Campo de "Comprobar mi código" (vive con la pantalla: el diálogo lo
+  /// sigue usando mientras se cierra).
+  final TextEditingController _checkCodeController = TextEditingController();
+
+  @override
+  void dispose() {
+    _rotation?.auth.rotationStore.record.removeListener(_onRotationChanged);
+    _checkCodeController.dispose();
+    super.dispose();
+  }
+
   @override
   void initState() {
     super.initState();
+    _rotation?.auth.rotationStore.record.addListener(_onRotationChanged);
     unawaited(_load());
     final sync = _sync;
     if (sync != null && sync.summary.value.accountEmail != null) {
@@ -231,7 +255,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) setState(() => _protectScreen = now);
   }
 
+  Future<void> _openRotation(RotationReason reason) async {
+    final rotation = _rotation;
+    if (rotation == null) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => KeyRotationScreen(service: rotation, reason: reason),
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
+  /// M1: "Comprobar mi código" contra el respaldo local (sin red).
+  Future<void> _checkCode() async {
+    final controller = _checkCodeController..clear();
+    final code = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Comprobar mi código'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Escribe tu código de recuperación para comprobar que es el '
+              'vigente. No se guarda ni sale del teléfono.',
+              style: AppTypography.bodySecondary,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            RecoveryCodeField(controller: controller, onChanged: (_) {}),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text),
+            child: const Text('Comprobar'),
+          ),
+        ],
+      ),
+    );
+    if (code == null || !mounted) return;
+    try {
+      final ok = await _auth.verifyLocalRecoveryCode(code);
+      _snack(ok ? 'Este código es el vigente' : 'No coincide');
+    } on PinLockedOutException catch (e) {
+      _snack('Demasiados intentos. Espera ${e.remaining.inSeconds + 1} s');
+    }
+  }
+
   Future<void> _regenerateCode() async {
+    // Con el servicio de rotación, "Generar código nuevo" es la rotación
+    // completa (el código viejo deja de abrir NADA, S-11).
+    if (_rotation != null) return _openRotation(RotationReason.newCode);
     final done = await runRegenerateCodeFlow(context, _auth);
     if (!done) return;
     // El SyncService detecta el respaldo nuevo (SHA-256) y lo sube.
@@ -470,12 +549,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             'teléfono',
       BiometricAvailability.unavailable => 'No disponible en este dispositivo',
     };
+    final rotating = _rotating;
     return [
       SettingsTile(
         icon: Icons.pin_outlined,
         title: 'Cambiar PIN',
-        subtitle: 'Tus archivos no se vuelven a cifrar',
-        onTap: _changePin,
+        subtitle: rotating
+            ? 'Disponible al terminar el cambio de llave maestra'
+            : 'Tus archivos no se vuelven a cifrar',
+        onTap: rotating ? null : _changePin,
       ),
       SettingsSwitchTile(
         icon: Icons.fingerprint,
@@ -502,8 +584,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
       SettingsTile(
         icon: Icons.key_outlined,
         title: 'Generar nuevo código de recuperación',
-        subtitle: 'El código actual dejará de servir',
-        onTap: _regenerateCode,
+        subtitle: _rotation == null
+            ? 'El código actual dejará de servir'
+            : 'Cambia también la llave: el código actual no abrirá nada',
+        onTap: rotating
+            ? () => _openRotation(RotationReason.newCode)
+            : _regenerateCode,
+      ),
+      if (_rotation != null)
+        SettingsTile(
+          icon: Icons.enhanced_encryption_outlined,
+          title: rotating ? 'Cambio de llave en curso' : 'Rotar llave maestra',
+          subtitle: rotating
+              ? 'Toca para ver el progreso o continuar'
+              : 'Vuelve a cifrar todo con una llave y un código nuevos',
+          onTap: () => _openRotation(RotationReason.rotateKey),
+        ),
+      SettingsTile(
+        icon: Icons.fact_check_outlined,
+        title: 'Comprobar mi código',
+        subtitle: 'Confirma que tu código anotado es el vigente',
+        onTap: _checkCode,
       ),
       SettingsTile(
         icon: Icons.lock_outline_rounded,
@@ -644,7 +745,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 icon: Icons.logout,
                 title: 'Cerrar sesión de Google',
                 destructive: true,
-                onTap: migrating ? null : _signOut,
+                // Con un cambio de cuenta o de llave en curso no se cierra
+                // sesión (los dos necesitan la misma cuenta hasta terminar).
+                onTap: migrating || _rotating ? null : _signOut,
               ),
             ] else
               Padding(
@@ -720,6 +823,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         child: ListView(
                           padding: AppSpacing.page,
                           children: [
+                            if (_rotation != null)
+                              RotationBanner(
+                                record: _rotation!.auth.rotationStore.record,
+                                onTap: () =>
+                                    _openRotation(RotationReason.rotateKey),
+                              ),
                             SettingsSection(
                               title: 'Seguridad',
                               children: _security(),

@@ -1239,6 +1239,18 @@ class AuthController {
     return rec.biometricWasEnabled;
   });
 
+  /// `blockedForeign` (A3/L8): descarta los restos de una rotación que no
+  /// corresponde a esta bóveda. Solo local: no toca Drive.
+  Future<void> discardForeignRotation() => _serialized(() async {
+    final rec = await _rotation.load();
+    if (rec == null) return;
+    if (rec.phase != RotationPhase.blockedForeign) {
+      throw const RotationInProgressException('Fase incorrecta');
+    }
+    _dropNextKeys();
+    await _rotation.clearAll();
+  });
+
   /// "Comprobar mi código" (M1): `true` si [code] abre el respaldo de
   /// recuperación LOCAL vigente (sin red; cuenta en el límite de intentos
   /// del código). Lanza [PinLockedOutException] si hay que esperar.

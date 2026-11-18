@@ -41,11 +41,11 @@ Reglas: una fase a la vez; migraciones de BD incrementales (v7 → v8…), nunca
 | 5 | Papelera (30 días, BD v8) | Sonnet | 🧪 BD v8 incremental, `TrashRepository`/`TrashService`, pantalla Ajustes > Papelera, 23 tests |
 | 9 | Etiquetas, filtros y búsqueda (BD v9) | Sonnet | 🧪 BD v9 incremental, `TagRepository`, filtros globales, hoja de etiquetas, Ajustes > Etiquetas; tests + emulador |
 | 6 | Selector de archivos propio (sin file_picker; S-02 residual, S-18) | Sonnet | 🧪 canal `vault/picker` (Kotlin probado en emulador; Swift sin compilar), `encryptSource`, `file_picker` fuera; tests |
-| 1 | Rotar la DEK (S-11), diseño revisado por Opus; PARAR al terminar | Opus | 🔧 diseño final revisado (`docs/DISENO_ROTACION.md`); implementación por pasos (abajo) |
+| 1 | Rotar la DEK (S-11), diseño revisado por Opus; PARAR al terminar | Opus | 🧪 pasos 1–11 implementados y en tests (D60–D63); ⬜ rotación real contra Drive sin probar; PARADA: simulacro de restauración del usuario (REPORTE "v2 · Fase 1") antes de rotar en el iPhone |
 | 8 | Bóveda señuelo: variante elegida por el usuario (2026-11-17) = AMBAS: segundo PIN que abre otra bóveda + negable (disco y Drive no revelan cuántas bóvedas hay). Diseño con Opus + revisión independiente antes de codificar | Opus | ⬜ |
 | 11 | Kern: nombre visible e ícono | Haiku | ⬜ |
 
-Dónde retomar: Fase 1, paso 11 (UI de rotación) de docs/DISENO_ROTACION.md §11; al terminar la fase PARAR y dar el simulacro de restauración.
+Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (REPORTE.md "v2 · Fase 1") y después la rotación en el iPhone con la lista de pruebas. Pendiente de la fase: prueba de punta a punta en el emulador con Drive real (§10, a mano), limpieza manual de generaciones abandonadas (M11), "Continuar sin ellos" en la hoja previa, botón de borrar la cuenta anterior desde el aviso M7 y goldens de la pantalla. Después: fase 8.
 
 ### Fase 1 · pasos (ver docs/DISENO_ROTACION.md §11)
 | Paso | Qué | Estado |
@@ -60,6 +60,6 @@ Dónde retomar: Fase 1, paso 11 (UI de rotación) de docs/DISENO_ROTACION.md §1
 | 8 | `ItemReencryptor` | ✅🧪 |
 | 9 | Restauración multi-generación + puente + barrido por lista | ✅🧪 suite 953 verde |
 | 10 | `KeyRotationService` con inyección de cortes | ✅🧪 (10a hasta el corte + 10b borrado y finalización; 1027 tests; cableado a la app, sin UI aún) |
-| 11 | UI de rotación | ⬜ |
-| 12 | Punta a punta en emulador + docs; PARAR: simulacro de restauración | ⬜ |
+| 11 | UI de rotación | 🧪 `key_rotation_screen.dart`, entradas en Ajustes, banner, "Comprobar mi código", Diagnóstico; `test/ui/key_rotation_screen_test.dart` (16) + `settings_test` ampliado |
+| 12 | Punta a punta en emulador + docs; PARAR: simulacro de restauración | 📝 docs (D60–D63, REPORTE, CONTEXTO, PLAN) hechas; ⬜ punta a punta con Drive real sin hacer (no autorizado en este paso) |
 

@@ -83,6 +83,43 @@ class RotationStatus {
   final int itemsTotal;
 }
 
+/// Lo que implica una rotación (hoja previa).
+@immutable
+class RotationPlan {
+  const RotationPlan({
+    required this.items,
+    required this.uploadBytes,
+    required this.cloudOnlyBytes,
+    required this.pendingUploads,
+    required this.lostThumbnails,
+    required this.quota,
+    required this.enoughDriveSpace,
+    required this.signedIn,
+    this.oldAccountKept,
+  });
+
+  final int items;
+
+  /// Lo que se vuelve a subir (≈ lo que ocupa la bóveda en Drive; durante
+  /// la rotación Drive guarda el doble).
+  final int uploadBytes;
+
+  /// Lo que hay que bajar porque solo está en la nube.
+  final int cloudOnlyBytes;
+
+  /// Archivos sin subir o con error (A4: hay que resolverlos antes).
+  final int pendingUploads;
+
+  /// Miniaturas que no se podrán recuperar (L5).
+  final int lostThumbnails;
+  final CloudQuota? quota;
+  final bool enoughDriveSpace;
+  final bool signedIn;
+
+  /// M7: correo de una cuenta anterior que conserva una copia vieja.
+  final String? oldAccountKept;
+}
+
 class RotationException implements Exception {
   const RotationException(this.message);
   final String message;
@@ -245,6 +282,68 @@ class KeyRotationService {
     await repo.clear();
     await auth.abandonRotation();
     status.value = const RotationStatus();
+  }
+
+  /// `blockedForeign`: "Descartar restos". Borra lo local de una rotación
+  /// que no es de esta bóveda (registro y, si son de otra rotación, las
+  /// filas de la BD). No borra nada en Drive.
+  Future<void> discardForeign() async {
+    final rec = await _store.load();
+    if (rec == null || rec.phase != RotationPhase.blockedForeign) return;
+    pause();
+    final state = await repo.load();
+    if (state == null || state.rotationId != rec.id) await repo.clear();
+    await auth.discardForeignRotation();
+    status.value = const RotationStatus();
+  }
+
+  /// Comprobación previa (§8, pantalla 2): qué implica la rotación.
+  Future<RotationPlan> plan() async {
+    final all = await items.getAllItems();
+    var upload = 0;
+    var cloudOnly = 0;
+    var pending = 0;
+    var lostThumbs = 0;
+    for (final i in all) {
+      final f = _resolve(i.encryptedPath);
+      final local = f.existsSync();
+      final size = i.cloudSize ?? (local ? f.lengthSync() : i.fileSize);
+      upload += size;
+      if (!local) cloudOnly += size;
+      if (i.syncStatus == SyncStatus.pendiente ||
+          i.syncStatus == SyncStatus.subiendo ||
+          i.syncStatus == SyncStatus.error) {
+        pending++;
+      }
+      final t = i.thumbPath;
+      if (t != null &&
+          !_resolve(t).existsSync() &&
+          i.thumbDriveFileId == null) {
+        lostThumbs++;
+      }
+    }
+    CloudQuota? quota;
+    try {
+      quota = await cloud.getQuota();
+    } on CloudException {
+      quota = null;
+    }
+    final limit = quota?.limitBytes;
+    final enough =
+        quota == null ||
+        limit == null ||
+        limit - quota.usedBytes >= upload + upload ~/ 20;
+    return RotationPlan(
+      items: all.length,
+      uploadBytes: upload,
+      cloudOnlyBytes: cloudOnly,
+      pendingUploads: pending,
+      lostThumbnails: lostThumbs,
+      quota: quota,
+      enoughDriveSpace: enough,
+      signedIn: cloud.currentAccountEmail != null,
+      oldAccountKept: await prefs.getOldAccountKept(),
+    );
   }
 
   /// Detiene el flujo (se reanuda con [resume]). Lo llama el bloqueo.
