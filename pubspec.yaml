@@ -60,6 +60,11 @@ dependencies:
   video_player: 2.11.1
   # Versión de la app en Ajustes > Acerca de (F8). Fijada; 9.0.1 verificada con flutter pub add.
   package_info_plus: 9.0.1
+  # v2.2 (D88): pantalla encendida solo durante un lote de importación. Fijada.
+  # wakelock_plus no es compatible (<1.8 pide dbus ^0.7 y connectivity_plus 7.3.2
+  # exige dbus ^0.8 vía nm; 1.8+ exige Flutter >=3.44). Fuente revisada:
+  # Android FLAG_KEEP_SCREEN_ON, iOS isIdleTimerDisabled; sin red ni permisos.
+  keep_screen_on: 6.0.0
 
 dev_dependencies:
   flutter_test:

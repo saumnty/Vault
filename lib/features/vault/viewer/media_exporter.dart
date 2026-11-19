@@ -31,10 +31,29 @@ abstract interface class MediaExporter {
   });
 }
 
+/// "Guardar en Fotos como álbum" (v2.2): lo que necesita el lote de una
+/// carpeta. El permiso se pide UNA vez al empezar el lote.
+abstract interface class AlbumMediaExporter {
+  /// Pide (si hace falta) el permiso de solo-agregar. `false` = denegado.
+  Future<bool> requestPermission();
+
+  /// Abre los ajustes del sistema (permiso denegado).
+  Future<void> openSettings();
+
+  /// Guarda [item] en el álbum [album]. No pide permiso. [onAlbumCreated] se
+  /// invoca si esta llamada creó el álbum (iOS).
+  Future<ExportOutcome> exportToAlbum(
+    VaultItemModel item, {
+    required String album,
+    void Function()? onAlbumCreated,
+    MediaProgressCallback? onProgress,
+  });
+}
+
 /// Descifra el archivo a un temporal en claro, lo entrega
 /// a la fototeca y BORRA el temporal en `finally`. Es la única vía por la que
 /// el usuario saca una copia sin cifrar de la bóveda (diálogo previo en la UI).
-class VaultMediaExporter implements MediaExporter {
+class VaultMediaExporter implements MediaExporter, AlbumMediaExporter {
   VaultMediaExporter({
     required this.opener,
     required this.saver,
@@ -52,18 +71,50 @@ class VaultMediaExporter implements MediaExporter {
   final SessionTicket? Function()? sessionTicket;
 
   @override
+  Future<bool> requestPermission() => saver.requestAddPermission();
+
+  @override
+  Future<void> openSettings() => saver.openSettings();
+
+  @override
+  Future<ExportOutcome> exportToAlbum(
+    VaultItemModel item, {
+    required String album,
+    void Function()? onAlbumCreated,
+    MediaProgressCallback? onProgress,
+  }) => _run(
+    item,
+    album: album,
+    askPermission: false,
+    onAlbumCreated: onAlbumCreated,
+    onProgress: onProgress,
+  );
+
+  @override
   Future<ExportOutcome> export(
     VaultItemModel item, {
     MediaProgressCallback? onProgress,
+  }) => _run(item, askPermission: true, onProgress: onProgress);
+
+  Future<ExportOutcome> _run(
+    VaultItemModel item, {
+    String? album,
+    required bool askPermission,
+    void Function()? onAlbumCreated,
+    MediaProgressCallback? onProgress,
   }) async {
     if (!MediaExporter.canExport(item)) return ExportOutcome.unsupported;
+    final albumSaver = saver;
+    if (album != null && albumSaver is! AlbumPhotoSaver) {
+      return ExportOutcome.unsupported;
+    }
     final isVideo = fileKindOf(item) == FileKind.video;
     final provider = sessionTicket;
     final SessionTicket? ticket = provider?.call();
     if (provider != null && ticket == null) {
       return ExportOutcome.cancelledByLock;
     }
-    if (!await saver.requestAddPermission()) {
+    if (askPermission && !await saver.requestAddPermission()) {
       return ExportOutcome.permissionDenied;
     }
     File? plain;
@@ -112,7 +163,20 @@ class VaultMediaExporter implements MediaExporter {
       }
       opener.requireKey(gen);
       ticket?.check();
-      if (isVideo) {
+      if (album != null && albumSaver is AlbumPhotoSaver) {
+        final created = isVideo
+            ? await albumSaver.saveVideoToAlbum(
+                plain,
+                filename: item.name,
+                album: album,
+              )
+            : await albumSaver.saveImageToAlbum(
+                plain,
+                filename: item.name,
+                album: album,
+              );
+        if (created) onAlbumCreated?.call();
+      } else if (isVideo) {
         await saver.saveVideo(plain, filename: item.name);
       } else {
         await saver.saveImage(plain, filename: item.name);

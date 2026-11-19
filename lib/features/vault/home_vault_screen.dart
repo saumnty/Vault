@@ -12,8 +12,12 @@ import '../../shared/widgets/pinch_detector.dart';
 import '../../data/gallery/gallery_asset_source.dart';
 import '../../data/gallery/gallery_import_service.dart';
 import '../../data/sync/sync_service.dart';
+import '../../data/gallery/gallery_album_source.dart';
+import '../../data/gallery/import_queue_repository.dart';
 import '../gallery/delete_originals_sheet.dart';
+import '../gallery/gallery_import_flow.dart';
 import '../gallery/gallery_picker_screen.dart';
+import '../gallery/import_queue_sheet.dart';
 import '../gallery/import_options_sheet.dart';
 import '../gallery/import_progress_sheet.dart';
 import '../gallery/originals_pending_banner.dart';
@@ -30,6 +34,7 @@ import 'vault_browser_controller.dart';
 import 'vault_media_viewer_screen.dart';
 import 'vault_services.dart';
 import 'widgets/active_filters_bar.dart';
+import 'widgets/album_export_dialog.dart';
 import 'widgets/breadcrumb_bar.dart';
 import 'widgets/expandable_fab.dart';
 import 'widgets/filter_sheet.dart';
@@ -115,6 +120,41 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     }
     _services.sync?.run();
     await _showUnfinishedMigration();
+    await _resumeImportAfterOpen();
+  }
+
+  /// D86: un lote de importación que quedó en marcha (cierre o bloqueo a
+  /// mitad) sigue solo y se muestra su hoja; uno terminado sin cerrar
+  /// muestra su resumen. En pausa solo queda el aviso de la cuadrícula.
+  Future<void> _resumeImportAfterOpen() async {
+    final gallery = _services.gallery;
+    final queue = gallery?.queue;
+    if (gallery == null || queue == null || !mounted) return;
+    try {
+      final b = await queue.onUnlocked();
+      if (b == null || !mounted) return;
+      if (b.state == ImportBatchState.paused) return;
+      await openImportQueueSheet(context, queue: queue, gallery: gallery);
+      await _afterGalleryImport();
+    } on Object {
+      // sin lote legible: nada que retomar
+    }
+  }
+
+  Future<void> _openImportQueue() async {
+    final gallery = _services.gallery;
+    final queue = gallery?.queue;
+    if (gallery == null || queue == null) return;
+    await openImportQueueSheet(context, queue: queue, gallery: gallery);
+    await _afterGalleryImport();
+  }
+
+  Future<void> _afterGalleryImport() async {
+    if (!mounted) return;
+    await _controller.load();
+    unawaited(_refreshPendingOriginals());
+    _services.sync?.run(); // sube lo recién importado
+    unawaited(_services.afterOpen?.call());
   }
 
   /// D76: invariante «nunca un cambio de cuenta guardado sin pantalla a la
@@ -457,6 +497,22 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
       _snack('Importar desde galería no está disponible');
       return;
     }
+    // D86 (v2.2): álbumes y lotes grandes con la cola reanudable.
+    final queue = gallery.queue;
+    final albums = gallery.source;
+    if (queue != null && albums is GalleryAlbumSource) {
+      final worked = await runGalleryQueueImport(
+        context,
+        gallery: gallery,
+        queue: queue,
+        source: albums,
+        repository: _services.repository,
+        currentFolderId: widget.currentFolderId,
+        currentFolderName: widget.currentFolderName,
+      );
+      if (worked) await _afterGalleryImport();
+      return;
+    }
     final picked = await Navigator.of(context).push<List<GalleryAsset>>(
       AppPageRoute<List<GalleryAsset>>(
         builder: (_) => GalleryPickerScreen(source: gallery.source),
@@ -507,7 +563,34 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     await _controller.createFolder(name);
   }
 
+  /// v2.2: «Guardar en Fotos como álbum» de una carpeta.
+  Future<void> _saveFolderAlbum(FolderEntry e) async {
+    final svc = _services.folderAlbums;
+    if (svc == null) return;
+    _controller.clearSelection();
+    await showAlbumExportDialog(
+      context,
+      service: svc,
+      folderId: e.folder.id,
+      folderName: e.folder.name,
+    );
+  }
+
+  /// Solo con UNA carpeta (y nada más) seleccionada.
+  VoidCallback? _albumActionForSelection(List<BrowserEntry> sel) {
+    if (_services.folderAlbums == null || sel.length != 1) return null;
+    final e = sel.first;
+    return e is FolderEntry ? () => _saveFolderAlbum(e) : null;
+  }
+
   List<SwipeAction> _swipeActions(BrowserEntry e) => [
+    if (e is FolderEntry && _services.folderAlbums != null)
+      SwipeAction(
+        icon: Icons.photo_album_outlined,
+        label: 'Álbum en Fotos',
+        color: AppColors.surfaceHighest,
+        onTap: () => _saveFolderAlbum(e),
+      ),
     SwipeAction(
       icon: Icons.drive_file_move_outline,
       label: 'Mover',
@@ -584,6 +667,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                               c.selectedEntries.any((e) => e is FileEntry)
                           ? () => _tagSelection(c.selectedEntries)
                           : null,
+                      onSaveAlbum: _albumActionForSelection(c.selectedEntries),
                       onLock: widget.onLock,
                       onSettings:
                           widget.currentFolderId == null &&
@@ -631,6 +715,12 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                       OriginalsPendingBanner(
                         count: _pendingOriginals,
                         onDelete: _deleteOriginalsNow,
+                      ),
+                    // D86: lote de importación sin cerrar.
+                    if (_services.gallery?.queue != null && !c.isSelecting)
+                      ImportQueueBanner(
+                        status: _services.gallery!.queue!.status,
+                        onTap: _openImportQueue,
                       ),
                     Expanded(
                       child: PinchDetector(

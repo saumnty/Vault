@@ -42,6 +42,7 @@ String stageLabel(ImportStage s) => switch (s) {
   ImportStage.done => 'Listo',
   ImportStage.failed => 'Error',
   ImportStage.cancelled => 'Cancelado',
+  ImportStage.duplicate => 'Ya estaba en la bóveda',
 };
 
 class ImportProgressContent extends StatefulWidget {

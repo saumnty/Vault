@@ -15,6 +15,7 @@ import 'package:vault/data/sync/storage_service.dart';
 import 'package:vault/data/sync/sync_service.dart';
 import 'package:vault/data/tags/tag_repository.dart';
 import 'package:vault/features/vault/vault_services.dart';
+import 'package:vault/features/vault/viewer/folder_album_export.dart';
 import 'package:vault/features/vault/viewer/media_opener.dart';
 
 /// Envuelve [child] con el tema real de la app.
@@ -227,6 +228,7 @@ VaultServices fakeServices(
   StorageService? storage,
   TagRepository? tags,
   KeyRotationService? rotation,
+  FolderAlbumService? folderAlbums,
 }) {
   final c = calls ?? ServiceCalls();
   return VaultServices(
@@ -247,6 +249,7 @@ VaultServices fakeServices(
     storage: storage,
     tags: tags,
     rotation: rotation,
+    folderAlbums: folderAlbums,
   );
 }
 

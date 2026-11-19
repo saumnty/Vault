@@ -19,6 +19,9 @@ import '../../core/session/session_hooks.dart';
 import '../../core/session/vault_session.dart';
 import '../../data/gallery/gallery_import_service.dart';
 import '../../data/gallery/import_preferences.dart';
+import '../../data/gallery/import_queue_repository.dart';
+import '../../data/gallery/import_queue_service.dart';
+import '../../data/gallery/import_wake_lock.dart';
 import '../../data/gallery/photo_manager_gallery_source.dart';
 import '../../data/gallery/thumbnail_regeneration_service.dart';
 import '../../data/gallery/video_thumbnailer.dart';
@@ -51,6 +54,7 @@ import 'unlock_sequence.dart';
 import '../../data/tags/tag_repository.dart';
 import '../../data/trash/trash_repository.dart';
 import '../../data/gallery/photo_saver.dart';
+import 'viewer/folder_album_export.dart';
 import 'viewer/media_exporter.dart';
 import 'viewer/media_opener.dart';
 
@@ -117,6 +121,7 @@ class VaultServices {
     required this.offlineToggler,
     this.mediaOpener = const UnavailableMediaOpener(),
     this.mediaExporter,
+    this.folderAlbums,
     this.trash,
     this.tags,
     this.folderOfflineToggler,
@@ -148,6 +153,9 @@ class VaultServices {
 
   /// "Guardar en Fotos" (`null` = no disponible).
   final MediaExporter? mediaExporter;
+
+  /// "Guardar en Fotos como álbum" de una carpeta (`null` = no disponible).
+  final FolderAlbumService? folderAlbums;
 
   /// Papelera (`null` = borrado directo, p. ej. pruebas de la cuadrícula).
   final TrashService? trash;
@@ -301,6 +309,29 @@ class VaultServices {
     );
     session.addOnClear(gallery.cancelRunning);
     session.addOnClear(regeneration.cancel);
+    // D86: cola de importación propia, en la BD de la adicional.
+    final importQueue = ImportQueueService(
+      importer: gallery,
+      source: source,
+      queue: ImportQueueRepository(dbProvider: () => db.database),
+      freeSpace: platformFreeSpace,
+      network: ConnectivityPlusMonitor(),
+      wakeLock: const KeepScreenOnWakeLock(),
+      sessionTicket: ticket,
+    );
+    session.addOnClear(importQueue.onLock);
+    final albumExporter = VaultMediaExporter(
+      opener: opener,
+      saver: PhotoManagerPhotoSaver(),
+      sessionTicket: ticket,
+    );
+    final folderAlbums = FolderAlbumService(
+      repository: repository,
+      exporter: albumExporter,
+      sessionTicket: ticket,
+      freeSpace: platformFreeSpace,
+    );
+    session.addOnClear(folderAlbums.reset);
     return VaultServices(
       repository: repository,
       importFile: ({required folderId, required deleteOriginal}) =>
@@ -308,11 +339,8 @@ class VaultServices {
       syncRunner: () async {},
       thumbnailLoader: thumbs.call,
       mediaOpener: opener,
-      mediaExporter: VaultMediaExporter(
-        opener: opener,
-        saver: PhotoManagerPhotoSaver(),
-        sessionTicket: ticket,
-      ),
+      mediaExporter: albumExporter,
+      folderAlbums: folderAlbums,
       fileCleaner: cleaner,
       trash: trash,
       tags: TagRepository(dbProvider: () => db.database),
@@ -332,6 +360,7 @@ class VaultServices {
         service: gallery,
         preferences: GalleryImportPreferences(FlutterSecureKeyValueStore()),
         regeneration: regeneration,
+        queue: importQueue,
       ),
     );
   }
@@ -390,6 +419,18 @@ class VaultServices {
       // D67: el borrado definitivo es de la sesión principal que lo empezó.
       sessionTicket: PrimaryGates.ticket(VaultSession()),
     );
+    final albumExporter = VaultMediaExporter(
+      opener: core.opener,
+      saver: PhotoManagerPhotoSaver(),
+      sessionTicket: PrimaryGates.ticket(VaultSession()),
+    );
+    final folderAlbums = FolderAlbumService(
+      repository: repository,
+      exporter: albumExporter,
+      sessionTicket: PrimaryGates.ticket(VaultSession()),
+      freeSpace: platformFreeSpace,
+    );
+    VaultSession().addOnClear(folderAlbums.reset);
     return VaultServices(
       repository: repository,
       importFile: ({required folderId, required deleteOriginal}) =>
@@ -401,11 +442,8 @@ class VaultServices {
       // Miniaturas: descifra thumbs/<id>.thumb con la subllave "thumbs" (LRU).
       thumbnailLoader: thumbs.call,
       mediaOpener: core.opener,
-      mediaExporter: VaultMediaExporter(
-        opener: core.opener,
-        saver: PhotoManagerPhotoSaver(),
-        sessionTicket: PrimaryGates.ticket(VaultSession()),
-      ),
+      mediaExporter: albumExporter,
+      folderAlbums: folderAlbums,
       fileCleaner: cleaner,
       remoteDeleter: remoteDeleter,
       trash: trash,
@@ -783,11 +821,24 @@ class VaultServices {
     // D67: al bloquear se cancelan el lote de importación y la regeneración.
     session.addOnClear(service.cancelRunning);
     session.addOnClear(regeneration.cancel);
+    // D86: cola reanudable en la BD de la principal (fuera del snapshot).
+    final importQueue = ImportQueueService(
+      importer: service,
+      source: source,
+      queue: ImportQueueRepository(),
+      freeSpace: platformFreeSpace,
+      network: ConnectivityPlusMonitor(),
+      wakeLock: const KeepScreenOnWakeLock(),
+      sessionTicket: PrimaryGates.ticket(session),
+    );
+    // Al bloquear: el archivo en curso se corta; el lote sigue en la BD.
+    session.addOnClear(importQueue.onLock);
     return GalleryDeps(
       source: source,
       service: service,
       preferences: preferences,
       regeneration: regeneration,
+      queue: importQueue,
     );
   }
 }

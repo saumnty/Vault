@@ -6,6 +6,7 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_radii.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
+import '../../data/gallery/gallery_album_source.dart';
 import '../../data/gallery/gallery_asset_source.dart';
 import '../../shared/haptics.dart';
 import '../../shared/widgets/app_buttons.dart';
@@ -13,32 +14,149 @@ import '../../shared/widgets/empty_state.dart';
 import '../../shared/widgets/shimmer.dart';
 import '../vault/widgets/tile_frame.dart';
 
+/// Lo elegido en la cuadrícula (D86). Con [allSelected] la selección es «todo
+/// el álbum menos [excluded]» y NO hace falta tener cargados sus assets (un
+/// álbum de 1000 nunca se carga entero en memoria).
+class GalleryPickResult {
+  const GalleryPickResult({
+    this.album,
+    this.allSelected = false,
+    this.excluded = const {},
+    this.assets = const [],
+    this.fromAlbumList = false,
+  });
+
+  final GalleryAlbum? album;
+  final bool allSelected;
+  final Set<String> excluded;
+
+  /// Selección explícita (en orden de selección) si no es [allSelected].
+  final List<GalleryAsset> assets;
+
+  /// Elegido desde la pestaña «Álbumes» (por defecto va a una carpeta con su
+  /// nombre); desde «Fotos» va a la carpeta actual.
+  final bool fromAlbumList;
+
+  int get count =>
+      allSelected ? (album?.count ?? 0) - excluded.length : assets.length;
+}
+
 /// Selector propio de galería (multi-selección) sobre [GalleryAssetSource].
 /// Devuelve los assets elegidos en orden de selección (o `null` si se cancela).
 ///
 /// Se eligió un selector propio, con los tokens del tema, en vez de
 /// `wechat_assets_picker`: evita una dependencia pesada con su propio tema y
 /// textos, y mantiene el aspecto y la accesibilidad coherentes con la app.
+///
+/// Con [album] (D86) pagina ese álbum, ofrece «Seleccionar todo» y devuelve
+/// un [GalleryPickResult].
 class GalleryPickerScreen extends StatefulWidget {
-  const GalleryPickerScreen({super.key, required this.source});
+  const GalleryPickerScreen({
+    super.key,
+    required this.source,
+    this.album,
+    this.fromAlbumList = false,
+  });
 
   final GalleryAssetSource source;
+  final GalleryAlbum? album;
+  final bool fromAlbumList;
 
   @override
   State<GalleryPickerScreen> createState() => _GalleryPickerScreenState();
 }
 
 class _GalleryPickerScreenState extends State<GalleryPickerScreen> {
+  int _count = 0;
+  GalleryPickResult? _current;
+
+  @override
+  Widget build(BuildContext context) {
+    final album = widget.album;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          _count == 0
+              ? (album?.name ?? 'Elegir de la galería')
+              : '$_count seleccionados',
+        ),
+      ),
+      body: GalleryPickerView(
+        source: widget.source,
+        album: album,
+        requestPermission: album == null,
+        fromAlbumList: widget.fromAlbumList,
+        onChanged: (r) => setState(() {
+          _current = r;
+          _count = r.count;
+        }),
+      ),
+      bottomNavigationBar: _count == 0
+          ? null
+          : SafeArea(
+              child: Padding(
+                padding: AppSpacing.page,
+                child: AppFilledButton(
+                  label: _count == 1 ? 'Importar 1 elemento' : 'Importar $_count',
+                  icon: Icons.lock_outline,
+                  onPressed: () {
+                    final r = _current!;
+                    // Sin álbum, el contrato de siempre: la lista elegida.
+                    Navigator.of(context).pop(album == null ? r.assets : r);
+                  },
+                ),
+              ),
+            ),
+    );
+  }
+}
+
+/// Cuadrícula paginada con selección (cuerpo del selector; también se usa
+/// en la pestaña «Fotos» de [GalleryImportScreen]).
+class GalleryPickerView extends StatefulWidget {
+  const GalleryPickerView({
+    super.key,
+    required this.source,
+    required this.onChanged,
+    this.album,
+    this.requestPermission = true,
+    this.fromAlbumList = false,
+  });
+
+  final GalleryAssetSource source;
+  final GalleryAlbum? album;
+
+  /// `false` si el permiso ya se pidió fuera (pestañas).
+  final bool requestPermission;
+  final bool fromAlbumList;
+  final ValueChanged<GalleryPickResult> onChanged;
+
+  @override
+  State<GalleryPickerView> createState() => _GalleryPickerViewState();
+}
+
+class _GalleryPickerViewState extends State<GalleryPickerView> {
   static const int _pageSize = 90;
 
   final ScrollController _scroll = ScrollController();
   final List<GalleryAsset> _assets = [];
   final Map<String, GalleryAsset> _selected = {}; // orden de inserción
+  bool _allSelected = false;
+  final Set<String> _excluded = {};
   GalleryPermission? _permission;
   bool _loading = true;
   bool _hasMore = true;
   int _page = 0;
   Object? _error;
+
+  GalleryAlbumSource? get _albumSource {
+    final s = widget.source;
+    return s is GalleryAlbumSource ? s : null;
+  }
+
+  /// «Seleccionar todo» por exclusión solo con álbum (si no, selecciona lo
+  /// cargado).
+  bool get _albumMode => widget.album != null && _albumSource != null;
 
   @override
   void initState() {
@@ -59,12 +177,14 @@ class _GalleryPickerScreenState extends State<GalleryPickerScreen> {
       _error = null;
     });
     try {
-      final perm = await widget.source.requestPermission();
-      if (!mounted) return;
-      _permission = perm;
-      if (perm == GalleryPermission.denied) {
-        setState(() => _loading = false);
-        return;
+      if (widget.requestPermission) {
+        final perm = await widget.source.requestPermission();
+        if (!mounted) return;
+        _permission = perm;
+        if (perm == GalleryPermission.denied) {
+          setState(() => _loading = false);
+          return;
+        }
       }
       _assets.clear();
       _page = 0;
@@ -92,7 +212,11 @@ class _GalleryPickerScreenState extends State<GalleryPickerScreen> {
     if (_fetching || !_hasMore) return;
     _fetching = true;
     try {
-      final next = await widget.source.listAssets(page: _page, size: _pageSize);
+      final album = widget.album;
+      final src = _albumSource;
+      final next = album != null && src != null
+          ? await src.listAlbumAssets(album.id, page: _page, size: _pageSize)
+          : await widget.source.listAssets(page: _page, size: _pageSize);
       if (!mounted) return;
       setState(() {
         _assets.addAll(next);
@@ -105,11 +229,60 @@ class _GalleryPickerScreenState extends State<GalleryPickerScreen> {
     }
   }
 
+  bool _isSelected(GalleryAsset a) =>
+      _allSelected ? !_excluded.contains(a.id) : _selected.containsKey(a.id);
+
+  void _publish() {
+    widget.onChanged(
+      GalleryPickResult(
+        album: widget.album,
+        allSelected: _allSelected,
+        excluded: Set.of(_excluded),
+        assets: _selected.values.toList(),
+        fromAlbumList: widget.fromAlbumList,
+      ),
+    );
+  }
+
   void _toggle(GalleryAsset a) {
     AppHaptics.selection();
     setState(() {
-      if (_selected.remove(a.id) == null) _selected[a.id] = a;
+      if (_allSelected) {
+        if (!_excluded.remove(a.id)) _excluded.add(a.id);
+        // Todo excluido = nada seleccionado.
+        if (_excluded.length >= (widget.album?.count ?? 0)) {
+          _allSelected = false;
+          _excluded.clear();
+        }
+      } else if (_selected.remove(a.id) == null) {
+        _selected[a.id] = a;
+      }
     });
+    _publish();
+  }
+
+  bool get _everythingSelected => _albumMode
+      ? _allSelected && _excluded.isEmpty
+      : _assets.isNotEmpty && _selected.length == _assets.length && !_hasMore;
+
+  void _toggleAll() {
+    AppHaptics.selection();
+    setState(() {
+      if (_everythingSelected) {
+        _allSelected = false;
+        _excluded.clear();
+        _selected.clear();
+      } else if (_albumMode) {
+        _allSelected = true;
+        _excluded.clear();
+        _selected.clear();
+      } else {
+        for (final a in _assets) {
+          _selected[a.id] = a;
+        }
+      }
+    });
+    _publish();
   }
 
   String _label(GalleryAsset a, int index, bool selected) {
@@ -121,31 +294,6 @@ class _GalleryPickerScreenState extends State<GalleryPickerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final count = _selected.length;
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          count == 0 ? 'Elegir de la galería' : '$count seleccionados',
-        ),
-      ),
-      body: _body(),
-      bottomNavigationBar: count == 0
-          ? null
-          : SafeArea(
-              child: Padding(
-                padding: AppSpacing.page,
-                child: AppFilledButton(
-                  label: count == 1 ? 'Importar 1 elemento' : 'Importar $count',
-                  icon: Icons.lock_outline,
-                  onPressed: () =>
-                      Navigator.of(context).pop(_selected.values.toList()),
-                ),
-              ),
-            ),
-    );
-  }
-
-  Widget _body() {
     if (_permission == GalleryPermission.denied) {
       return EmptyState(
         title: 'Sin acceso a la galería',
@@ -173,6 +321,7 @@ class _GalleryPickerScreenState extends State<GalleryPickerScreen> {
         message: 'No hay fotos ni videos para importar.',
       );
     }
+    final showSelectAll = _albumMode;
     return Column(
       children: [
         if (_permission == GalleryPermission.limited)
@@ -193,6 +342,28 @@ class _GalleryPickerScreenState extends State<GalleryPickerScreen> {
               ],
             ),
           ),
+        if (showSelectAll)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    widget.album!.count == 1
+                        ? '1 elemento'
+                        : '${widget.album!.count} elementos',
+                    style: AppTypography.bodySecondary,
+                  ),
+                ),
+                AppTextButton(
+                  label: _everythingSelected
+                      ? 'Quitar selección'
+                      : 'Seleccionar todo',
+                  onPressed: _toggleAll,
+                ),
+              ],
+            ),
+          ),
         Expanded(
           child: GridView.builder(
             controller: _scroll,
@@ -205,7 +376,7 @@ class _GalleryPickerScreenState extends State<GalleryPickerScreen> {
             itemCount: _assets.length,
             itemBuilder: (context, i) {
               final a = _assets[i];
-              final sel = _selected.containsKey(a.id);
+              final sel = _isSelected(a);
               return TileFrame(
                 semanticLabel: _label(a, i, sel),
                 selected: sel,

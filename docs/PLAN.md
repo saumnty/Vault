@@ -102,3 +102,11 @@ Dónde retomar: partes A y B hechas, más la corrección del diagnóstico (D83).
 | 1 | Miniaturas en la Papelera con el mismo cargador LRU, ▶ + duración en videos, ícono de respaldo; verificado que nada purga las miniaturas de lo que está en la Papelera | 🧪 D84 (`test/v21_test.dart`, `test/ui/trash_screen_test.dart`) |
 | 2 | Búsqueda por etiqueta (sin mayúsculas ni acentos), combinable con filtros, sin la Papelera, sin migración | 🧪 D85 (`test/v21_test.dart`, `test/f9_filters_controller_test.dart`) |
 | 3 | Pruebas en emulador e iPhone | ⏳ REPORTE «Pruebas de iPhone v2.1» |
+
+### v2.2 — Importar álbumes (2026-11-19, D86–D89)
+| Paso | Qué | Estado |
+|---|---|---|
+| 1 | «Importar de galería» con pestañas Fotos / Álbumes (conteo, «Importar los N» o «Elegir», «Seleccionar todo» por exclusión), carpeta con el nombre del álbum por defecto (o existente / «(2)» / actual), misma hoja de calidad | 🧪 D89 (`test/ui/import_album_ui_test.dart`) |
+| 2 | Cola persistente y reanudable (BD v12 incremental: `sourceHash`, `import_batches`, `import_queue`), dedupe, errores por archivo, sin espacio ⇒ pausa, pausar/reanudar/cancelar, bloqueo y cierre en cada punto, memoria acotada, pantalla encendida (`keep_screen_on` 6.0.0), aviso de espacio y de datos móviles | 🧪 D86/D88 (`test/import_queue_test.dart`, `test/schema_v12_test.dart`, `test/db_rekey_test.dart`) |
+| 3 | Resumen (importados / ya estaban / con error + motivos) y originales; borrado de originales por trozos de 500 (una confirmación hasta 500) | 🧪 D87 (`test/import_queue_test.dart`) |
+| 4 | Emulador (álbum de ~200 + cierre forzado) e iPhone (20 → 1000) | ⏳ REPORTE «Pruebas de iPhone v2.2 — importar» |

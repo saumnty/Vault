@@ -37,6 +37,7 @@ class VaultTopBar extends StatelessWidget {
     this.onFilters,
     this.filterCount = 0,
     this.onTags,
+    this.onSaveAlbum,
   });
 
   final String title;
@@ -76,6 +77,10 @@ class VaultTopBar extends StatelessWidget {
   /// Etiquetas de la selección; `null` oculta la acción.
   final VoidCallback? onTags;
 
+  /// «Guardar en Fotos como álbum» (una sola carpeta seleccionada); `null`
+  /// oculta la acción.
+  final VoidCallback? onSaveAlbum;
+
   @override
   Widget build(BuildContext context) {
     final selecting = selectionCount > 0;
@@ -110,6 +115,7 @@ class VaultTopBar extends StatelessWidget {
                     onOffline: onOffline,
                     onDelete: onDelete,
                     onTags: onTags,
+                    onSaveAlbum: onSaveAlbum,
                   )
                 : Column(
                     key: const ValueKey('normal'),

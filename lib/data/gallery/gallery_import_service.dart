@@ -27,7 +27,80 @@ enum ImportStage {
   done,
   failed,
   cancelled,
+
+  /// D86: ya estaba en la bóveda (mismo `sourceAssetId` y misma huella del
+  /// original): no se importa otra vez.
+  duplicate,
 }
+
+/// Motivo de un fallo por archivo (D86). Se guarda en la cola y se muestra
+/// en pantalla; nunca lleva texto de excepciones (podría traer rutas).
+enum ImportErrorCode {
+  /// El asset ya no existe en la galería.
+  gone('Ya no está en la galería'),
+
+  /// Solo en la nube del sistema y no se puede descargar aquí.
+  notLocal('El original no está en el teléfono'),
+
+  /// iOS: la descarga de iCloud falló.
+  iCloud('No se pudo descargar de iCloud'),
+
+  /// Sin espacio en el teléfono.
+  noSpace('No hay espacio en el teléfono'),
+
+  /// No se pudo leer el original.
+  read('No se pudo leer el original'),
+
+  /// Falló el cifrado o la escritura del archivo cifrado.
+  encrypt('No se pudo cifrar'),
+
+  /// La app se cerró varias veces con este archivo a medias.
+  interrupted('Se interrumpió varias veces'),
+
+  /// Cualquier otro.
+  unknown('Error inesperado');
+
+  const ImportErrorCode(this.message);
+
+  /// Motivo en español para la pantalla.
+  final String message;
+
+  static ImportErrorCode fromDb(String? v) => ImportErrorCode.values.firstWhere(
+    (c) => c.name == v,
+    orElse: () => ImportErrorCode.unknown,
+  );
+}
+
+/// Fallo clasificado de un archivo (D86).
+class ImportFailure implements Exception {
+  const ImportFailure(this.code);
+  final ImportErrorCode code;
+
+  @override
+  String toString() => code.message;
+}
+
+/// `true` si [e] es «sin espacio» (ENOSPC = 28 en Android/Linux y en iOS).
+bool isNoSpaceError(Object e) =>
+    e is FileSystemException && e.osError?.errorCode == 28;
+
+/// Dedupe de la cola (D86): [mayExist] es barato (¿hay algún item vivo con
+/// ese `sourceAssetId`?); solo si lo hay se calcula la huella del original y
+/// [find] devuelve el id del item que ya lo tiene (o `null`).
+class ImportDedupe {
+  const ImportDedupe({required this.mayExist, required this.find});
+  final Future<bool> Function(String assetId) mayExist;
+  final Future<String?> Function(String assetId, String sourceHash) find;
+}
+
+/// Avisa de la etapa del archivo en curso.
+typedef ImportStageEmitter =
+    void Function(
+      ImportStage stage, {
+      double? fraction,
+      int? original,
+      int? compressed,
+    });
 
 /// Cancelación cooperativa de un lote.
 class ImportCancelToken {
@@ -59,7 +132,11 @@ class ImportItemResult {
     this.storedBytes,
     this.compressed = false,
     this.thumbnailCreated = false,
+    this.errorCode,
   });
+
+  /// Motivo clasificado si falló (D86).
+  final ImportErrorCode? errorCode;
 
   final String assetId;
 
@@ -327,6 +404,7 @@ class GalleryImportService {
             assetId: asset.id,
             stage: ImportStage.failed,
             error: e.toString(),
+            errorCode: classifyImportError(e),
           );
         }
         if (result.ok) done++;
@@ -360,6 +438,101 @@ class GalleryImportService {
     return ImportBatchResult(results, cancelled: token.isCancelled);
   }
 
+  /// D86: importa UN asset de la cola persistente con un [itemId] fijado de
+  /// antemano (la cola lo guarda ANTES de empezar: tras un cierre a mitad se
+  /// sabe si la fila llegó a la BD). Llaves, generación y ticket se leen
+  /// AHORA (una rotación entre dos archivos usa la llave vigente). Lanza
+  /// [StateError] con la bóveda bloqueada o con otro lote en curso;
+  /// [ImportFailure] con el motivo si el archivo falla; devuelve `cancelled`
+  /// si [token] se cancela (o la sesión cambia) a mitad, sin dejar nada.
+  Future<ImportItemResult> importQueued(
+    GalleryAsset asset,
+    ImportOptions options, {
+    required String itemId,
+    required ImportCancelToken token,
+    ImportDedupe? dedupe,
+    ImportStageEmitter? onStage,
+  }) async {
+    final gen = _keyGen();
+    final fKey = filesKey();
+    final tKey = thumbsKey();
+    if (fKey == null || tKey == null) {
+      throw StateError('La bóveda está bloqueada');
+    }
+    final SessionTicket? ticket;
+    final provider = sessionTicket;
+    if (provider != null) {
+      ticket = provider();
+      if (ticket == null) throw StateError('La bóveda está bloqueada');
+    } else {
+      ticket = null;
+    }
+    if (_running) throw StateError('Ya hay una importación en curso');
+    _running = true;
+    _currentToken = token;
+    void onCancel() => compressor.cancel();
+    token.addListener(onCancel);
+    try {
+      await AppPaths.init();
+      return await _importOne(
+        asset,
+        options,
+        gen,
+        fKey,
+        tKey,
+        token,
+        ticket,
+        onStage ?? (_, {fraction, original, compressed}) {},
+        forcedItemId: itemId,
+        dedupe: dedupe,
+      );
+    } on _Cancelled {
+      return ImportItemResult(assetId: asset.id, stage: ImportStage.cancelled);
+    } on ImportFailure {
+      rethrow;
+    } on Object catch (e) {
+      if (ticket != null && !ticket.isValid) {
+        // Bloqueo a mitad: no es un fallo del archivo.
+        return ImportItemResult(
+          assetId: asset.id,
+          stage: ImportStage.cancelled,
+        );
+      }
+      throw ImportFailure(classifyImportError(e));
+    } finally {
+      token.removeListener(onCancel);
+      if (identical(_currentToken, token)) _currentToken = null;
+      _running = false;
+    }
+  }
+
+  /// D86: borra lo que un intento interrumpido (app cerrada a mitad) pudo
+  /// dejar de [itemId] SIN fila en la BD: `.vault` y `.thumb` de cualquier
+  /// generación hasta la vigente, en SU bóveda. El llamador comprueba antes
+  /// que la fila no existe. Nunca lanza.
+  Future<void> discardPartial(String itemId) async {
+    await AppPaths.init();
+    // +1 por si una rotación avanzó entre medias.
+    final top = (_keyGen() + 1).clamp(1, AppPaths.maxKeyGen);
+    for (var gen = 1; gen <= top; gen++) {
+      await _tryDelete(_paths.resolve(AppPaths.vaultRelativePath(itemId, gen: gen)));
+      await _tryDelete(_paths.resolve(AppPaths.thumbRelativePath(itemId, gen: gen)));
+    }
+  }
+
+  /// D86: limpieza al terminar, pausar o cancelar un lote de la cola (lo
+  /// mismo que el `finally` de [importAssets]): temporales del compresor y
+  /// de la importación y cachés en claro del plugin. Nunca lanza.
+  Future<void> batchCleanup() async {
+    try {
+      await compressor.cleanup();
+    } on Object {
+      // Limpieza best-effort.
+    }
+    await _cleanTempRoot();
+    await _clearSourceCaches();
+  }
+
   Future<ImportItemResult> _importOne(
     GalleryAsset asset,
     ImportOptions options,
@@ -368,21 +541,17 @@ class GalleryImportService {
     SecretKey tKey,
     ImportCancelToken token,
     SessionTicket? ticket,
-    void Function(
-      ImportStage stage, {
-      double? fraction,
-      int? original,
-      int? compressed,
-    })
-    emit,
-  ) async {
+    ImportStageEmitter emit, {
+    String? forcedItemId,
+    ImportDedupe? dedupe,
+  }) async {
     void check() {
       // D67: un bloqueo u otra bóveda a mitad cancelan el lote.
       if (ticket != null && !ticket.isValid) token.cancel();
       if (token.isCancelled) throw _Cancelled();
     }
 
-    final itemId = _newId();
+    final itemId = forcedItemId ?? _newId();
     final vaultRel = AppPaths.vaultRelativePath(itemId, gen: gen);
     final thumbRel = AppPaths.thumbRelativePath(itemId, gen: gen);
     // D67: rutas absolutas de SU bóveda, capturadas al empezar.
@@ -400,23 +569,66 @@ class GalleryImportService {
       // iOS: RUTA SIN PROBAR (iCloud real no verificado).
       final local = await source.isLocallyAvailable(asset.id);
       if (!local && !_isIOS) {
+        if (forcedItemId != null) {
+          throw const ImportFailure(ImportErrorCode.notLocal);
+        }
         throw StateError('El original no está disponible en el dispositivo');
       }
       emit(
         local ? ImportStage.hashing : ImportStage.downloading,
         fraction: local ? null : 0,
       );
-      final origin = await source.originFile(
-        asset.id,
-        allowNetwork: !local && _isIOS,
-        onProgress: (f) => emit(ImportStage.downloading, fraction: f),
-      );
+      final OriginFile? origin;
+      try {
+        origin = await source.originFile(
+          asset.id,
+          allowNetwork: !local && _isIOS,
+          onProgress: (f) => emit(ImportStage.downloading, fraction: f),
+        );
+      } on Object catch (e) {
+        if (forcedItemId == null) rethrow;
+        if (isNoSpaceError(e)) throw const ImportFailure(ImportErrorCode.noSpace);
+        throw ImportFailure(
+          local ? ImportErrorCode.read : ImportErrorCode.iCloud,
+        );
+      }
       if (origin == null) {
+        if (forcedItemId != null) {
+          throw ImportFailure(
+            local ? ImportErrorCode.gone : ImportErrorCode.iCloud,
+          );
+        }
         throw StateError('No se pudo obtener el archivo original');
       }
       if (origin.isTemporary) toDelete.add(origin.file);
       check();
       final originalBytes = await origin.file.length();
+
+      // D86: huella del ORIGINAL. Solo se calcula aquí si hace falta para el
+      // dedupe (ya hay un item vivo de ese asset) o porque se va a comprimir
+      // (el contenido guardado será otro). Si no, es el `contentHash`.
+      final willCompress =
+          asset.isVideo && options.videoQuality != VideoQualityOption.original;
+      String? sourceHash;
+      if (dedupe != null && await dedupe.mayExist(asset.id)) {
+        emit(ImportStage.hashing);
+        sourceHash = await sha256OfFile(origin.file);
+        check();
+        final existing = await dedupe.find(asset.id, sourceHash);
+        if (existing != null) {
+          return ImportItemResult(
+            assetId: asset.id,
+            stage: ImportStage.duplicate,
+            itemId: existing,
+            originalBytes: originalBytes,
+          );
+        }
+      }
+      if (willCompress && forcedItemId != null && sourceHash == null) {
+        emit(ImportStage.hashing);
+        sourceHash = await sha256OfFile(origin.file);
+        check();
+      }
 
       // (b) Compresión opcional de video.
       var content = origin.file;
@@ -466,7 +678,10 @@ class GalleryImportService {
       // no se comprimió; el comprimido en caso contrario).
       emit(ImportStage.hashing);
       final stageWatch = Stopwatch()..start();
-      final contentHash = await sha256OfFile(content);
+      // D86: sin compresión el contenido ES el original (una sola pasada).
+      final contentHash = !compressed && sourceHash != null
+          ? sourceHash
+          : await sha256OfFile(content);
       final hashMs = stageWatch.elapsedMilliseconds;
       check();
 
@@ -474,7 +689,17 @@ class GalleryImportService {
       emit(ImportStage.encrypting);
       stageWatch.reset();
       check();
-      final fileHeader = await _crypto.encryptFile(content, vaultFile, fKey);
+      final VaultHeader fileHeader;
+      try {
+        fileHeader = await _crypto.encryptFile(content, vaultFile, fKey);
+      } on Object catch (e) {
+        if (forcedItemId == null || (ticket != null && !ticket.isValid)) {
+          rethrow;
+        }
+        throw ImportFailure(
+          isNoSpaceError(e) ? ImportErrorCode.noSpace : ImportErrorCode.encrypt,
+        );
+      }
       if (!kReleaseMode) {
         // Solo tamaños y duraciones (sin nombres ni rutas).
         debugPrint(
@@ -544,6 +769,8 @@ class GalleryImportService {
           contentHash: contentHash,
           sourceAssetId: asset.id,
           durationMs: asset.isVideo ? asset.duration.inMilliseconds : null,
+          // D86: huella del original (= contentHash sin compresión).
+          sourceHash: compressed ? sourceHash : contentHash,
         ),
       );
       committed = true;
@@ -640,7 +867,9 @@ class GalleryImportService {
   /// Drive). Es la lista que se muestra al usuario antes de pedir la
   /// confirmación. Vacía si el borrado está apagado o no hay verificador. No
   /// borra nada.
-  Future<List<VaultItemModel>> verifiedDeleteCandidates() async {
+  Future<List<VaultItemModel>> verifiedDeleteCandidates({
+    void Function(int done, int total)? onProgress,
+  }) async {
     final verifier = cloudVerifier;
     if (verifier == null || !await isDeletionEnabled) return const [];
     // Un mismo original puede haberse importado varias veces (p. ej. con
@@ -650,15 +879,24 @@ class GalleryImportService {
       ..sort((a, b) => b.fileSize.compareTo(a.fileSize));
     final seen = <String>{};
     final out = <VaultItemModel>[];
+    var done = 0;
     for (final c in all) {
+      onProgress?.call(done++, all.length);
       if (seen.contains(c.sourceAssetId)) continue;
       if (await verifier(c)) {
         seen.add(c.sourceAssetId!);
         out.add(c);
       }
     }
+    onProgress?.call(all.length, all.length);
     return out;
   }
+
+  /// D87: tope de ids por llamada a `deleteAssets`. Android 11+ e iOS piden
+  /// UNA confirmación del sistema por llamada, así que hasta este número es
+  /// una sola; por encima se trocea (una URI ocupa ~60 B en la transacción
+  /// Binder de `createDeleteRequest`: 500 ≈ 30 KB, lejos del límite de 1 MB).
+  static const int deleteChunkSize = 500;
 
   /// Borra de la galería los originales de [candidates] (subconjunto de
   /// [deleteOriginalCandidates] que el usuario VIO y confirmó).
@@ -670,6 +908,7 @@ class GalleryImportService {
   Future<List<String>> deleteOriginalsConfirmedInCloud({
     required List<VaultItemModel> candidates,
     required bool userConfirmed,
+    void Function(int done, int total)? onProgress,
   }) async {
     if (!userConfirmed || !await isDeletionEnabled) return const [];
     final verifier = cloudVerifier;
@@ -677,7 +916,9 @@ class GalleryImportService {
     final candidatesNow = await deleteOriginalCandidates();
     final eligible = {for (final c in candidatesNow) c.id};
     final byAsset = <String, String>{}; // assetId -> itemId
+    var checked = 0;
     for (final c in candidates) {
+      onProgress?.call(checked++, candidates.length);
       if (!eligible.contains(c.id)) continue;
       // Releer: el estado pudo cambiar desde que se mostró la lista.
       final fresh = await repository.getItem(c.id);
@@ -686,8 +927,20 @@ class GalleryImportService {
       if (!await verifier(fresh)) continue;
       byAsset[fresh.sourceAssetId!] = fresh.id;
     }
+    onProgress?.call(candidates.length, candidates.length);
     if (byAsset.isEmpty) return const [];
-    final deletedAssets = await source.deleteAssets(byAsset.keys.toList());
+    // D87: hasta [deleteChunkSize] originales = UNA confirmación del sistema.
+    // Si el usuario rechaza un trozo (0 borrados) no se le vuelve a preguntar.
+    final ids = byAsset.keys.toList();
+    final deletedAssets = <String>[];
+    for (var i = 0; i < ids.length; i += deleteChunkSize) {
+      final end = i + deleteChunkSize < ids.length
+          ? i + deleteChunkSize
+          : ids.length;
+      final got = await source.deleteAssets(ids.sublist(i, end));
+      deletedAssets.addAll(got);
+      if (got.isEmpty) break;
+    }
     // S-03: sin original en la galería, sus miniaturas en la caché del
     // plugin serían la única copia en claro fuera de la bóveda.
     await _clearSourceCaches();
@@ -707,6 +960,14 @@ class GalleryImportService {
 }
 
 class _Cancelled implements Exception {}
+
+/// Motivo de un fallo cualquiera de un archivo (D86).
+ImportErrorCode classifyImportError(Object e) {
+  if (e is ImportFailure) return e.code;
+  if (isNoSpaceError(e)) return ImportErrorCode.noSpace;
+  if (e is FileSystemException) return ImportErrorCode.read;
+  return ImportErrorCode.unknown;
+}
 
 /// SHA-256 hex de un archivo, en streaming.
 Future<String> sha256OfFile(File file) async {

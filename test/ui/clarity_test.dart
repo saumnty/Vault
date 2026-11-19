@@ -47,7 +47,9 @@ class _FakeService implements GalleryImportService {
   Future<int> pendingOriginalsCount() async => pending;
 
   @override
-  Future<List<VaultItemModel>> verifiedDeleteCandidates() async {
+  Future<List<VaultItemModel>> verifiedDeleteCandidates({
+    void Function(int done, int total)? onProgress,
+  }) async {
     verifiedCalls++;
     return const [];
   }

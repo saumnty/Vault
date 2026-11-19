@@ -877,3 +877,97 @@ Pruebas nuevas en `test/diagnostics_store_test.dart` (grupo «D83»):
 5. **Con filtros.** Activa un filtro (p. ej. Tipo: Foto) y busca por el nombre de la etiqueta: salen solo las fotos con esa etiqueta, de todas las carpetas. Con la etiqueta como filtro de etiquetas más texto de otra etiqueta: solo archivos que cumplan ambas cosas.
 6. **Papelera excluida.** Manda a la Papelera un archivo etiquetado y busca la etiqueta: ya no aparece; al restaurarlo vuelve a aparecer.
 7. **Sin etiquetas.** Busca un texto que solo esté en el nombre de un archivo sin etiquetas: aparece. Busca texto inexistente: estado vacío sin errores.
+
+## v2.2 — Exportar carpeta como álbum (D90)
+
+### Qué se hizo
+* Menú de carpeta (selección de UNA carpeta, y 4.ª acción al deslizar en la lista): «Guardar en Fotos como álbum». Aviso de copias SIN cifrar con confirmación explícita, álbum con el nombre de la carpeta (reutiliza el existente), solo la carpeta por defecto (casilla «Incluir subcarpetas»).
+* Lote secuencial, un archivo a la vez, con progreso «N de M», Pausar/Reanudar/Cancelar, error por archivo sin detener el lote, resumen (guardados / con error / sin intentar), «Reintentar los que faltan», aviso de permiso denegado (con «Abrir ajustes») y de espacio insuficiente. Sin duplicados al repetir en la misma sesión (estado solo en memoria; tras reiniciar la app no se sabe qué quedó en Fotos y el diálogo lo avisa). El autobloqueo cancela, cierra el diálogo y no deja temporales.
+* Android: `RELATIVE_PATH` `Pictures/<álbum>` / `Movies/<álbum>`. iOS: Swift `saveToAlbum` (PhotoKit) en `AppDelegate.swift`, `// iOS:` sin probar.
+
+### Archivos
+`lib/data/gallery/photo_saver.dart` (`AlbumPhotoSaver`, `albumNameFor`), `lib/features/vault/viewer/media_exporter.dart` (`AlbumMediaExporter`, `exportToAlbum`), `lib/features/vault/viewer/folder_album_export.dart` (nuevo: `FolderAlbumJob`, `FolderAlbumService`), `lib/features/vault/widgets/album_export_dialog.dart` (nuevo), `lib/features/vault/widgets/selection_bar.dart`, `vault_top_bar.dart`, `lib/features/vault/home_vault_screen.dart`, `lib/features/vault/vault_services.dart` (`folderAlbums`), `ios/Runner/AppDelegate.swift`; tests `test/v22_album_test.dart`, `test/support/ui_helpers.dart` (`fakeServices(folderAlbums:)`).
+
+### Resultados
+Ver el informe final de la tarea (analyze y tests). Sin cambios de esquema de BD.
+
+### Límites
+* iOS con permiso de solo agregar: puede no ver un álbum previo del mismo nombre (se crearía otro) y, si no ve el que acaba de crear, el lote se detiene tras el 2.º «álbum creado». Sin probar.
+* Android 7-9: sin carpeta de álbum (el plugin ignora la ruta relativa).
+* Tras cerrar la app o bloquear no se recuerda qué se guardó: repetir puede duplicar.
+
+### Pruebas de iPhone v2.2 — exportar
+(Build nueva ENCIMA de la actual; no desinstalar. Empieza con una carpeta de ~20 fotos.)
+1. Selecciona una carpeta (pulsación larga) y toca «Guardar en Fotos como álbum». Debe avisar de «SIN cifrar», mostrar el nombre del álbum y la cuenta. Cancela: no pasa nada ni se pide permiso.
+2. Confirma. Debe pedir el permiso de Fotos (solo agregar) UNA vez; progreso «N de 20»; al terminar «Guardados: 20 de 20». En Fotos > Álbumes: UN solo álbum con el nombre de la carpeta y 20 elementos. **Clave:** que no aparezcan álbumes repetidos; si el lote se detiene con «iOS no permitió añadir al álbum…», anótalo (hay que pasar a acceso completo).
+3. Repite sobre la misma carpeta sin cerrar la app: debe decir «Ya guardaste 20 de 20» y no ofrecer guardar de nuevo salvo «Repetir todo».
+4. Con un álbum ya existente del mismo nombre (créalo en Fotos antes): comprueba si se añade a él o crea otro.
+5. Pausa a mitad y reanuda; cancela a mitad (lo guardado queda); vuelve a abrir y guarda «los que faltan».
+6. Niega el permiso (Ajustes > Kern > Fotos) y reintenta: mensaje claro y «Abrir ajustes».
+7. Bloquea la app a mitad (botón de bloqueo o segundo plano largo): el diálogo se cierra, el lote se detiene. Al desbloquear no debe haber temporales (revisa que Almacenamiento no crezca).
+8. Con un video largo en la carpeta: se guarda en el álbum y reproduce.
+9. Prueba «Incluir subcarpetas» con una carpeta que tenga una subcarpeta.
+(Emulador Android: carpeta de ~25 imágenes; mismo guion, el álbum es `Pictures/<nombre>` en la app Fotos/Galería; videos en `Movies/<nombre>`.)
+
+## v2.2 — Importar álbumes (D86–D89)
+
+### Qué se hizo
+* **Importar álbum** (punto 1): «Importar de galería» abre pestañas **Fotos | Álbumes**. Álbumes: lista con nombre y conteo («Recientes» primero); al tocar uno, «Importar los N» o «Elegir» (cuadrícula del álbum con «Seleccionar todo» / «Quitar selección», por exclusión: nunca carga el álbum entero). Fotos: la cuadrícula de siempre, también con «Seleccionar todo». Misma hoja de calidad de video. Destino por defecto: carpeta NUEVA con el nombre del álbum dentro de la carpeta actual; si ya existe una con ese nombre, pregunta «Usar la existente» (el dedupe evita duplicar) / «Carpeta nueva «X (2)»» / «Carpeta actual». La carpeta se crea al confirmar.
+* **Lote grande reanudable** (punto 2): cola en la BD cifrada de cada bóveda (v12 incremental), estado por archivo (pendiente / en curso / hecho / ya estaba / error con motivo), de uno en uno, páginas de 100 ids al preparar y UN asset por id al importar. Antes de empezar: total, tamaño estimado contra el espacio libre (aviso «Importar de todos modos» si no alcanza) y, en iOS con datos móviles, aviso de iCloud. Durante: «Importando N de M», etapa (con % de iCloud y «por datos móviles»), tiempo restante, ya estaban / con error, último motivo, Pausar / Cancelar; en pausa: Reanudar / Cancelar / Cerrar y aviso en la cuadrícula. Sin espacio a mitad ⇒ pausa con su motivo. Pantalla encendida solo durante el lote (`keep_screen_on` 6.0.0; `wakelock_plus` no resuelve con estas versiones, D88). Bloqueo: el archivo en curso se corta sin dejar nada y el lote sigue al desbloquear; cierre forzado: al reabrir y desbloquear sigue donde iba, sin duplicados (el `itemId` se guarda antes de empezar cada archivo).
+* **Al terminar** (punto 3): resumen «N importado(s) · M ya estaban · K con error» con la lista de motivos y «Los originales siguen en tu galería…»; «Listo» cierra el lote. Borrado de originales igual que antes, ahora por trozos de 500 (una sola confirmación del sistema hasta 500; «Comprobando N de M» mientras verifica en Drive).
+* La cola **no** viaja en el snapshot de Drive (se vacía en la copia, con `VACUUM`) ni se hereda al restaurar (D87).
+
+### Archivos
+Nuevos: `lib/data/gallery/gallery_album_source.dart`, `import_queue_repository.dart`, `import_queue_service.dart`, `import_wake_lock.dart`; `lib/features/gallery/gallery_import_screen.dart`, `gallery_import_flow.dart`, `import_queue_sheet.dart`. Cambiados: `lib/data/repositories/vault_database.dart` (v12, `localOnlyTables`, `_rekeyTables`), `lib/data/restore/restore_service.dart`, `lib/data/models/vault_item_model.dart` (`sourceHash`), `lib/data/gallery/gallery_import_service.dart` (`importQueued`, `ImportDedupe`, `ImportErrorCode`, `discardPartial`, `batchCleanup`, borrado por trozos), `lib/data/gallery/photo_manager_gallery_source.dart` (álbumes, `assetById`), `lib/features/gallery/gallery_picker_screen.dart` (`GalleryPickerView`, «Seleccionar todo», `GalleryPickResult`), `import_options_sheet.dart` (modo álbum), `import_progress_sheet.dart`, `delete_originals_sheet.dart`, `gallery_deps.dart`, `lib/features/vault/vault_services.dart` (cola en principal y adicional), `lib/features/vault/home_vault_screen.dart` (`_importFromGallery`, reanudación al abrir, aviso), `pubspec.yaml`/`pubspec.lock` (`keep_screen_on` 6.0.0). Tests nuevos: `test/import_queue_test.dart`, `test/schema_v12_test.dart`, `test/ui/import_album_ui_test.dart`; ampliados/ajustados: `test/db_rekey_test.dart`, `test/schema_v11_test.dart`, `test/sync_service_test.dart`, `test/ui/clarity_test.dart`.
+
+### Resultados
+`flutter analyze`: sin problemas. `flutter test --timeout 3x`: **1427 tests en verde** (incluye los ~45 nuevos de v2.2 y los de exportar de la otra parte, en el mismo árbol). Emulador e iPhone: sin probar.
+
+### Límites (honestos)
+* **iOS no deja trabajar en segundo plano**: la pantalla encendida solo vale con Kern a la vista. Si sales, iOS la suspende en segundos; al volver sigue (o, pasado el autobloqueo, tras desbloquear). No se pidió tiempo de segundo plano (`beginBackgroundTask`).
+* **El tamaño es una estimación** (las fotos/videos no dicen su tamaño sin materializarlos): el aviso de espacio puede quedarse corto o largo; si se llena, el lote se pausa.
+* **iCloud**: no se sabe de antemano cuántas fotos están solo en iCloud (comprobarlo con 1000 sería lento); el aviso de datos móviles es general y se repite en la etapa de cada descarga. iCloud real sin probar.
+* **Álbum que cambia mientras se prepara** (fotos nuevas arriba): la paginación por posición puede saltar o repetir alguna; las repetidas se ignoran (`UNIQUE`) y las saltadas no entran en ese lote.
+* **Dedupe**: un video importado con compresión ANTES de v12 no tiene `sourceHash`, así que reimportarlo con compresión lo duplica (las fotos y los videos sin comprimir sí se reconocen).
+* **Tres cierres seguidos** en el mismo archivo lo dan por perdido («Se interrumpió varias veces»); un bloqueo de la app no cuenta, pero un cierre por el sistema sí.
+* La limpieza de fin de lote borra `import_tmp/`, que comparte con la regeneración de miniaturas (igual que antes de v2.2): si coinciden, esa miniatura se reintenta en el próximo arranque.
+* Android 10: borrar originales sigue pidiendo una confirmación por archivo (límite del sistema).
+* Emulador e iPhone sin probar.
+
+### Qué probar en el emulador Android
+1. Genera un álbum de ~200 imágenes: `adb shell mkdir -p /sdcard/Pictures/Prueba200` y copia 200 JPG (`for i in $(seq 1 200); do adb push foto.jpg /sdcard/Pictures/Prueba200/img_$i.jpg; done` desde Git Bash, con una imagen cualquiera; para que no sean idénticas usa varias o genera con ImageMagick) y `adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/Prueba200` (o reinicia el emulador).
+2. Importar de galería > Álbumes > «Prueba200» > «Importar los 200» > calidad > «Carpeta nueva «Prueba200»» > aviso previo (tamaño y espacio) > Empezar. Comprueba «Importando N de 200», tiempo restante, y que la pantalla no se apaga.
+3. A mitad (≈ 80): `adb shell am force-stop com.saumnty.vault`. Reabre, PIN: debe abrirse la hoja y seguir desde ≈ 80, sin duplicar. Al terminar: «200 importado(s) · 0 ya estaban · 0 con error» y la carpeta con 200.
+4. Repite «Importar los 200» del mismo álbum: «0 importado(s) · 200 ya estaban».
+5. Pausa a mitad, cierra la hoja (aviso en la cuadrícula), bloquea y desbloquea: sigue en pausa; «Reanudar» termina.
+6. Con el autobloqueo corto (`--dart-define=VAULT_AUTOLOCK_MS=15000`): HOME durante el lote > 20 s > vuelve: pide PIN y luego sigue solo.
+7. Borra originales (Ajustes) con los 200 ya en la nube: una sola confirmación del sistema (Android 11+).
+8. Revisa `adb shell run-as com.saumnty.vault ls -R cache files` tras el cierre forzado y al terminar: nada en claro en `import_tmp`.
+
+### Pruebas de iPhone v2.2 — importar
+(Build nueva ENCIMA de la actual; no desinstalar. La BD pasa de v11 a v12 sola al abrir: no se toca nada de lo que ya hay.)
+1. **Abrir tras actualizar.** PIN: todo igual que antes (carpetas, fotos, videos, Papelera, etiquetas, sincronización). Si algo falta, para y avisa.
+2. **Álbum pequeño primero (~20 fotos).** Crea en Fotos un álbum de unas 20 fotos (alguna en iCloud si puedes). Importar de galería > Álbumes: el álbum sale con su conteo. «Importar los 20» > calidad > «Carpeta nueva» > aviso previo > Empezar. Debe terminar con «20 importado(s)…» y la carpeta con 20 miniaturas.
+3. **Repetir:** «Importar los 20» otra vez del mismo álbum ⇒ «0 importado(s) · 20 ya estaban». Elige «Usar la carpeta que ya existe».
+4. **Elegir + Seleccionar todo:** abre el álbum > Elegir > Seleccionar todo > quita 2 > «Importar 18»: entran solo esos (los demás ya estaban).
+5. **iCloud y datos móviles:** con Wi-Fi apagado y datos móviles, importa algo que esté solo en iCloud: el aviso previo debe avisar de datos móviles y la etapa decir «Descargando de iCloud por datos móviles NN %».
+6. **Cierre a mitad (~50–100 fotos):** empieza un álbum mediano, a mitad cierra Kern desde el selector de apps (deslizar hacia arriba). Reabre y PIN: la hoja aparece y sigue desde donde iba; al final, sin duplicados (cuenta las miniaturas).
+7. **Segundo plano:** durante el lote ve a otra app 1–2 min y vuelve (autobloqueo según tu ajuste): sigue o pide PIN y después sigue.
+8. **Pausar / Cancelar:** pausa, cierra la hoja (aviso «Importación en pausa» en la cuadrícula), reanuda; luego cancela otro lote: el resumen dice cuántos quedaron sin procesar.
+9. **Grande (~1000), solo después de 2–8 bien:** «Recientes» > Elegir > Seleccionar todo o un álbum grande. Mira que el aviso previo dé un tamaño razonable y el espacio libre; deja el teléfono enchufado con Kern abierta (la pantalla no debe apagarse). Anota el tiempo total y si se calentó.
+10. **Borrar originales** (si lo usas): cuando estén en la nube, Ajustes > borrar originales: «Comprobando N de M», y una sola confirmación del sistema hasta 500 (con más, una por cada 500).
+11. **Bóveda adicional:** dentro de la adicional importa un álbum pequeño: va a la adicional, no aparece en la principal, y su lote no se ve al abrir la principal.
+12. Si algo falla: Ajustes > Diagnóstico > Copiar (solo números y tipos de error, sin nombres de archivo).
+
+## v2.2 — Prueba en el emulador (2026-11-19, sin cuenta de Google, bóveda de prueba)
+Imágenes JPEG 400x300 (~9 KB) generadas; emulador con ~590 MB libres.
+| Prueba | Resultado |
+|---|---|
+| Álbumes con conteo; «Importar los 200» a carpeta nueva con el nombre del álbum | OK (~2,5 importaciones/s) |
+| Reimportar el mismo álbum | OK: «0 importados · 200 ya estaban» |
+| Force-stop a ~115 de 400, reabrir y PIN | OK: continúa, 400 exactos, sin duplicados, `import_tmp` limpio |
+| Pausar / bloquear / reanudar; cancelar (131 de 300) y repetir | OK |
+| Elegir + Seleccionar todo (10, quitar 2 → 8) | OK |
+| Bloqueo a mitad de lote (autobloqueo «Inmediato») | OK: se detiene, sin temporales, sigue tras desbloquear |
+| Exportar carpeta de 25 y de 400 como álbum (`Pictures/<nombre>`) | OK (~8 archivos/s): pausa, cancelar, «reintentar los 40 que faltan» sin duplicados, repetir avisa, bloqueo a mitad sin temporales |
+**No probado:** borrado de originales con una sola confirmación (exige Drive verificado y no se inició sesión); autobloqueo de 15 s con HOME (poco espacio para recompilar). **Detalles menores sin corregir:** B1 la barra del diálogo de exportar aparece llena (no proporcional); B2 el «≈ N min restantes» sobreestima; B3 el aviso de espacio previo es muy pesimista (39 MB para ~1,7 MB reales); B4 flecha «Volver» extra visible una vez tras volver de Ajustes (sin investigar).

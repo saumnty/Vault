@@ -219,6 +219,43 @@ void main() {
     await vdb.close();
   });
 
+  test('D86 (v12): un lote de importación a medias sobrevive al re-cifrado '
+      '(cola y sourceHash)', () async {
+    var vdb = newDb();
+    var db = await vdb.database;
+    await db.insert('import_batches', {
+      'id': 'b1',
+      'state': 'running',
+      'videoQuality': 'original',
+      'total': 2,
+      'createdAt': 1,
+      'updatedAt': 1,
+    });
+    for (final (seq, st) in [(0, 'done'), (1, 'pending')]) {
+      await db.insert('import_queue', {
+        'batchId': 'b1',
+        'seq': seq,
+        'assetId': 'asset$seq',
+        'state': st,
+      });
+    }
+    await db.update('vault_items', {'sourceHash': 'h'}, where: "id = 'a'");
+    await vdb.close();
+    vdb = newDb();
+    await rekey(vdb);
+    db = await vdb.database;
+    expect((await db.query('import_batches')).single['state'], 'running');
+    expect(
+      (await db.query('import_queue', orderBy: 'seq')).map((r) => r['state']),
+      ['done', 'pending'],
+    );
+    expect(
+      (await db.query('vault_items', where: "id = 'a'")).single['sourceHash'],
+      'h',
+    );
+    await vdb.close();
+  });
+
   test('D78: eventos del diagnóstico entrando durante el re-cifrado no '
       'rompen la verificación (el almacén espera)', () async {
     final vdb = newDb();

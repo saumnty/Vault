@@ -70,10 +70,24 @@ class VaultSchemaTooNewException implements Exception {
 /// `vault_meta` con la sal del tag y tabla `diag_events` para el diagnóstico
 /// persistente, vacía hasta la parte B). Solo `ADD COLUMN` y
 /// `CREATE TABLE IF NOT EXISTS`: ninguna fila se toca.
+/// v12 = importar álbumes (v2.2, D86: `vault_items.sourceHash`, índice por
+/// `sourceAssetId` y tablas `import_batches`/`import_queue`, la cola
+/// reanudable de importación de ESTE teléfono; nunca sale en el snapshot).
+/// Igual de incremental: `ADD COLUMN` y `CREATE … IF NOT EXISTS`.
 class VaultSchema {
   VaultSchema._();
 
-  static const int version = 11;
+  static const int version = 12;
+
+  /// Tablas que pertenecen a ESTE teléfono y NO viajan en el snapshot de
+  /// Drive (se vacían en la copia antes de subirla y al restaurar): el
+  /// diagnóstico (D78) y la cola de importación (D86: lleva ids de la
+  /// fototeca local, que no significan nada en otro teléfono).
+  static const List<String> localOnlyTables = [
+    'diag_events',
+    'import_queue',
+    'import_batches',
+  ];
 
   /// Triggers de cardinalidad de una rotación en curso (D62). Se crean al
   /// congelar el conjunto viejo y se quitan al terminar; un snapshot que los
@@ -100,6 +114,8 @@ class VaultSchema {
     'idx_items_deleted',
     'idx_item_tags_tag',
     'idx_items_keygen',
+    'idx_items_source',
+    'idx_import_queue_state',
   ];
 
   static Future<void> create(DatabaseExecutor db) async {
@@ -178,6 +194,59 @@ class VaultSchema {
     await createTagTables(db);
     await addRotationSchema(db);
     await addAccountTagSchema(db);
+    await addImportQueueSchema(db);
+  }
+
+  /// v12 (D86, v2.2): cola reanudable de importación por bóveda y huella del
+  /// original. Idempotente y estrictamente incremental:
+  /// * `vault_items.sourceHash` (SHA-256 del ORIGINAL tal como estaba en la
+  ///   galería; difiere de `contentHash` solo si el video se comprimió). Filas
+  ///   existentes: `NULL` (para ellas `contentHash` sirve como huella).
+  /// * índice `idx_items_source` (dedupe por `sourceAssetId`).
+  /// * `import_batches` (un lote: estado, carpeta destino, calidad) e
+  ///   `import_queue` (un asset por fila, con su estado). Vacías al crear.
+  static Future<void> addImportQueueSchema(DatabaseExecutor db) async {
+    final cols = (await db.rawQuery(
+      'PRAGMA table_info(vault_items)',
+    )).map((r) => r['name']).toSet();
+    if (!cols.contains('sourceHash')) {
+      await db.execute('ALTER TABLE vault_items ADD COLUMN sourceHash TEXT');
+    }
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_items_source ON vault_items(sourceAssetId)',
+    );
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS import_batches (
+        id TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        folderId TEXT,
+        videoQuality TEXT NOT NULL,
+        total INTEGER NOT NULL DEFAULT 0,
+        estimatedBytes INTEGER NOT NULL DEFAULT 0,
+        pauseReason TEXT,
+        createdAt INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS import_queue (
+        batchId TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        assetId TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending',
+        itemId TEXT,
+        error TEXT,
+        name TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        updatedAt INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (batchId, seq),
+        UNIQUE (batchId, assetId)
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_import_queue_state '
+      'ON import_queue(batchId, state, seq)',
+    );
   }
 
   /// v11 (D75): tags de cuenta por item, `vault_meta` (sal del tag, se crea
@@ -312,6 +381,8 @@ class VaultSchema {
     if (from < 10 && to >= 10) await addRotationSchema(db);
     // v10 -> v11: tags de cuenta, `vault_meta` y `diag_events` (D75).
     if (from < 11 && to >= 11) await addAccountTagSchema(db);
+    // v11 -> v12: cola de importación y `sourceHash` (D86).
+    if (from < 12 && to >= 12) await addImportQueueSchema(db);
   }
 
   /// v9: etiquetas. `tags.name` es único sin distinguir mayúsculas. Idempotente.
@@ -360,6 +431,8 @@ class VaultSchema {
     for (final t in rotationTriggerNames) {
       await db.execute('DROP TRIGGER IF EXISTS $t');
     }
+    await db.execute('DROP TABLE IF EXISTS import_queue');
+    await db.execute('DROP TABLE IF EXISTS import_batches');
     await db.execute('DROP TABLE IF EXISTS diag_events');
     await db.execute('DROP TABLE IF EXISTS vault_meta');
     await db.execute('DROP TABLE IF EXISTS rotation_old_files');
@@ -729,6 +802,9 @@ class VaultDatabase {
     // no, todos los tags dejarían de coincidir) y el diagnóstico persistente.
     'vault_meta',
     'diag_events',
+    // v12 (D86): un lote de importación a medias debe seguir tras rotar.
+    'import_batches',
+    'import_queue',
   ];
 
   /// Re-cifra la BD de la llave de la generación [fromGen] ([from]) a la de
@@ -1085,21 +1161,24 @@ class VaultDatabase {
     Database? copy;
     try {
       copy = await _openWith(password, path: path);
-      final has = await copy.rawQuery(
-        "SELECT name FROM sqlite_master WHERE type = 'table' "
-        "AND name = 'diag_events'",
-      );
-      if (has.isNotEmpty) {
+      // D78 + D86: diagnóstico y cola de importación (ids de la fototeca de
+      // ESTE teléfono) no viajan.
+      var removed = 0;
+      for (final table in VaultSchema.localOnlyTables) {
+        final has = await copy.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+          [table],
+        );
+        if (has.isEmpty) continue;
         final n =
-            (await copy.rawQuery(
-                  'SELECT COUNT(*) AS n FROM diag_events',
-                )).first['n']
+            (await copy.rawQuery('SELECT COUNT(*) AS n FROM $table')).first['n']
                 as int;
         if (n > 0) {
-          await copy.delete('diag_events');
-          await copy.execute('VACUUM');
+          await copy.delete(table);
+          removed += n;
         }
       }
+      if (removed > 0) await copy.execute('VACUUM');
     } catch (_) {
       try {
         await copy?.close();

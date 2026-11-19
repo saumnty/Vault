@@ -1,6 +1,7 @@
 import '../../data/gallery/gallery_asset_source.dart';
 import '../../data/gallery/gallery_import_service.dart';
 import '../../data/gallery/import_preferences.dart';
+import '../../data/gallery/import_queue_service.dart';
 import '../../data/gallery/thumbnail_regeneration_service.dart';
 
 /// Dependencias de la importación desde galería (inyectables en pruebas).
@@ -10,7 +11,12 @@ class GalleryDeps {
     required this.service,
     required this.preferences,
     this.regeneration,
+    this.queue,
   });
+
+  /// D86: cola reanudable (álbumes y lotes grandes). `null` = el flujo
+  /// anterior (lista en memoria), p. ej. pruebas antiguas.
+  final ImportQueueService? queue;
 
   final GalleryAssetSource source;
   final GalleryImportService service;

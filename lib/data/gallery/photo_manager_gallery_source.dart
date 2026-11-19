@@ -4,14 +4,23 @@ import 'dart:typed_data';
 
 import 'package:photo_manager/photo_manager.dart';
 
+import 'gallery_album_source.dart';
 import 'gallery_asset_source.dart';
 
 /// Implementación real sobre `photo_manager` 3.12.0.
 ///
-/// SIN PROBAR en dispositivo (el emulador no arranca): permisos reales,
-/// paginación, miniaturas, borrado e iCloud están sin verificar.
-class PhotoManagerGallerySource implements GalleryAssetSource {
+/// Probado en el emulador Android (F4); álbumes y búsqueda por id (v2.2,
+/// D86) escritos contra la API de 3.12.0 leída en su fuente. iOS (iCloud,
+/// álbumes inteligentes): sin probar.
+class PhotoManagerGallerySource implements GalleryAlbumSource {
   AssetPathEntity? _all;
+
+  /// Álbumes ya listados (por id): evita `AssetPathEntity.fromId` al paginar.
+  final Map<String, AssetPathEntity> _albums = {};
+
+  static FilterOptionGroup _filter() => FilterOptionGroup(
+    orders: [const OrderOption(type: OrderOptionType.createDate)],
+  );
 
   @override
   Future<GalleryPermission> requestPermission() async {
@@ -31,15 +40,32 @@ class PhotoManagerGallerySource implements GalleryAssetSource {
     final paths = await PhotoManager.getAssetPathList(
       onlyAll: true,
       type: RequestType.common,
-      filterOption: FilterOptionGroup(
-        orders: [const OrderOption(type: OrderOptionType.createDate)],
-      ),
+      filterOption: _filter(),
     );
     return _all = paths.isEmpty ? null : paths.first;
   }
 
   @override
   Future<int> assetCount() async => (await _allPath())?.assetCountAsync ?? 0;
+
+  static GalleryAsset? _toAsset(AssetEntity a) {
+    if (a.type != AssetType.image && a.type != AssetType.video) return null;
+    return GalleryAsset(
+      id: a.id,
+      type: a.type == AssetType.video
+          ? GalleryAssetType.video
+          : GalleryAssetType.image,
+      title: a.title,
+      duration: Duration(seconds: a.duration),
+      width: a.width,
+      height: a.height,
+      createdAt: a.createDateTime,
+    );
+  }
+
+  static List<GalleryAsset> _toAssets(List<AssetEntity> list) => [
+    for (final a in list) ?_toAsset(a),
+  ];
 
   @override
   Future<List<GalleryAsset>> listAssets({
@@ -48,23 +74,60 @@ class PhotoManagerGallerySource implements GalleryAssetSource {
   }) async {
     final path = await _allPath();
     if (path == null) return const [];
-    final list = await path.getAssetListPaged(page: page, size: size);
-    return [
-      for (final a in list)
-        if (a.type == AssetType.image || a.type == AssetType.video)
-          GalleryAsset(
-            id: a.id,
-            type: a.type == AssetType.video
-                ? GalleryAssetType.video
-                : GalleryAssetType.image,
-            title: a.title,
-            duration: Duration(seconds: a.duration),
-            width: a.width,
-            height: a.height,
-            createdAt: a.createDateTime,
-          ),
-    ];
+    return _toAssets(await path.getAssetListPaged(page: page, size: size));
   }
+
+  // ------------------------------------------------------------ álbumes
+
+  @override
+  Future<List<GalleryAlbum>> listAlbums() async {
+    final paths = await PhotoManager.getAssetPathList(
+      hasAll: true,
+      type: RequestType.common,
+      filterOption: _filter(),
+    );
+    final out = <GalleryAlbum>[];
+    _albums.clear();
+    for (final p in paths) {
+      // iOS: `albumType == 2` son carpetas de álbumes (sin assets propios).
+      if (p.albumType != 1) continue;
+      final count = await p.assetCountAsync;
+      if (count == 0 && !p.isAll) continue;
+      _albums[p.id] = p;
+      if (p.isAll) _all = p;
+      out.add(GalleryAlbum(id: p.id, name: p.name, count: count, isAll: p.isAll));
+    }
+    out.sort((a, b) {
+      if (a.isAll != b.isAll) return a.isAll ? -1 : 1;
+      return 0; // el resto en el orden del sistema
+    });
+    return out;
+  }
+
+  Future<AssetPathEntity> _album(String id) async =>
+      _albums[id] ??= await AssetPathEntity.fromId(
+        id,
+        filterOption: _filter(),
+        type: RequestType.common,
+      );
+
+  @override
+  Future<List<GalleryAsset>> listAlbumAssets(
+    String albumId, {
+    required int page,
+    required int size,
+  }) async {
+    final path = await _album(albumId);
+    return _toAssets(await path.getAssetListPaged(page: page, size: size));
+  }
+
+  @override
+  Future<GalleryAsset?> assetById(String id) async {
+    final a = await AssetEntity.fromId(id);
+    return a == null ? null : _toAsset(a);
+  }
+
+  // ------------------------------------------------------------ archivos
 
   @override
   Future<bool> isLocallyAvailable(String assetId) async {
@@ -103,9 +166,15 @@ class PhotoManagerGallerySource implements GalleryAssetSource {
     );
   }
 
+  /// Android 11+: UNA petición `MediaStore.createDeleteRequest` con todas las
+  /// URIs (un solo diálogo del sistema); iOS: un solo `performChanges` (un
+  /// diálogo). Android 10 pide confirmación por archivo (límite del sistema).
+  /// El troceo de listas enormes lo hace `GalleryImportService` (D87).
   @override
   Future<List<String>> deleteAssets(List<String> assetIds) =>
-      PhotoManager.editor.deleteWithIds(assetIds);
+      AutoLockSuspension.instance.run(
+        () => PhotoManager.editor.deleteWithIds(assetIds),
+      );
 
   /// S-03: `PhotoManager.clearFileCache()` (photo_manager 3.12.0, verificado
   /// en la fuente): Android -> `Glide.clearMemory()` + `Glide.clearDiskCache()`

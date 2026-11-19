@@ -857,6 +857,12 @@ class RestoreService {
           'thumbAccountTag': null,
         });
       }
+      if (version >= 12) {
+        // D86: la cola de importación es de la fototeca del OTRO teléfono (la
+        // copia subida ya la vacía; esto cubre un snapshot de otra versión).
+        batch.delete('import_queue');
+        batch.delete('import_batches');
+      }
       for (final r in rows) {
         final id = r['id'] as String;
         // S-15: el id acaba en nombres de archivo locales (`<id>.thumb`): solo

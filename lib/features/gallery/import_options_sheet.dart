@@ -33,6 +33,7 @@ Future<ImportChoices?> showImportOptionsSheet(
   required List<GalleryAsset> assets,
   required bool deleteOriginalsWhenInCloud,
   VideoQualityOption initialQuality = VideoQualityOption.original,
+  int? albumCount,
 }) {
   return showBlurSheet<ImportChoices>(
     context,
@@ -40,6 +41,7 @@ Future<ImportChoices?> showImportOptionsSheet(
       assets: assets,
       initialDeleteOriginals: deleteOriginalsWhenInCloud,
       initialQuality: initialQuality,
+      albumCount: albumCount,
     ),
   );
 }
@@ -50,10 +52,16 @@ class ImportOptionsContent extends StatefulWidget {
     required this.assets,
     required this.initialDeleteOriginals,
     this.initialQuality = VideoQualityOption.original,
+    this.albumCount,
   });
 
   final List<GalleryAsset> assets;
   final bool initialDeleteOriginals;
+
+  /// D86: importar un álbum entero sin cargar sus assets: [assets] vacía y
+  /// aquí cuántos son. Se ofrece la calidad por si hay videos; el espacio se
+  /// calcula después, antes de empezar.
+  final int? albumCount;
 
   /// Calidad por defecto (Ajustes > Importación).
   final VideoQualityOption initialQuality;
@@ -117,14 +125,18 @@ class _ImportOptionsContentState extends State<ImportOptionsContent> {
 
   @override
   Widget build(BuildContext context) {
-    final hasVideos = _videos.isNotEmpty;
-    final n = widget.assets.length;
+    final albumMode = widget.albumCount != null && widget.assets.isEmpty;
+    final hasVideos = albumMode || _videos.isNotEmpty;
+    final n = albumMode ? widget.albumCount! : widget.assets.length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SheetHeader(
           title: n == 1 ? 'Importar 1 elemento' : 'Importar $n elementos',
-          message: hasVideos
+          message: albumMode
+              ? 'Si hay videos, elige su calidad. Antes de empezar se '
+                    'calcula el espacio que hace falta.'
+              : hasVideos
               ? 'Elige la calidad de los ${_videos.length} video(s). '
                     'El tamaño real se muestra durante la importación.'
               : 'Se cifrarán y guardarán en la bóveda.',
@@ -133,7 +145,11 @@ class _ImportOptionsContentState extends State<ImportOptionsContent> {
           for (final q in VideoQualityOption.values)
             _QualityTile(
               label: q.label,
-              detail: _sizeText(q),
+              detail: albumMode
+                  ? (q == VideoQualityOption.original
+                        ? 'Sin recompresión'
+                        : 'Videos recomprimidos a ${q.label}')
+                  : _sizeText(q),
               recommended: q == VideoQualityOption.p720,
               saving: q == VideoQualityOption.p720 ? _savingText() : null,
               selected: q == _quality,

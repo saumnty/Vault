@@ -16,7 +16,11 @@ class SelectionBar extends StatelessWidget {
     required this.onOffline,
     required this.onDelete,
     this.onTags,
+    this.onSaveAlbum,
   });
+
+  /// «Guardar en Fotos como álbum» (solo con UNA carpeta seleccionada).
+  final VoidCallback? onSaveAlbum;
 
   final int count;
   final VoidCallback onClose;
@@ -55,6 +59,12 @@ class SelectionBar extends StatelessWidget {
             label: 'Seleccionar todo',
             onPressed: onSelectAll,
           ),
+          if (onSaveAlbum != null)
+            AppIconButton(
+              icon: Icons.photo_album_outlined,
+              label: 'Guardar en Fotos como álbum',
+              onPressed: onSaveAlbum,
+            ),
           if (onTags != null)
             AppIconButton(
               icon: Icons.label_outline,

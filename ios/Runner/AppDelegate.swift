@@ -1,5 +1,6 @@
 import AVFoundation
 import Flutter
+import Photos
 import UIKit
 import UniformTypeIdentifiers
 import Darwin.Mach
@@ -15,6 +16,10 @@ import Darwin.Mach
 
   // v2 fase 6: selector de documentos propio (se retiene aqui).
   private let documentPicker = VaultDocumentPicker()
+
+  // iOS: sin probar (v2.2). Titulo de album -> localIdentifier del album que
+  // esta app creo en esta ejecucion (solo en memoria).
+  private var albumIds: [String: String] = [:]
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
@@ -63,6 +68,59 @@ import Darwin.Mach
           result(NSNumber(value: free))
         } else {
           result(nil)
+        }
+      case "saveToAlbum":
+        // iOS: sin probar en dispositivo (v2.2). Guarda UN archivo ya en
+        // claro (la ruta la borra Dart en `finally`) en el album `album`
+        // con PhotoKit. Busca el album por titulo entre los de usuario (solo
+        // los ve con acceso de lectura); si no lo encuentra, lo CREA en el
+        // mismo cambio. Devuelve {"created": Bool}. Con el permiso de solo
+        // agregar la busqueda puede no ver el album: Dart detiene el lote si
+        // se intenta crear dos veces (evita albumes repetidos).
+        guard let args = call.arguments as? [String: Any],
+              let path = args["path"] as? String,
+              let album = args["album"] as? String else {
+          result(FlutterError(code: "bad_args", message: "path y album requeridos", details: nil))
+          return
+        }
+        let isVideo = (args["video"] as? Bool) ?? false
+        let url = URL(fileURLWithPath: path)
+        var existing: PHAssetCollection? = nil
+        if let id = self.albumIds[album] {
+          existing = PHAssetCollection.fetchAssetCollections(
+            withLocalIdentifiers: [id], options: nil).firstObject
+        }
+        if existing == nil {
+          let opts = PHFetchOptions()
+          opts.predicate = NSPredicate(format: "localizedTitle = %@", album)
+          existing = PHAssetCollection.fetchAssetCollections(
+            with: .album, subtype: .albumRegular, options: opts).firstObject
+        }
+        var placeholderId: String? = nil
+        let created = (existing == nil)
+        PHPhotoLibrary.shared().performChanges({
+          let req: PHAssetChangeRequest? = isVideo
+            ? PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+            : PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: url)
+          guard let assetPlaceholder = req?.placeholderForCreatedAsset else { return }
+          if let col = existing {
+            PHAssetCollectionChangeRequest(for: col)?
+              .addAssets([assetPlaceholder] as NSArray)
+          } else {
+            let create = PHAssetCollectionChangeRequest
+              .creationRequestForAssetCollection(withTitle: album)
+            placeholderId = create.placeholderForCreatedAssetCollection.localIdentifier
+            create.addAssets([assetPlaceholder] as NSArray)
+          }
+        }) { ok, error in
+          DispatchQueue.main.async {
+            if ok {
+              if let pid = placeholderId { self.albumIds[album] = pid }
+              result(["created": created])
+            } else {
+              result(FlutterError(code: "save_failed", message: "No se pudo guardar", details: nil))
+            }
+          }
         }
       case "videoThumbnail":
         // iOS: sin probar en dispositivo. Miniatura de un video LOCAL con

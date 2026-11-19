@@ -175,7 +175,10 @@ void main() {
         'PRAGMA table_info($table)',
       )).map((r) => r['name']).toSet();
 
-  test('la versión actual es 11', () => expect(VaultSchema.version, 11));
+  test(
+    'la versión actual es >= 11 (v12: D86)',
+    () => expect(VaultSchema.version, greaterThanOrEqualTo(11)),
+  );
 
   test('v10 -> v11 conserva TODAS las filas y columnas; tags a NULL', () async {
     final path = await makeV10();
@@ -197,7 +200,10 @@ void main() {
     await raw.close();
 
     final db = await openCurrent(path);
-    expect((await db.rawQuery('PRAGMA user_version')).single.values.first, 11);
+    expect(
+      (await db.rawQuery('PRAGMA user_version')).single.values.first,
+      VaultSchema.version,
+    );
     for (final e in before.entries) {
       final after = await db.query(e.key, orderBy: 'rowid');
       expect(after.length, e.value.length, reason: e.key);
@@ -217,6 +223,8 @@ void main() {
     expect(colsAfter.difference(colsBefore), {
       'cloudAccountTag',
       'thumbAccountTag',
+      // v12 (D86).
+      'sourceHash',
     });
     for (final r in await db.query('vault_items')) {
       expect(r['cloudAccountTag'], isNull);
@@ -334,11 +342,11 @@ void main() {
     await db.close();
   });
 
-  test('una BD v12 (app más nueva) no se toca: VaultSchemaTooNewException', () async {
+  test('una BD de una app más nueva no se toca: VaultSchemaTooNewException', () async {
     final path = await makeV10();
     await (await openCurrent(path)).close();
     final raw = await databaseFactoryFfi.openDatabase(path);
-    await raw.execute('PRAGMA user_version = 12');
+    await raw.execute('PRAGMA user_version = ${VaultSchema.version + 1}');
     await raw.close();
     await expectLater(
       openCurrent(path),

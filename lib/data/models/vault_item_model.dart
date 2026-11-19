@@ -63,6 +63,11 @@ class VaultItemModel {
   final String? cloudAccountTag;
   final String? thumbAccountTag;
 
+  /// D86 (v12): SHA-256 del ORIGINAL de la galería tal como se leyó (igual a
+  /// [contentHash] salvo que el video se comprimiera). Sirve para no volver a
+  /// importar el mismo original. `null` en filas anteriores a v12.
+  final String? sourceHash;
+
   const VaultItemModel({
     required this.keyGen,
     required this.id,
@@ -88,6 +93,7 @@ class VaultItemModel {
     this.thumbFileId,
     this.cloudAccountTag,
     this.thumbAccountTag,
+    this.sourceHash,
   });
 
   /// Lanza [ArgumentError] si alguna ruta es absoluta.
@@ -119,6 +125,8 @@ class VaultItemModel {
     // Solo si hay valor: un alta normal no los escribe (quedan NULL).
     'cloudAccountTag': ?cloudAccountTag,
     'thumbAccountTag': ?thumbAccountTag,
+    // D86: solo si hay valor (filas y tablas anteriores a v12 no la tienen).
+    'sourceHash': ?sourceHash,
   };
 
   factory VaultItemModel.fromMap(Map<String, dynamic> map) => VaultItemModel(
@@ -148,5 +156,6 @@ class VaultItemModel {
     // Filas anteriores a v11: sin comprobar.
     cloudAccountTag: map['cloudAccountTag'] as String?,
     thumbAccountTag: map['thumbAccountTag'] as String?,
+    sourceHash: map['sourceHash'] as String?,
   );
 }

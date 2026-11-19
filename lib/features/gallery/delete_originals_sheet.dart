@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
 import '../../core/theme/app_colors.dart';
@@ -23,17 +24,31 @@ Future<int> showDeleteOriginalsSheet(
   BuildContext context, {
   required GalleryImportService service,
 }) async {
-  final n = await showBlurSheet<int>(
-    context,
-    builder: (context) => DeleteOriginalsContent(
-      load: service.verifiedDeleteCandidates,
-      confirm: (items) => service.deleteOriginalsConfirmedInCloud(
-        candidates: items,
-        userConfirmed: true,
+  // D87: con cientos de archivos cada uno se comprueba contra Drive: se
+  // muestra «Comprobando N de M».
+  final progress = ValueNotifier<(int, int)?>(null);
+  try {
+    final n = await showBlurSheet<int>(
+      context,
+      builder: (context) => DeleteOriginalsContent(
+        progress: progress,
+        load: () => service.verifiedDeleteCandidates(
+          onProgress: (d, t) => progress.value = (d, t),
+        ),
+        confirm: (items) {
+          progress.value = null;
+          return service.deleteOriginalsConfirmedInCloud(
+            candidates: items,
+            userConfirmed: true,
+            onProgress: (d, t) => progress.value = (d, t),
+          );
+        },
       ),
-    ),
-  );
-  return n ?? 0;
+    );
+    return n ?? 0;
+  } finally {
+    progress.dispose();
+  }
 }
 
 /// Contenido de la hoja: consulta a Drive qué copias están verificadas, lista
@@ -43,7 +58,11 @@ class DeleteOriginalsContent extends StatefulWidget {
     super.key,
     required this.load,
     required this.confirm,
+    this.progress,
   });
+
+  /// D87: avance de la comprobación (hecho, total), si se conoce.
+  final ValueListenable<(int, int)?>? progress;
 
   /// Candidatos con la copia en la nube verificada ahora mismo.
   final Future<List<VaultItemModel>> Function() load;
@@ -90,20 +109,38 @@ class _DeleteOriginalsContentState extends State<DeleteOriginalsContent> {
     if (mounted) Navigator.of(context).pop(deleted);
   }
 
+  Widget _progressText() {
+    final p = widget.progress;
+    if (p == null) return const SizedBox.shrink();
+    return ValueListenableBuilder<(int, int)?>(
+      valueListenable: p,
+      builder: (context, v, _) => v == null || v.$2 < 2
+          ? const SizedBox.shrink()
+          : Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+              child: Text(
+                'Comprobando ${v.$1} de ${v.$2}',
+                style: AppTypography.caption,
+              ),
+            ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final items = _items;
     if (items == null) {
-      return const Column(
+      return Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          SheetHeader(
+          const SheetHeader(
             title: 'Buscando originales…',
             message: 'Comprobando en tu Drive qué copias están verificadas.',
           ),
-          Center(child: CircularProgressIndicator()),
-          SizedBox(height: AppSpacing.lg),
+          _progressText(),
+          const Center(child: CircularProgressIndicator()),
+          const SizedBox(height: AppSpacing.lg),
         ],
       );
     }
@@ -126,6 +163,9 @@ class _DeleteOriginalsContentState extends State<DeleteOriginalsContent> {
       );
     }
     final total = items.fold<int>(0, (sum, i) => sum + i.fileSize);
+    // D87: hasta `deleteChunkSize` originales, UNA confirmación del sistema.
+    const chunk = GalleryImportService.deleteChunkSize;
+    final prompts = (items.length + chunk - 1) ~/ chunk;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -137,38 +177,41 @@ class _DeleteOriginalsContentState extends State<DeleteOriginalsContent> {
           message:
               'Se borrarán de tu galería (${formatBytes(total)}). Su copia '
               'cifrada está verificada en tu Google Drive y se conserva en '
-              'la bóveda. Esta acción no se puede deshacer.',
+              'la bóveda. Esta acción no se puede deshacer.'
+              '${prompts > 1 ? ' El sistema te pedirá confirmar $prompts veces (de $chunk en $chunk).' : ''}',
         ),
         ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 220),
-          child: ListView(
+          child: ListView.builder(
             shrinkWrap: true,
-            children: [
-              for (final i in items)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          i.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: AppTypography.body,
-                        ),
+            itemCount: items.length,
+            itemBuilder: (context, n) {
+              final i = items[n];
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        i.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTypography.body,
                       ),
-                      Text(
-                        formatBytes(i.fileSize),
-                        style: AppTypography.caption.copyWith(
-                          color: AppColors.textSecondary,
-                        ),
+                    ),
+                    Text(
+                      formatBytes(i.fileSize),
+                      style: AppTypography.caption.copyWith(
+                        color: AppColors.textSecondary,
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-            ],
+              );
+            },
           ),
         ),
+        if (_deleting) _progressText(),
         const SizedBox(height: AppSpacing.lg),
         AppFilledButton(
           label: items.length == 1
