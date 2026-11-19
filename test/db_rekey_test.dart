@@ -186,6 +186,56 @@ void main() {
     expect(File(vdb.rekeyBackupPath(1)).existsSync(), isFalse);
   });
 
+  test('D75 (v11): la sal de vault_meta, los tags y diag_events sobreviven '
+      'al re-cifrado (y cuentan en la verificación)', () async {
+    // La BD sigue con la llave de la gen 1 (la sesión tiene las dos).
+    var vdb = newDb();
+    var db = await vdb.database;
+    await db.insert('vault_meta', {'key': 'account_salt', 'value': 'ab' * 32});
+    await db.insert('diag_events', {
+      'at': 1,
+      'level': 'debug',
+      'category': 'sync',
+      'message': 'x',
+    });
+    await db.update('vault_items', {
+      'cloudAccountTag': 'tagA',
+      'thumbAccountTag': 'tagA',
+    }, where: "id = 'a'");
+    await vdb.close();
+    vdb = newDb();
+    await rekey(vdb);
+    db = await vdb.database;
+    expect(
+      (await db.query('vault_meta')).single['value'],
+      'ab' * 32,
+    );
+    expect((await db.query('diag_events')).length, 1);
+    final a = (await db.query('vault_items', where: "id = 'a'")).single;
+    expect(a['cloudAccountTag'], 'tagA');
+    expect(a['thumbAccountTag'], 'tagA');
+    await vdb.close();
+  });
+
+  test('D75: una copia sin la fila de vault_meta no supera la '
+      'verificación', () async {
+    var vdb = newDb();
+    final db = await vdb.database;
+    await db.insert('vault_meta', {'key': 'account_salt', 'value': 'cd' * 32});
+    await vdb.close();
+    rekeyer.afterExport = (dest) async {
+      final d = await databaseFactoryFfi.openDatabase(dest);
+      await d.delete('vault_meta');
+      await d.close();
+    };
+    vdb = newDb();
+    await expectLater(
+      rekey(vdb),
+      throwsA(isA<VaultRekeyVerificationException>()),
+    );
+    expect(await opensWith(dbPath, k1), isTrue);
+  });
+
   test(
     'verificación fallida: la BD original queda intacta y sin restos',
     () async {

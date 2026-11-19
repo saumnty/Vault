@@ -777,3 +777,29 @@ La vista previa dio cifras exactas (4 archivos, 10,4 KB y luego 4 archivos, 6,1 
 
 ### M7 «Borrar datos de la cuenta anterior» — sin probar contra Drive real
 Implementado y cubierto solo con nubes falsas (D73, `rotation_extras_test.dart`). Nunca se ejecutó contra Drive real: el emulador tiene una sola cuenta de pruebas y en la migración real no apareció la opción Borrar/Conservar, así que no hay datos conservados de otra cuenta. No se pide probarlo en el iPhone. Es un borrado permanente: úsalo solo tras probarlo con dos cuentas de pruebas.
+
+## Migración atascada (iPhone) — parte A (2026-11-18, D75–D77)
+Diseño y diagnóstico completos: `docs/DISENO_MIGRACION_ATASCADA.md`. Aquí se dice «cuenta principal» y «cuenta de pruebas» (nunca correos).
+
+### Causa (resumen)
+Un cambio de cuenta quedó guardado en una fase anterior a la subida (casi seguro «Elegir la cuenta nueva»: el selector se canceló o se eligió la misma cuenta) y después se inició sesión con la cuenta principal **por fuera** del cambio. Desde entonces: sincronización en pausa sin aviso («Sincronizar ahora» volvía sin hacer nada), «Cerrar sesión» desactivado sin explicación, las fotos seguían «en la nube» con las referencias de la cuenta de pruebas (ya vaciada) y nada comprobaba que existieran en la cuenta actual. La principal solo recibió un índice suelto al bloquear, sin el respaldo de llaves: por eso restaurar decía «No hay respaldo en esta cuenta».
+
+### Qué se hizo (parte A)
+1. **BD v11 incremental** (solo `ADD COLUMN` y `CREATE TABLE IF NOT EXISTS`; ninguna fila se toca; el cambio de cuenta guardado queda intacto): tag de cuenta por archivo y por miniatura (hash con sal; nunca el correo), sal en `vault_meta`, y la tabla del diagnóstico persistente (`diag_events`, vacía hasta la parte B). Probado desde una v10 con datos «como la del iPhone», en la bóveda adicional, con la rotación (`rekeyTo`) y con la restauración.
+2. **Pantalla «Cambio de cuenta sin terminar»** al abrir la bóveda: fase, cuenta anterior y actual, «La sincronización está en pausa», **Continuar** o **Cancelar y quedarme en «cuenta actual»**. Ya no se reanuda nada solo al abrir. La apertura aísla cada paso (un fallo no impide los demás) y aplica la pausa del cambio de cuenta ANTES de purgar la caché; la sincronización corre después.
+3. **«Verificar copia en la nube»** (Ajustes > Sincronización y cuenta, y sola al abrir si algún archivo no está comprobado en la cuenta actual: tras instalar esta versión, todos). Comprueba con un solo listado el respaldo de llaves, el índice y cada archivo y miniatura (tamaño + MD5). Lo que falta y está en el teléfono vuelve a «pendiente» y se sube con la verificación de siempre; lo que no está en ningún sitio queda en error **sin borrar la fila**. **Nunca borra, renombra ni mueve nada** (ni en Drive ni en el teléfono). Hasta que un archivo está comprobado en la cuenta actual, la caché no lo purga y no cuenta para borrar originales.
+
+Pruebas automáticas (solo nubes falsas): `test/schema_v11_test.dart`, `test/cloud_verification_test.dart`, `test/migration_abandon_test.dart`, `test/ui/unfinished_migration_screen_test.dart`, más casos nuevos en `test/db_rekey_test.dart`, `test/secondary/schema_upgrade_secondary_test.dart` y `test/f9_restore_test.dart`. Incluyen el caso del iPhone de punta a punta: cuenta de pruebas vaciada → verificación en la principal → re-subida → restaurar en un teléfono limpio con la principal da «encontrado». iOS: sin cambios de Swift en esta parte; todo sin probar en el iPhone.
+
+### Pasos para el iPhone (en este orden)
+0. **Antes de instalar** (con la build actual, solo mirar): no toques «Cancelar y volver a la cuenta anterior», «Vaciar caché», «Liberar espacio sin conexión», el límite de caché, «Cerrar sesión» de la hoja de la cuadrícula, «Borrar originales» ni desinstalar. Opcional (decisión tuya, por privacidad): «Guardar en Fotos» de las 2 fotos.
+1. Instala encima con **el mismo Apple ID/equipo y el mismo bundle id**. Nunca desinstales.
+2. Abre la bóveda con tu PIN. Debe aparecer **«Cambio de cuenta sin terminar»** con la fase y las dos cuentas. Si en «Cuenta actual» pone «sin sesión», toca «Inicia sesión primero» y elige la **cuenta principal**.
+3. Toca **«Cancelar y quedarme en <tu cuenta principal>»** y confirma. No toques «Volver a la cuenta anterior» (la cuenta de pruebas está vacía).
+4. Espera con Wi-Fi y la app abierta. Ve a Ajustes > Sincronización y cuenta > **«Verificar copia en la nube»**: debe decir la cuenta principal y algo como «Comprobados 0 · 2 vuelven a subirse · se sube el respaldo de tus llaves · se sube el índice». Vuelve a tocar «Comprobar ahora» al cabo de un minuto: debe decir «Comprobados 2» sin nada más.
+5. En la cuadrícula, las 2 fotos deben pasar de flecha (pendiente) a nube.
+6. **Comprobación final (simulacro, sin tocar tu iPhone):** en otro teléfono o en el emulador, «Restaurar» con la cuenta principal y tu código de recuperación: debe encontrar la bóveda con 2 archivos. Hasta entonces, el iPhone sigue siendo la única copia: no lo borres.
+7. Si algo de esto no ocurre, no toques nada más y manda captura de la pantalla «Cambio de cuenta sin terminar» o del resultado de «Verificar copia en la nube» (no contienen nada privado salvo el correo, que puedes tapar).
+
+### Queda para la parte B
+Guardas y mensajes en «Sincronizar ahora» y «Cerrar sesión» (Ajustes y hoja de la cuadrícula, `SyncRunOutcome`), comprobación de cuenta dentro de la migración y selector con plazo (iOS), banner en la cuadrícula, diagnóstico persistente cifrado (la tabla ya existe), y el mensaje de restauración con lo que encontró.

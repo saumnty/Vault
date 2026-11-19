@@ -151,6 +151,7 @@ class AccountMigrationService {
     this.setCachePurgeSuspended,
     this.rotationActive,
     this.sessionTicket,
+    this.onAbandoned,
     FreeSpaceProvider? freeSpace,
     int Function()? nowMs,
     this.freeSpaceMargin = 100 * 1024 * 1024,
@@ -183,6 +184,10 @@ class AccountMigrationService {
   /// D67 (fase 8): ticket de la sesión PRINCIPAL abierta, o `null` si la
   /// principal no está abierta. `null` (pruebas) = sin esta guarda.
   final SessionTicket? Function()? sessionTicket;
+
+  /// D76: se llama (sin esperar) al terminar [abandonStayOnCurrent]: la app
+  /// lanza «Verificar copia en la nube» con la cuenta en la que se quedó.
+  final Future<void> Function()? onAbandoned;
 
   /// Margen de espacio libre que se exige además de lo que hay que bajar.
   final int freeSpaceMargin;
@@ -356,14 +361,32 @@ class AccountMigrationService {
         await _setError(describeSyncError(e));
         if (s != null) _emit((await migration.load()) ?? s, running: false);
       }
+    } on Object catch (e) {
+      // D76: nada se traga en silencio (BD cerrada a mitad, almacén seguro,
+      // formato...): queda un mensaje persistido y un log, sin datos.
+      VaultLog.e('Cambio de cuenta detenido por un error', e, 'migration');
+      if (!stale()) {
+        try {
+          await _setError(
+            'Se detuvo por un error inesperado. Toca «Continuar» para '
+            'reintentar.',
+          );
+        } on Object {
+          // BD cerrada: el estado se vuelve a leer al desbloquear.
+        }
+      }
     } finally {
       _running = false;
       if (!stale()) {
-        final s = await migration.load();
-        if (s != null) {
-          _emit(s, running: false);
-        } else {
-          status.value = const MigrationStatus();
+        try {
+          final s = await migration.load();
+          if (s != null) {
+            _emit(s, running: false);
+          } else {
+            status.value = const MigrationStatus();
+          }
+        } on Object {
+          status.value = status.value.copyWith(running: false);
         }
       }
     }
@@ -386,6 +409,13 @@ class AccountMigrationService {
       case MigrationPhase.blockedOtherVault:
       case MigrationPhase.blockedQuota:
         return false; // espera una decisión del usuario
+      case MigrationPhase.unknown:
+        // D76: fase que esta versión no entiende: no se ejecuta nada.
+        await _setError(
+          'Estado del cambio de cuenta desconocido. Usa «Cancelar y '
+          'quedarme».',
+        );
+        return false;
     }
   }
 
@@ -911,6 +941,84 @@ class AccountMigrationService {
     await _finishClean();
     VaultLog.d('Cambio de cuenta cancelado', category: 'migration');
   }
+
+  /// D76 («Cancelar y quedarme en «cuenta actual»», pantalla «Cambio de
+  /// cuenta sin terminar»). Distinto de [cancelAndRestore]: nunca pide otra
+  /// cuenta ni restaura referencias de una cuenta en la que ya no estamos.
+  ///
+  /// * Sesión en la cuenta ANTERIOR: como cancelar (se restauran las
+  ///   referencias guardadas, si las hay, y termina).
+  /// * Sesión en OTRA cuenta: con referencias guardadas (ya se empezó a subir
+  ///   a ella) se conservan las actuales; sin ellas, todas quedan «sin
+  ///   comprobar» (tags `NULL`). Después termina.
+  /// * Sin sesión: [MigrationException] (la UI pide iniciar sesión antes).
+  ///
+  /// En todos los casos quita las guardas (sincronización y caché) y llama a
+  /// [onAbandoned] (la app verifica la copia en la cuenta actual de inmediato;
+  /// hasta comprobarlo, la caché no purga y no se borran originales). No
+  /// borra nada local ni en la nube.
+  Future<void> abandonStayOnCurrent() async {
+    pause();
+    for (var i = 0; i < 200 && _running; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+    }
+    if (_running) {
+      throw const MigrationException(
+        'El cambio de cuenta sigue en curso. Espera un momento y reintenta.',
+      );
+    }
+    final state = await migration.load();
+    if (state == null) return;
+    final current = cloud.currentAccountEmail;
+    if (current == null) {
+      throw const MigrationException(
+        'Inicia sesión primero con la cuenta en la que quieres quedarte.',
+      );
+    }
+    final hasRefs = await migration.hasSavedRefs();
+    if (current == state.oldEmail) {
+      if (hasRefs) {
+        final all = await items.getAllItems();
+        final local = <String>{
+          for (final i in all)
+            if (resolvePath(i.encryptedPath).existsSync()) i.id,
+        };
+        await migration.restoreOldRefs(localItemIds: local);
+      }
+      await migration.finishKeepingCurrentRefs(markAllUnverified: true);
+    } else {
+      await migration.finishKeepingCurrentRefs(markAllUnverified: !hasRefs);
+    }
+    _applyGuards(false);
+    status.value = const MigrationStatus();
+    VaultLog.d(
+      'Cambio de cuenta abandonado: se queda en la cuenta actual',
+      category: 'migration',
+    );
+    final hook = onAbandoned;
+    if (hook != null) {
+      unawaited(
+        hook().catchError((Object e) {
+          VaultLog.e('Verificación tras abandonar falló', e, 'migration');
+        }),
+      );
+    }
+  }
+
+  /// D76: abre el selector de Google para iniciar sesión sin cambiar nada del
+  /// cambio de cuenta (lo usa «Inicia sesión primero» antes de
+  /// [abandonStayOnCurrent]). Devuelve el correo elegido, solo para la UI.
+  Future<String?> signInCurrent() async {
+    try {
+      return (await cloud.signIn()).email;
+    } on CloudSignInCancelledException {
+      VaultLog.d('Selector de Google cancelado', category: 'auth');
+      return null;
+    }
+  }
+
+  /// D76: correo de la sesión actual (solo para mostrar en pantalla).
+  String? get currentAccountEmail => cloud.currentAccountEmail;
 
   // ---------------------------------------------------------------- ayudas
 

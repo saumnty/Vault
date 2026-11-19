@@ -65,10 +65,15 @@ class VaultSchemaTooNewException implements Exception {
 /// v9 = etiquetas (v2 fase 9: tablas `tags` e `item_tags`).
 /// v10 = rotación de la DEK (D60: `vault_items.keyGen`, por defecto 1; tablas
 /// `rotation_state` y `rotation_old_files`, vacías fuera de una rotación).
+/// v11 = cambio de cuenta atascado (D75: `vault_items.cloudAccountTag` y
+/// `thumbAccountTag`, `NULL` = sin comprobar en la cuenta actual; tabla
+/// `vault_meta` con la sal del tag y tabla `diag_events` para el diagnóstico
+/// persistente, vacía hasta la parte B). Solo `ADD COLUMN` y
+/// `CREATE TABLE IF NOT EXISTS`: ninguna fila se toca.
 class VaultSchema {
   VaultSchema._();
 
-  static const int version = 10;
+  static const int version = 11;
 
   /// Triggers de cardinalidad de una rotación en curso (D62). Se crean al
   /// congelar el conjunto viejo y se quitan al terminar; un snapshot que los
@@ -172,6 +177,44 @@ class VaultSchema {
     await createMigrationTables(db);
     await createTagTables(db);
     await addRotationSchema(db);
+    await addAccountTagSchema(db);
+  }
+
+  /// v11 (D75): tags de cuenta por item, `vault_meta` (sal del tag, se crea
+  /// al primer uso, no aquí) y `diag_events` (diagnóstico persistente, parte
+  /// B). Idempotente y estrictamente incremental: solo `ADD COLUMN` (con
+  /// comprobación por `PRAGMA table_info`) y `CREATE TABLE IF NOT EXISTS`.
+  /// Las filas existentes quedan con los tags a `NULL` (= «sin comprobar»):
+  /// la primera apertura con sesión verifica todo en la cuenta actual.
+  static Future<void> addAccountTagSchema(DatabaseExecutor db) async {
+    final cols = (await db.rawQuery(
+      'PRAGMA table_info(vault_items)',
+    )).map((r) => r['name']).toSet();
+    if (!cols.contains('cloudAccountTag')) {
+      await db.execute(
+        'ALTER TABLE vault_items ADD COLUMN cloudAccountTag TEXT',
+      );
+    }
+    if (!cols.contains('thumbAccountTag')) {
+      await db.execute(
+        'ALTER TABLE vault_items ADD COLUMN thumbAccountTag TEXT',
+      );
+    }
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS vault_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS diag_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at INTEGER NOT NULL,
+        level TEXT NOT NULL,
+        category TEXT NOT NULL,
+        message TEXT NOT NULL
+      )
+    ''');
   }
 
   /// v10 (D60/D62): generación de llave por item y tablas de la rotación de
@@ -267,6 +310,8 @@ class VaultSchema {
     if (from < 9) await createTagTables(db);
     // v9 -> v10: generación de llave por item y tablas de la rotación.
     if (from < 10 && to >= 10) await addRotationSchema(db);
+    // v10 -> v11: tags de cuenta, `vault_meta` y `diag_events` (D75).
+    if (from < 11 && to >= 11) await addAccountTagSchema(db);
   }
 
   /// v9: etiquetas. `tags.name` es único sin distinguir mayúsculas. Idempotente.
@@ -315,6 +360,8 @@ class VaultSchema {
     for (final t in rotationTriggerNames) {
       await db.execute('DROP TRIGGER IF EXISTS $t');
     }
+    await db.execute('DROP TABLE IF EXISTS diag_events');
+    await db.execute('DROP TABLE IF EXISTS vault_meta');
     await db.execute('DROP TABLE IF EXISTS rotation_old_files');
     await db.execute('DROP TABLE IF EXISTS rotation_state');
     await db.execute('DROP TABLE IF EXISTS item_tags');
@@ -678,6 +725,10 @@ class VaultDatabase {
     'item_tags',
     'rotation_state',
     'rotation_old_files',
+    // v11 (D75): la sal del tag de cuenta debe sobrevivir a la rotación (si
+    // no, todos los tags dejarían de coincidir) y el diagnóstico persistente.
+    'vault_meta',
+    'diag_events',
   ];
 
   /// Re-cifra la BD de la llave de la generación [fromGen] ([from]) a la de

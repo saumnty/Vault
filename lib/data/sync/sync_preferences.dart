@@ -49,6 +49,23 @@ class SyncPreferences {
   Future<void> setRecoveryUploadedSha(String sha) =>
       _store.write(recoverySha, sha);
 
+  /// D75: tag (hash con sal, nunca el correo) de la cuenta a la que se subió
+  /// por última vez el respaldo de recuperación / el snapshot. Si la sesión
+  /// cambia a otra cuenta, el respaldo se vuelve a subir aunque el SHA sea el
+  /// mismo, y el snapshot al bloquear no se sube a ciegas.
+  static const String recoveryTagKey = 'sync.v1.recovery_uploaded_tag';
+  static const String snapshotTagKey = 'sync.v1.snapshot_uploaded_tag';
+
+  Future<String?> getRecoveryUploadedTag() => _store.read(recoveryTagKey);
+  Future<void> setRecoveryUploadedTag(String? tag) => tag == null
+      ? _store.delete(recoveryTagKey)
+      : _store.write(recoveryTagKey, tag);
+
+  Future<String?> getSnapshotUploadedTag() => _store.read(snapshotTagKey);
+  Future<void> setSnapshotUploadedTag(String? tag) => tag == null
+      ? _store.delete(snapshotTagKey)
+      : _store.write(snapshotTagKey, tag);
+
   Future<int?> getSnapshotAt() async =>
       int.tryParse(await _store.read(snapshotAtKey) ?? '');
 

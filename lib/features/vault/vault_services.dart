@@ -30,6 +30,8 @@ import '../../data/rotation/item_reencryptor.dart';
 import '../../data/rotation/key_rotation_service.dart';
 import '../../data/rotation/rotation_guard.dart';
 import '../../data/rotation/rotation_repository.dart';
+import '../../data/sync/cloud_account_tag.dart';
+import '../../data/sync/cloud_verification_service.dart';
 import '../../data/sync/network_monitor.dart';
 import '../../data/sync/offline_service.dart';
 import '../../data/sync/sync_preferences.dart';
@@ -43,6 +45,7 @@ import '../../data/services/vault_import_service.dart';
 import '../gallery/gallery_deps.dart';
 import 'services/thumbnail_loader.dart';
 import 'services/trash_service.dart';
+import 'unlock_sequence.dart';
 import '../../data/tags/tag_repository.dart';
 import '../../data/trash/trash_repository.dart';
 import '../../data/gallery/photo_saver.dart';
@@ -126,6 +129,7 @@ class VaultServices {
     this.storage,
     this.migration,
     this.rotation,
+    this.verification,
   });
 
   final VaultDataRepository repository;
@@ -187,6 +191,10 @@ class VaultServices {
 
   /// Rotación de la llave maestra (`null` = no disponible, p. ej. pruebas).
   final KeyRotationService? rotation;
+
+  /// «Verificar copia en la nube» (D75; `null` = no disponible: secundaria y
+  /// pruebas).
+  final CloudVerificationService? verification;
 
   /// `true` si son los servicios de una bóveda sin nube (la secundaria).
   bool get isCloudless => sync == null;
@@ -414,34 +422,56 @@ class VaultServices {
         final session = VaultSession();
         if (!session.isUnlockedAs(VaultSlot.primary)) return;
         final t = session.ticket();
-        await core.temp.sweep();
-        if (!t.isValid) return;
-        // Papelera: lo que lleva 30 días o más se elimina (y su copia de Drive).
-        await trash.purgeExpired();
-        if (!t.isValid) return;
-        await core.offline.reconcile();
-        if (!t.isValid) return;
-        await core.cache.enforce();
-        if (!t.isValid) return;
-        // Miniaturas que faltan (p. ej. videos importados sin miniatura):
-        // en segundo plano, acotado y sin bloquear la apertura.
-        final regen = _sharedGallery?.regeneration;
-        if (regen != null) unawaited(regen.run());
-        // Cambio de cuenta a medias (app matada, bloqueo): se retoma solo
-        // si no necesita al usuario.
-        final m = core.migration;
-        final st = await m.refresh();
-        if (!t.isValid) return;
-        if (st != null && _autoResumable(st.phase)) unawaited(m.resume());
-        // Rotación de la DEK a medias: se retoma sola salvo que espere al
-        // usuario (código sin confirmar o un bloqueo).
-        final rot = await RotationKeyStore.shared.load();
-        if (!t.isValid) return;
-        if (rot != null &&
-            !rot.phase.isBlocked &&
-            rot.phase != RotationPhase.prepared) {
-          unawaited(core.rotation.resume());
-        }
+        MigrationState? migrationRow;
+        RotationRecord? rot;
+        // D76: cada paso aislado (un fallo no impide los demás) y la guarda
+        // del cambio de cuenta PRIMERO, antes de cualquier purga.
+        await runUnlockSteps(stillValid: () => t.isValid, [
+          // Cambio de cuenta a medias: pausa la sincronización y la caché.
+          // NO se reanuda solo: la raíz muestra «Cambio de cuenta sin
+          // terminar» y el usuario elige (D76).
+          UnlockStep('migración', () async {
+            migrationRow = await core.migration.refresh();
+          }),
+          UnlockStep('rotación', () async {
+            rot = await RotationKeyStore.shared.load();
+          }),
+          // D75: referencias «en la nube» sin comprobar en la cuenta actual
+          // (tras actualizar a v11, todas): se verifica antes de que la
+          // sincronización normal corra (la pausa se pone al lanzarla).
+          UnlockStep('verificación', () async {
+            if (migrationRow != null || rot != null) return;
+            if (await core.verification.needsVerification()) {
+              unawaited(core.verification.verify());
+            }
+          }),
+          UnlockStep('temporales', core.temp.sweep),
+          // Papelera: lo que lleva 30 días o más se elimina (y su copia de
+          // Drive).
+          UnlockStep('papelera', trash.purgeExpired),
+          UnlockStep('sin conexión', core.offline.reconcile),
+          // Con la guarda ya aplicada (y solo items comprobados en la cuenta
+          // actual, D75).
+          UnlockStep('caché', () async {
+            await core.cache.enforce();
+          }),
+          // Miniaturas que faltan (p. ej. videos importados sin miniatura):
+          // en segundo plano, acotado y sin bloquear la apertura.
+          UnlockStep('miniaturas', () async {
+            final regen = _sharedGallery?.regeneration;
+            if (regen != null) unawaited(regen.run());
+          }),
+          // Rotación de la DEK a medias: se retoma sola salvo que espere al
+          // usuario (código sin confirmar o un bloqueo).
+          UnlockStep('reanudar rotación', () async {
+            final r = rot;
+            if (r != null &&
+                !r.phase.isBlocked &&
+                r.phase != RotationPhase.prepared) {
+              unawaited(core.rotation.resume());
+            }
+          }),
+        ]);
       },
       gallery: _sharedGallery ??= _createGallery(repository, sync),
       sync: sync,
@@ -452,6 +482,7 @@ class VaultServices {
       ),
       migration: core.migration,
       rotation: core.rotation,
+      verification: core.verification,
     );
   }
 
@@ -461,11 +492,18 @@ class VaultServices {
     final session = VaultSession();
     final cloud = CloudProvider.instance;
     final prefsStore = FlutterSecureKeyValueStore();
+    // D75: tag (hash con sal) de la cuenta de Google de la sesión.
+    final tagger = CloudAccountTagger(
+      cloud: cloud,
+      dbProvider: () => VaultDatabase.instance.database,
+    );
     final cache = CacheManager(
       repository: repository,
       preferences: CachePreferences(prefsStore),
       // D67: solo purga la principal y para si la sesión cambia.
       sessionTicket: PrimaryGates.ticket(session),
+      // D75: solo items comprobados en la cuenta actual.
+      accountTag: tagger.current,
     );
     // Depuración: `--dart-define=VAULT_CACHE_LIMIT=<bytes>` fija el límite de
     // la caché (solo en builds de depuración; F8 traerá el ajuste de usuario).
@@ -474,7 +512,22 @@ class VaultServices {
       final v = int.tryParse(debugLimit);
       if (v != null) unawaited(CachePreferences(prefsStore).setLimitBytes(v));
     }
-    final sync = _createSync(repository, cache.enforce);
+    // D75/D76: la verificación se crea después (necesita la migración); la
+    // sincronización la llama tras iniciar sesión.
+    CloudVerificationService? verificationRef;
+    final sync = _createSync(
+      repository,
+      cache.enforce,
+      accountTag: tagger.current,
+      afterSignIn: () async {
+        final v = verificationRef!;
+        if (await v.needsVerification()) {
+          await v.verify();
+        } else {
+          await v.sync.run(manual: true);
+        }
+      },
+    );
     // F9: todo cambio de datos marca el snapshot como sucio (con debounce).
     // D67: solo los cambios de la PRINCIPAL (la secundaria nunca marca sucio
     // el snapshot de Drive).
@@ -534,6 +587,27 @@ class VaultServices {
       // D67: solo con la principal abierta; para si la sesión cambia.
       sessionTicket: PrimaryGates.ticket(session),
       freeSpace: platformFreeSpace,
+      // D76: tras «Cancelar y quedarme», verificar la copia en la cuenta
+      // actual de inmediato.
+      onAbandoned: () async {
+        await verificationRef!.verify();
+      },
+    );
+    final verification = verificationRef = CloudVerificationService(
+      cloud: cloud,
+      items: repository,
+      sync: sync,
+      prefs: SyncPreferences(prefsStore),
+      network: ConnectivityPlusMonitor(),
+      tagger: tagger,
+      dbProvider: () => VaultDatabase.instance.database,
+      resolvePath: AppPaths.resolve,
+      recoveryBackupProvider: () => AuthController().exportRecoveryBackup(),
+      // D67: solo con la principal abierta.
+      sessionTicket: PrimaryGates.ticket(session),
+      rotationActive: () async =>
+          (await RotationKeyStore.shared.load()) != null,
+      migrationActive: migration.hasActive,
     );
     // Al bloquear: el cambio de cuenta se pausa (el estado queda en la BD).
     session.addOnClear(migration.pause);
@@ -558,7 +632,9 @@ class VaultServices {
         isInUse: cache.isInUse,
       ),
       isInUse: cache.isInUse,
-      migrationActive: migration.hasActive,
+      // D75: tampoco con una verificación de la copia en curso.
+      migrationActive: () async =>
+          verification.isRunning || await migration.hasActive(),
     );
     // Al bloquear: la rotación se pausa (su estado está en disco).
     session.addOnClear(rotation.pause);
@@ -577,20 +653,16 @@ class VaultServices {
       temp,
       migration,
       rotation,
+      verification,
     );
   }
 
-  /// Fases que se retoman solas (las demás esperan una decisión).
-  static bool _autoResumable(MigrationPhase p) =>
-      p == MigrationPhase.downloading ||
-      p == MigrationPhase.checkingNew ||
-      p == MigrationPhase.uploading ||
-      p == MigrationPhase.finalizing;
-
   static SyncService _createSync(
     VaultDataRepository repository,
-    Future<List<String>> Function() enforceCache,
-  ) {
+    Future<List<String>> Function() enforceCache, {
+    Future<String?> Function()? accountTag,
+    Future<void> Function()? afterSignIn,
+  }) {
     final session = VaultSession();
     final sync = SyncService(
       cloud: CloudProvider.instance,
@@ -611,6 +683,9 @@ class VaultServices {
       // D60/D61: generación vigente (nombre del respaldo) y rotación en curso.
       rotation: StoreRotationGuard(RotationKeyStore.shared),
       currentKeyGen: () => AuthController().currentKeyGen(),
+      // D75: tag de la cuenta y verificación tras iniciar sesión.
+      accountTag: accountTag,
+      afterSignIn: afterSignIn,
     );
     // Al bloquear: cancela la subida en curso y los reintentos programados.
     session.addOnClear(sync.cancel);
@@ -706,8 +781,10 @@ class _Core {
     this.temp,
     this.migration,
     this.rotation,
+    this.verification,
   );
 
+  final CloudVerificationService verification;
   final SyncService sync;
   final CacheManager cache;
   final VaultFileFetcher fetcher;

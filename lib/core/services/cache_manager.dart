@@ -47,7 +47,12 @@ class CacheStats {
     required this.offlineBytes,
     required this.offlineCount,
     required this.limitBytes,
+    this.unverifiedCount = 0,
   });
+
+  /// D75: copias locales de archivos «en la nube» aún sin comprobar en la
+  /// cuenta actual: no se purgan (ni cuentan en [cachedBytes]).
+  final int unverifiedCount;
 
   /// Bytes de `.vault` locales con copia verificada en la nube que se pueden
   /// purgar (cuentan contra el límite).
@@ -79,6 +84,7 @@ class CacheManager {
     required CachePreferences preferences,
     File Function(String relativePath)? resolvePath,
     this.sessionTicket,
+    this.accountTag,
   }) : _repo = repository,
        _prefs = preferences,
        _resolve = resolvePath ?? AppPaths.resolve;
@@ -87,6 +93,12 @@ class CacheManager {
   /// abierta: entonces [enforce] no purga nada). Se comprueba antes de cada
   /// borrado. `null` (pruebas) = sin esta guarda.
   final SessionTicket? Function()? sessionTicket;
+
+  /// D75: tag de la cuenta de la sesión (`null` = sin sesión). Con él, solo
+  /// se purgan items cuyo `cloudAccountTag` es el de la cuenta ACTUAL: sin
+  /// sesión o sin verificar no se purga nada. `null` (pruebas antiguas) =
+  /// sin esta guarda.
+  final Future<String?> Function()? accountTag;
 
   final VaultDataRepository _repo;
   final CachePreferences _prefs;
@@ -139,11 +151,19 @@ class CacheManager {
   Future<CacheStats> stats() async {
     final verified = await _repo.getCloudVerifiedItems();
     final offline = await _repo.getEffectiveOfflineItemIds();
-    var cb = 0, cc = 0, ob = 0, oc = 0;
+    final tagged = accountTag != null;
+    final tag = tagged ? await _tagOrNull() : null;
+    var cb = 0, cc = 0, ob = 0, oc = 0, uc = 0;
     for (final item in verified) {
       final f = _resolve(item.encryptedPath);
       if (!await f.exists()) continue;
       final len = await f.length();
+      if (tagged &&
+          !offline.contains(item.id) &&
+          (tag == null || item.cloudAccountTag != tag)) {
+        uc++;
+        continue;
+      }
       if (offline.contains(item.id)) {
         ob += len;
         oc++;
@@ -158,7 +178,16 @@ class CacheManager {
       offlineBytes: ob,
       offlineCount: oc,
       limitBytes: await getLimitBytes(),
+      unverifiedCount: uc,
     );
+  }
+
+  Future<String?> _tagOrNull() async {
+    try {
+      return await accountTag!.call();
+    } on StateError {
+      return null;
+    }
   }
 
   /// Purga LRU hasta bajar de [maxBytes] (por defecto el límite guardado).
@@ -176,6 +205,15 @@ class CacheManager {
     final provider = sessionTicket;
     final SessionTicket? ticket = provider?.call();
     if (provider != null && ticket == null) return const [];
+    // D75: sin sesión de Google (o sin poder calcular el tag) no se purga
+    // nada; con sesión, solo lo comprobado en ESTA cuenta.
+    final String? tag;
+    if (accountTag != null) {
+      tag = await _tagOrNull();
+      if (tag == null) return const [];
+    } else {
+      tag = null;
+    }
     final limit = maxBytes ?? await getLimitBytes();
     final verified = await _repo.getCloudVerifiedItems();
     final protected = await _repo.getEffectiveOfflineItemIds();
@@ -185,6 +223,7 @@ class CacheManager {
     for (final item in verified) {
       if (protected.contains(item.id) || item.isOffline) continue;
       if (keepGen != null && item.keyGen == keepGen) continue;
+      if (tag != null && item.cloudAccountTag != tag) continue;
       if (item.syncStatus != SyncStatus.enNube &&
           item.syncStatus != SyncStatus.enCache) {
         continue;

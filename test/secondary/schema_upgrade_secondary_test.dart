@@ -106,6 +106,43 @@ void main() {
     });
   }
 
+  // D75: v10 -> v11 en la secundaria. Se parte de una v10 REAL (sin las
+  // columnas ni las tablas de v11) y con datos.
+  test('secundaria v10 real -> v11: columnas y tablas nuevas, datos '
+      'intactos, tags a NULL', () async {
+    await seedAt(10);
+    final raw = await databaseFactoryFfi.openDatabase(
+      VaultPaths.secondary.dbFilePath,
+    );
+    await raw.execute('ALTER TABLE vault_items DROP COLUMN cloudAccountTag');
+    await raw.execute('ALTER TABLE vault_items DROP COLUMN thumbAccountTag');
+    await raw.execute('DROP TABLE vault_meta');
+    await raw.execute('DROP TABLE diag_events');
+    final cols = (await raw.rawQuery(
+      'PRAGMA table_info(vault_items)',
+    )).map((r) => r['name']).toSet();
+    expect(cols.contains('cloudAccountTag'), isFalse);
+    await raw.execute('PRAGMA user_version = 10');
+    await raw.close();
+
+    final vdb = secondaryDb();
+    final db = await vdb.database;
+    expect(
+      (await db.rawQuery('PRAGMA user_version')).single.values.first,
+      VaultSchema.version,
+    );
+    final item = (await db.query('vault_items')).single;
+    expect(item['id'], 'i');
+    expect(item['encryptedPath'], 'vault/i.vault');
+    expect(item['cloudAccountTag'], isNull);
+    expect(item['thumbAccountTag'], isNull);
+    expect((await db.query('item_tags')).single['tagId'], 't');
+    expect(await db.query('vault_meta'), isEmpty);
+    expect(await db.query('diag_events'), isEmpty);
+    await vdb.close();
+    expect(File(VaultPaths.primary.dbFilePath).existsSync(), isFalse);
+  });
+
   test('una BD secundaria MÁS NUEVA que la app no se toca (D59)', () async {
     await seedAt(VaultSchema.version);
     final raw = await databaseFactoryFfi.openDatabase(

@@ -237,17 +237,7 @@ class _AccountMigrationScreenState extends State<AccountMigrationScreen> {
 
   // ---------------------------------------------------------- en curso
 
-  String _phaseTitle(MigrationPhase p) => switch (p) {
-    MigrationPhase.downloading => 'Descargando de la cuenta anterior',
-    MigrationPhase.signInNew => 'Elegir la cuenta nueva',
-    MigrationPhase.checkingNew => 'Comprobando la cuenta nueva',
-    MigrationPhase.uploading => 'Subiendo a la cuenta nueva',
-    MigrationPhase.finalizing => 'Guardando el respaldo y el índice',
-    MigrationPhase.askDeleteOld =>
-      'Listo: tus archivos están en la cuenta nueva',
-    MigrationPhase.blockedOtherVault => 'La cuenta nueva ya tiene otra bóveda',
-    MigrationPhase.blockedQuota => 'La cuenta nueva no tiene espacio',
-  };
+  String _phaseTitle(MigrationPhase p) => migrationPhaseLabel(p);
 
   List<Widget> _active(MigrationStatus st) {
     final phase = st.phase!;
@@ -383,6 +373,20 @@ class _AccountMigrationScreenState extends State<AccountMigrationScreen> {
     ];
   }
 }
+
+/// Fase del cambio de cuenta en lenguaje claro (también la usa la pantalla
+/// «Cambio de cuenta sin terminar»).
+String migrationPhaseLabel(MigrationPhase p) => switch (p) {
+  MigrationPhase.downloading => 'Descargando de la cuenta anterior',
+  MigrationPhase.signInNew => 'Elegir la cuenta nueva',
+  MigrationPhase.checkingNew => 'Comprobando la cuenta nueva',
+  MigrationPhase.uploading => 'Subiendo a la cuenta nueva',
+  MigrationPhase.finalizing => 'Guardando el respaldo y el índice',
+  MigrationPhase.askDeleteOld => 'Listo: tus archivos están en la cuenta nueva',
+  MigrationPhase.blockedOtherVault => 'La cuenta nueva ya tiene otra bóveda',
+  MigrationPhase.blockedQuota => 'La cuenta nueva no tiene espacio',
+  MigrationPhase.unknown => 'Estado desconocido',
+};
 
 class _Block extends StatelessWidget {
   const _Block({required this.title, required this.lines});

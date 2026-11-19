@@ -202,6 +202,11 @@ void main() {
       await dbA.execute('ALTER TABLE vault_items DROP COLUMN keyGen');
       await dbA.execute('DROP TABLE rotation_state');
       await dbA.execute('DROP TABLE rotation_old_files');
+      // ...y sin lo de v11 (D75).
+      await dbA.execute('ALTER TABLE vault_items DROP COLUMN cloudAccountTag');
+      await dbA.execute('ALTER TABLE vault_items DROP COLUMN thumbAccountTag');
+      await dbA.execute('DROP TABLE vault_meta');
+      await dbA.execute('DROP TABLE diag_events');
       await dbA.execute('PRAGMA user_version = 9');
       // Copia tal cual del archivo v9 (la app actual nunca exporta una BD
       // v9: la sube a v10 al abrirla).
@@ -228,8 +233,10 @@ void main() {
       final db = await vdb.database;
       expect(
         (await db.rawQuery('PRAGMA user_version')).single.values.first,
-        10,
+        VaultSchema.version,
       );
+      // D75: las columnas de v11 llegan al abrir, sin comprobar.
+      expect(all.map((i) => i.cloudAccountTag).toSet(), {null});
     });
 
     test(

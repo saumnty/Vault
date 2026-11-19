@@ -3,9 +3,13 @@ import 'dart:typed_data';
 
 /// Cuenta de nube conectada.
 class CloudAccount {
-  const CloudAccount({required this.email, this.displayName});
+  const CloudAccount({required this.email, this.displayName, this.id});
   final String email;
   final String? displayName;
+
+  /// Id estable de la cuenta (Google: `GoogleSignInAccount.id`), o `null`.
+  /// Solo se usa para calcular el tag de cuenta (D75); nunca se registra.
+  final String? id;
 }
 
 /// Cuota de almacenamiento (about.get -> storageQuota). [limitBytes] es
@@ -146,6 +150,11 @@ class CloudUnknownException extends CloudException {
 abstract interface class CloudStorage {
   /// Correo de la cuenta conectada, o `null`.
   String? get currentAccountEmail;
+
+  /// Id estable de la cuenta conectada (Google: `GoogleSignInAccount.id`), o
+  /// `null` (sin sesión o desconocido: el tag usa entonces el correo). Nunca
+  /// se registra ni se guarda en claro (D75).
+  String? get currentAccountId;
 
   /// Inicio de sesión interactivo.
   Future<CloudAccount> signIn();

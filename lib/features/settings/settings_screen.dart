@@ -14,6 +14,7 @@ import '../../data/migration/account_migration_service.dart';
 import '../../data/rotation/key_rotation_service.dart';
 import '../onboarding/widgets/recovery_code_field.dart';
 import 'key_rotation_screen.dart';
+import '../../data/sync/cloud_verification_service.dart';
 import '../../data/sync/storage_service.dart';
 import '../../data/sync/sync_service.dart';
 import '../../shared/format.dart';
@@ -24,6 +25,7 @@ import '../gallery/delete_originals_sheet.dart';
 import '../sync/quota_bar.dart';
 import '../vault/vault_services.dart';
 import 'account_migration_screen.dart';
+import 'cloud_verification_screen.dart';
 import 'diagnostics_screen.dart';
 import 'pin_flows.dart';
 import 'secondary_vault_screen.dart';
@@ -199,6 +201,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } finally {
       if (mounted) setState(() => _regenBusy = false);
     }
+  }
+
+  /// D75: aviso de los archivos que la caché no toca por no estar comprobados
+  /// en la cuenta actual ('' si no hay).
+  static String _unverifiedNote(CacheStats? s) {
+    final n = s?.unverifiedCount ?? 0;
+    if (n == 0) return '';
+    return '. $n archivo(s) pendientes de comprobar en tu cuenta no se tocan.';
   }
 
   Future<void> _refreshStats() async {
@@ -448,11 +458,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _busyStorage = true);
     try {
       final freed = await storage.clearCache();
+      final kept = _unverifiedNote(await _safeStats());
       _snack(
-        freed.files == 0
-            ? 'No había nada que liberar'
-            : 'Caché vaciada: ${freed.files} archivo(s), '
-                  '${formatBytes(freed.bytes)} liberados',
+        (freed.files == 0
+                ? 'No había nada que liberar'
+                : 'Caché vaciada: ${freed.files} archivo(s), '
+                      '${formatBytes(freed.bytes)} liberados') +
+            kept,
       );
     } on Object {
       _snack('No se pudo vaciar la caché');
@@ -484,11 +496,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _busyStorage = true);
     try {
       final freed = await storage.freeOfflineSpace();
+      final kept = _unverifiedNote(await _safeStats());
       _snack(
-        freed.files == 0
-            ? 'No había nada que liberar'
-            : 'Se liberaron ${formatBytes(freed.bytes)} '
-                  '(${freed.files} archivo(s))',
+        (freed.files == 0
+                ? 'No había nada que liberar'
+                : 'Se liberaron ${formatBytes(freed.bytes)} '
+                      '(${freed.files} archivo(s))') +
+            kept,
       );
     } on Object {
       _snack('No se pudo liberar el espacio');
@@ -525,6 +539,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (mounted) setState(() {});
+  }
+
+  /// D75: «Verificar copia en la nube» (muestra la cuenta y el resultado).
+  Future<void> _openVerification(CloudVerificationService service) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => CloudVerificationScreen(
+          service: service,
+          accountEmail: () => _sync?.cloud.currentAccountEmail,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    await _refreshStats();
   }
 
   Future<void> _signOut() async {
@@ -713,7 +741,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ? 'Calculando…'
         : 'Caché: ${formatBytes(s.cachedBytes)} (${s.cachedCount} archivos)'
               ' · Sin conexión: ${formatBytes(s.offlineBytes)} '
-              '(${s.offlineCount} archivos)';
+              '(${s.offlineCount} archivos)'
+              '${s.unverifiedCount > 0 ? ' · ${s.unverifiedCount} pendientes de comprobar (no se tocan)' : ''}';
     return [
       SettingsTile(
         icon: Icons.storage_outlined,
@@ -769,9 +798,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             if (migration != null && migrating)
               SettingsTile(
+                key: const ValueKey('migration-in-progress-tile'),
                 icon: Icons.swap_horiz,
                 title: 'Cambio de cuenta en curso',
-                subtitle: 'Toca para ver el progreso o continuar',
+                // D76: la fase a la vista (distingue las variantes del atasco).
+                subtitle:
+                    'Fase: ${migrationPhaseLabel(migration.status.value.phase!)}. '
+                    'La sincronización está en pausa. Toca para ver o continuar.',
                 onTap: () => _openMigration(migration),
               ),
             const Padding(padding: AppSpacing.page, child: CloudPrivacyNote()),
@@ -802,6 +835,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ? null
                     : () => unawaited(sync.run(manual: true)),
               ),
+              if (widget.services.verification != null)
+                SettingsTile(
+                  key: const ValueKey('verify-cloud-tile'),
+                  icon: Icons.fact_check_outlined,
+                  title: 'Verificar copia en la nube',
+                  subtitle: migrating || _rotating
+                      ? 'No disponible: termina primero el cambio en curso'
+                      : 'Comprueba que esta cuenta tiene cada archivo',
+                  onTap: () => _openVerification(widget.services.verification!),
+                ),
               if (migration != null && !migrating)
                 SettingsTile(
                   icon: Icons.swap_horiz,

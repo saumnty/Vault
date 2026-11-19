@@ -20,6 +20,7 @@ import '../gallery/originals_pending_banner.dart';
 import '../settings/key_rotation_screen.dart';
 import '../settings/settings_environment.dart';
 import '../settings/settings_screen.dart';
+import '../settings/unfinished_migration_screen.dart';
 import '../sync/sync_cloud_button.dart';
 import '../sync/sync_sheet.dart';
 import 'models/browser_entry.dart';
@@ -86,12 +87,9 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
     super.initState();
     // Reanudación: al abrir/desbloquear la bóveda se procesa la cola.
     if (widget.currentFolderId == null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _services.sync?.run();
-        // F6a: barre temporales descifrados, reconcilia "sin conexión" y
-        // aplica el límite de la caché.
-        unawaited(_services.onUnlocked?.call());
-      });
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => unawaited(_afterOpen()),
+      );
     }
     if (_services.gallery != null) {
       WidgetsBinding.instance.addPostFrameCallback(
@@ -99,6 +97,42 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
       );
       _services.sync?.summary.addListener(_onSyncSummary);
     }
+  }
+
+  /// Al abrir la raíz (cada desbloqueo crea una raíz nueva). D76: PRIMERO el
+  /// trabajo de apertura (la guarda del cambio de cuenta y la verificación de
+  /// la copia van antes que nada) y DESPUÉS la sincronización; antes corría
+  /// la sincronización primero, sin la guarda aplicada en un arranque en frío.
+  Future<void> _afterOpen() async {
+    // F6a: barre temporales descifrados, reconcilia "sin conexión" y aplica
+    // el límite de la caché (y D75/D76, ver `VaultServices.onUnlocked`).
+    try {
+      await _services.onUnlocked?.call();
+    } on Object {
+      // cada paso registra su propio fallo
+    }
+    _services.sync?.run();
+    await _showUnfinishedMigration();
+  }
+
+  /// D76: invariante «nunca un cambio de cuenta guardado sin pantalla a la
+  /// vista»: si hay uno y no está corriendo, se muestra una vez por
+  /// desbloqueo.
+  Future<void> _showUnfinishedMigration() async {
+    final migration = _services.migration;
+    if (migration == null || !mounted) return;
+    final st = migration.status.value;
+    if (!st.active || st.running) return;
+    final verification = _services.verification;
+    await Navigator.of(context).push<void>(
+      AppPageRoute<void>(
+        builder: (_) => UnfinishedMigrationScreen(
+          service: migration,
+          unverifiedCount: verification?.unverifiedCount,
+        ),
+      ),
+    );
+    if (mounted) _controller.load(silent: true);
   }
 
   final TextEditingController _search = TextEditingController();

@@ -266,6 +266,8 @@ CREATE TRIGGER IF NOT EXISTS rot_folders_del AFTER DELETE ON folders BEGIN
           'cloudMd5': null,
           'cloudSize': null,
           'thumbDriveFileId': null,
+          'cloudAccountTag': null,
+          'thumbAccountTag': null,
           'syncStatus': 'error',
         },
         where: 'id = ? AND keyGen = ?',

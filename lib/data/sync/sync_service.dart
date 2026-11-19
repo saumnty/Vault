@@ -108,6 +108,15 @@ class NoRotationGuard implements RotationGuard {
   int get toGen => 1;
 }
 
+/// D75: la sesión de Google cambió de cuenta mientras se subía un archivo. Lo
+/// subido NO se registra (sería de otra cuenta); el trabajo vuelve a
+/// pendiente sin contar intento y se repite con la cuenta nueva.
+class SyncAccountChangedException implements Exception {
+  const SyncAccountChangedException();
+  @override
+  String toString() => 'SyncAccountChangedException';
+}
+
 /// Falta el archivo local (no se puede subir; no se reintenta solo).
 class SyncLocalMissingException implements Exception {
   const SyncLocalMissingException(this.path);
@@ -221,6 +230,8 @@ class SyncService {
     this.afterRun,
     RotationGuard? rotation,
     Future<int> Function()? currentKeyGen,
+    this.accountTag,
+    this.afterSignIn,
   }) : _now = nowMs ?? (() => DateTime.now().millisecondsSinceEpoch),
        _random = random ?? Random(),
        rotation = rotation ?? const NoRotationGuard(),
@@ -233,6 +244,15 @@ class SyncService {
   /// Generación de llave vigente (`vault.v1.key_gen`): da nombre al respaldo
   /// de recuperación (`recovery_backup[.kN].json`).
   final Future<int> Function() currentKeyGen;
+
+  /// D75: tag (hash con sal) de la cuenta de la sesión actual, o `null` sin
+  /// sesión (`CloudAccountTagger.current`). Sin proveedor (pruebas antiguas)
+  /// no se escriben tags y todo funciona como antes de v11.
+  final Future<String?> Function()? accountTag;
+
+  /// D75: tras un [signIn] correcto (en lugar de `run`): la app comprueba la
+  /// copia en la nube si la cuenta no es la de los tags (y luego sincroniza).
+  final Future<void> Function()? afterSignIn;
 
   final CloudStorage cloud;
   final SyncQueueRepository queue;
@@ -282,6 +302,16 @@ class SyncService {
   /// Cambio de cuenta de Google en curso: la sincronización normal queda en
   /// pausa (la subida a la cuenta nueva la dirige `AccountMigrationService`).
   bool pausedForMigration = false;
+
+  /// D75: «Verificar copia en la nube» en curso: la sincronización normal
+  /// espera (la verificación la relanza al terminar).
+  bool pausedForVerification = false;
+
+  /// D75: tag de una cuenta en la que la verificación encontró el respaldo de
+  /// recuperación de OTRA bóveda con el mismo nombre: en esa cuenta no se
+  /// sube (ni se reemplaza) el respaldo. Solo en memoria; la verificación
+  /// del siguiente desbloqueo lo vuelve a decidir.
+  String? recoveryBackupBlockedTag;
 
   bool _running = false;
   bool get isRunning => _running;
@@ -360,7 +390,16 @@ class SyncService {
       rethrow;
     }
     unawaited(refreshQuota());
-    unawaited(run(manual: true));
+    final hook = afterSignIn;
+    if (hook == null) {
+      unawaited(run(manual: true));
+    } else {
+      unawaited(
+        hook().catchError((Object e) {
+          VaultLog.e('Tras iniciar sesión falló', e, 'sync');
+        }),
+      );
+    }
   }
 
   Future<void> signOut() async {
@@ -422,7 +461,7 @@ class SyncService {
   Future<void> run({bool manual = false, bool force = false}) async {
     if (_running || _disposed) return;
     if (!isUnlocked()) return;
-    if (pausedForMigration && !force) return;
+    if ((pausedForMigration || pausedForVerification) && !force) return;
     _running = true;
     VaultLog.d('Sincronización iniciada', category: 'sync');
     final token = _token = CloudCancelToken();
@@ -567,7 +606,14 @@ class SyncService {
     final backup = await recoveryBackupProvider();
     if (backup != null) {
       final sha = crypto.sha256.convert(utf8.encode(backup)).toString();
-      if (sha != await prefs.getRecoveryUploadedSha()) {
+      // D75: también si se subió a OTRA cuenta (tag distinto), aunque nadie
+      // llamara a `signOut`.
+      final tag = await _currentTag();
+      final otherAccount =
+          tag != null && tag != await prefs.getRecoveryUploadedTag();
+      final blocked = tag != null && tag == recoveryBackupBlockedTag;
+      if (!blocked &&
+          (otherAccount || sha != await prefs.getRecoveryUploadedSha())) {
         await queue.enqueue(
           SyncQueueRepository.noItem,
           SyncJobKind.recoveryBackup,
@@ -648,16 +694,26 @@ class SyncService {
   Future<void> flushSnapshotBeforeLock() async {
     if (_disposed || _lockFlushRunning || !isUnlocked()) return;
     if (rotation.freezeMeta) return; // D61: conjunto viejo congelado
+    // D75: ni con un cambio de cuenta ni con una verificación en curso (la
+    // cuenta de la sesión puede no ser aquella cuyas referencias tiene la BD).
+    if (pausedForMigration || pausedForVerification) return;
     try {
       if (await prefs.getDirtyAt() == null) return;
       if (cloud.currentAccountEmail == null) return;
+      // D75: solo a la cuenta a la que ya se subió el último snapshot (la
+      // sincronización normal, que verifica, se encarga de una cuenta nueva).
+      String? tag;
+      if (accountTag != null) {
+        tag = await _currentTag();
+        if (tag == null || tag != await prefs.getSnapshotUploadedTag()) return;
+      }
       final net = await network.current();
       if (!net.isOnline) return;
       if (net == NetworkKind.mobile && await prefs.getWifiOnly()) return;
       _lockFlushRunning = true;
       final takenAt = _now();
       final snapshot = await snapshotProvider();
-      unawaited(_uploadFlushedSnapshot(snapshot, takenAt));
+      unawaited(_uploadFlushedSnapshot(snapshot, takenAt, tag));
     } on Object catch (e) {
       _lockFlushRunning = false;
       if (kDebugMode) debugPrint('[sync] snapshot al bloquear omitido: $e');
@@ -671,9 +727,15 @@ class SyncService {
   Future<void> _uploadFlushedSnapshot(
     SnapshotCopy snapshot,
     int takenAt,
+    String? tag,
   ) async {
     try {
-      await _uploadSnapshotFile(snapshot, CloudCancelToken(), takenAt);
+      await _uploadSnapshotFile(
+        snapshot,
+        CloudCancelToken(),
+        takenAt,
+        accountTagAtStart: tag,
+      );
       if (kDebugMode) debugPrint('[sync] snapshot subido al bloquear');
     } on Object catch (e) {
       if (kDebugMode) {
@@ -713,6 +775,11 @@ class SyncService {
       if (done) await queue.remove(job.id);
       return null;
     } on CloudCancelledException {
+      await _revert(job, hasItem);
+      return SyncPhase.idle;
+    } on SyncAccountChangedException {
+      // D75: la sesión cambió de cuenta a mitad: se repite con la nueva.
+      VaultLog.d('Subida descartada: la cuenta cambió', category: 'sync');
       await _revert(job, hasItem);
       return SyncPhase.idle;
     } on CloudNoNetworkException catch (e) {
@@ -861,6 +928,9 @@ class SyncService {
     final name = isThumb
         ? CloudNames.thumb(item.id, gen: item.keyGen)
         : CloudNames.file(item.id, gen: item.keyGen);
+    // D75: cuenta capturada al EMPEZAR; si al terminar es otra, lo subido no
+    // se registra (el trabajo se repite).
+    final tag = await _currentTag();
     final size = await file.length();
     final md5 = await md5OfFile(file);
     // Idempotente: si ya existe (subida anterior sin confirmar), se reemplaza
@@ -877,6 +947,9 @@ class SyncService {
                 _setProgress(item.id, total == 0 ? 1 : sent / total),
     );
     _verify(remote, size, md5);
+    if (accountTag != null && await _currentTag() != tag) {
+      throw const SyncAccountChangedException();
+    }
     // M4: solo se registra si la fila sigue siendo la que se subió (misma
     // generación y ruta). Si cambió o se borró, el trabajo se da por hecho
     // SIN borrar nada en Drive (ese id puede estar en un conjunto de
@@ -888,6 +961,7 @@ class SyncService {
         remote.id,
         expectKeyGen: item.keyGen,
         expectThumbPath: rel,
+        accountTag: tag,
       );
     } else {
       marked = await items.markCloudVerifiedIf(
@@ -897,6 +971,7 @@ class SyncService {
         size: size,
         expectKeyGen: item.keyGen,
         expectPath: rel,
+        accountTag: tag,
       );
       if (marked) await prefs.addUpload();
     }
@@ -984,6 +1059,10 @@ class SyncService {
     // D60: el nombre es el de la generación vigente (`recovery_backup.json`
     // en la 1, `recovery_backup.kN.json` después de rotar).
     final name = CloudNames.recoveryBackupFor(await currentKeyGen());
+    // D75: en una cuenta con el respaldo de OTRA bóveda (lo vio la
+    // verificación) no se crea ni se reemplaza nada.
+    final tag = await _currentTag();
+    if (tag != null && tag == recoveryBackupBlockedTag) return true;
     final previous = [
       for (final f in await cloud.list())
         if (f.name == name) f.id,
@@ -1000,6 +1079,11 @@ class SyncService {
     }
     final sha = crypto.sha256.convert(bytes).toString();
     await prefs.setRecoveryUploadedSha(sha);
+    if (accountTag != null) {
+      await prefs.setRecoveryUploadedTag(
+        await _currentTag() == tag ? tag : null,
+      );
+    }
     if (kDebugMode) {
       // Diagnóstico (solo depuración): confirma la subida sin exponer nada
       // más que el prefijo del SHA-256 del respaldo (ya cifrado).
@@ -1013,9 +1097,27 @@ class SyncService {
 
   Future<bool> _uploadSnapshot(CloudCancelToken token) async {
     final takenAt = _now();
+    final tag = await _currentTag();
     final snapshot = await snapshotProvider();
-    return _uploadSnapshotFile(snapshot, token, takenAt);
+    return _uploadSnapshotFile(
+      snapshot,
+      token,
+      takenAt,
+      accountTagAtStart: tag,
+    );
   }
+
+  /// D75: tag de la cuenta actual (`null` sin proveedor o sin sesión).
+  Future<String?> _currentTag() async {
+    final provider = accountTag;
+    if (provider == null) return null;
+    return provider();
+  }
+
+  /// Identidad cruda de la sesión (solo para comparar en memoria; nunca se
+  /// registra ni se guarda).
+  String? get _sessionIdentity =>
+      cloud.currentAccountId ?? cloud.currentAccountEmail;
 
   /// Sube [copy] (copia ya cifrada de la BD) y la borra al terminar.
   /// [takenAt]: instante en que se tomó la copia (ver
@@ -1031,8 +1133,10 @@ class SyncService {
     CloudCancelToken token,
     int takenAt, {
     bool byRotation = false,
+    String? accountTagAtStart,
   }) async {
     final snapshot = copy.file;
+    final identity = _sessionIdentity;
     try {
       if (!copy.isCoherent) {
         throw SyncGuardException(
@@ -1055,6 +1159,14 @@ class SyncService {
       );
       _verify(remote, size, md5);
       await prefs.markSnapshotDone(_now(), takenAtMs: takenAt);
+      if (accountTag != null) {
+        // Sin BD (flush tras bloquear): se compara la sesión en memoria.
+        await prefs.setSnapshotUploadedTag(
+          identity != null && identity == _sessionIdentity
+              ? accountTagAtStart
+              : null,
+        );
+      }
       VaultLog.d('Snapshot de la BD subido', category: 'sync');
       return true;
     } finally {
@@ -1076,8 +1188,12 @@ class SyncService {
   /// A1 (D61): durante una rotación de la DEK devuelve SIEMPRE `false`: lo
   /// importado en la ventana no está en ningún conjunto que se pueda
   /// restaurar hasta el corte, así que no se borra ningún original.
+  ///
+  /// D75: con [accountTag], exige además que el item esté comprobado en la
+  /// cuenta ACTUAL (`cloudAccountTag` igual al tag de la sesión, no nulo).
   Future<bool> cloudVerifier(VaultItemModel item) async {
     if (rotation.active) return false;
+    if (pausedForMigration || pausedForVerification) return false;
     try {
       final fresh = await items.getItem(item.id);
       if (fresh == null ||
@@ -1086,6 +1202,10 @@ class SyncService {
           fresh.cloudMd5 == null ||
           fresh.cloudSize == null) {
         return false;
+      }
+      if (accountTag != null) {
+        final tag = await _currentTag();
+        if (tag == null || fresh.cloudAccountTag != tag) return false;
       }
       final local = resolvePath(fresh.encryptedPath);
       if (await local.exists()) {

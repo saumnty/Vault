@@ -652,6 +652,17 @@ class RestoreService {
         batch.delete('rotation_old_files');
         batch.delete('rotation_state');
       }
+      if (version >= 11) {
+        // D75: el diagnóstico del otro teléfono no viaja, y los tags de cuenta
+        // quedan «sin comprobar»: la verificación del primer desbloqueo los
+        // fija con la cuenta de este teléfono (la sal de `vault_meta` sí se
+        // conserva). Un snapshot < v11 se actualiza al abrirlo (todo NULL).
+        batch.delete('diag_events');
+        batch.update('vault_items', {
+          'cloudAccountTag': null,
+          'thumbAccountTag': null,
+        });
+      }
       for (final r in rows) {
         final id = r['id'] as String;
         // S-15: el id acaba en nombres de archivo locales (`<id>.thumb`): solo

@@ -35,6 +35,9 @@ class SlotGuardedCloudStorage implements CloudStorage {
       _blocked ? null : _inner.currentAccountEmail;
 
   @override
+  String? get currentAccountId => _blocked ? null : _inner.currentAccountId;
+
+  @override
   Future<CloudAccount> signIn() async {
     _guard();
     return _inner.signIn();

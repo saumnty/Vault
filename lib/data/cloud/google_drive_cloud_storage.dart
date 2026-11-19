@@ -96,8 +96,13 @@ class GoogleDriveCloudStorage implements CloudStorage {
   @override
   String? get currentAccountEmail => _signIn.currentUser?.email;
 
+  /// D75: id estable de Google (`GoogleSignInAccount.id`, google_sign_in
+  /// 6.3.0). Solo alimenta el tag de cuenta con sal; nunca se registra.
+  @override
+  String? get currentAccountId => _signIn.currentUser?.id;
+
   CloudAccount _account(GoogleSignInAccount a) =>
-      CloudAccount(email: a.email, displayName: a.displayName);
+      CloudAccount(email: a.email, displayName: a.displayName, id: a.id);
 
   @override
   Future<CloudAccount> signIn() async {

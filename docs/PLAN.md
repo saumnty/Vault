@@ -81,3 +81,16 @@ Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (RE
 - Estado: **v2 CERRADA (2026-11-18)** en la rama dev-claude, sin push. Regresión completa en el emulador hecha (un bug hallado y corregido: Papelera bloqueada si fallaba el aviso). M11 probado contra Drive real; M7 sin probar contra Drive real (no hay segunda cuenta de pruebas).
 - Lista final de pruebas de iPhone (v2), en orden 0 → 1 → 1 bis (simulacro) → 2 … 12 (el 11, rotación, es OPCIONAL: solo si el código se filtra y después del simulacro): `docs/REPORTE.md`, sección «Lista final de pruebas de iPhone (v2) — en orden». Todo sin probar en iOS.
 - Dónde retomar: esperar los resultados del iPhone del usuario; nunca instalar una build antigua en el iPhone ni desinstalar la app.
+
+### Migración atascada (iPhone) — diseño `docs/DISENO_MIGRACION_ATASCADA.md`
+| Paso | Qué | Estado |
+|---|---|---|
+| A1 | BD v11 incremental: `cloudAccountTag`/`thumbAccountTag`, `vault_meta` (sal), `diag_events`; tests v10→v11 (con datos, adicional, `rekeyTo`, restauración) | 🧪 D75 |
+| A2 | «Cambio de cuenta sin terminar» al abrir, `abandonStayOnCurrent`, fase desconocida, `resume` sin errores silenciosos, `onUnlocked` por pasos con la guarda primero | 🧪 D76/D77 |
+| A3 | «Verificar copia en la nube» (Ajustes y automática), caché/originales/flush solo con el tag de la cuenta actual | 🧪 D75 |
+| B4 | Guardas y mensajes de «Sincronizar ahora»/«Cerrar sesión» (Ajustes y hoja), `SyncRunOutcome`, cuenta comprobada dentro de la migración, selector con plazo (iOS) | ⬜ |
+| B5 | Banner en la cuadrícula | ⬜ |
+| B6 | Diagnóstico persistente cifrado con Borrar (tabla ya creada en v11) | ⬜ |
+| B7 | Mensaje de restauración con inventario | ⬜ |
+
+Dónde retomar: parte A hecha (analyze y tests en verde; iPhone sin probar, pasos en REPORTE «Migración atascada (iPhone)»). Siguiente: parte B.

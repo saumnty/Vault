@@ -31,14 +31,19 @@ enum MigrationPhase {
   blockedOtherVault('blocked_other_vault'),
 
   /// La cuenta nueva no tiene espacio suficiente.
-  blockedQuota('blocked_quota');
+  blockedQuota('blocked_quota'),
+
+  /// D76: valor guardado que esta versión no reconoce (p. ej. de una versión
+  /// más nueva). Antes caía en `downloading` en silencio; ahora no se ejecuta
+  /// nada y solo se ofrece «Cancelar y quedarme». Nunca se escribe.
+  unknown('?');
 
   const MigrationPhase(this.dbValue);
   final String dbValue;
 
   static MigrationPhase fromDb(String v) => MigrationPhase.values.firstWhere(
-    (p) => p.dbValue == v,
-    orElse: () => MigrationPhase.downloading,
+    (p) => p.dbValue == v && p != MigrationPhase.unknown,
+    orElse: () => MigrationPhase.unknown,
   );
 
   /// `true` si ya se cambió (o se está cambiando) a la cuenta nueva.
@@ -215,6 +220,8 @@ class MigrationRepository {
             'cloudMd5': null,
             'cloudSize': null,
             'thumbDriveFileId': null,
+            'cloudAccountTag': null,
+            'thumbAccountTag': null,
           },
           where: 'id = ?',
           whereArgs: [id],
@@ -255,12 +262,36 @@ class MigrationRepository {
             'cloudMd5': r['oldCloudMd5'],
             'cloudSize': r['oldCloudSize'],
             'thumbDriveFileId': r['oldThumbDriveFileId'],
+            // D75: restauradas pero SIN comprobar: la verificación decide si
+            // siguen existiendo en la cuenta de la sesión.
+            'cloudAccountTag': null,
+            'thumbAccountTag': null,
           },
           where: 'id = ?',
           whereArgs: [id],
         );
       }
       await txn.delete('sync_queue');
+    });
+  }
+
+  /// D76 (`abandonStayOnCurrent` con la sesión en OTRA cuenta): termina el
+  /// cambio de cuenta conservando las referencias ACTUALES de los items (las
+  /// de la cuenta en la que nos quedamos) y sin restaurar nada. Si nunca se
+  /// llegó a `resetForUpload` ([markAllUnverified]), las referencias son de
+  /// la cuenta anterior: se marcan todas «sin comprobar» (tags a `NULL`) para
+  /// que la verificación decida. No borra ninguna fila de `vault_items`.
+  Future<void> finishKeepingCurrentRefs({required bool markAllUnverified}) async {
+    final db = await _dbProvider();
+    await db.transaction((txn) async {
+      if (markAllUnverified) {
+        await txn.update('vault_items', {
+          'cloudAccountTag': null,
+          'thumbAccountTag': null,
+        });
+      }
+      await txn.delete('migration_items');
+      await txn.delete('migration_state');
     });
   }
 }

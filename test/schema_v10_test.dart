@@ -149,11 +149,19 @@ void main() {
         type,
       ])).map((r) => r['name']).toSet();
 
-  test('la versión actual es 10', () => expect(VaultSchema.version, 10));
+  // v11 (D75) se añadió encima: estas pruebas siguen validando el paso por
+  // v10 con la versión actual (ver schema_v11_test.dart).
+  test(
+    'la versión actual incluye v10',
+    () => expect(VaultSchema.version, greaterThanOrEqualTo(10)),
+  );
 
   test('v9 -> v10 conserva TODOS los datos y deja keyGen = 1', () async {
     final db = await openCurrent(await makeOld(9));
-    expect((await db.rawQuery('PRAGMA user_version')).single.values.first, 10);
+    expect(
+      (await db.rawQuery('PRAGMA user_version')).single.values.first,
+      VaultSchema.version,
+    );
     final items = {for (final r in await db.query('vault_items')) r['id']: r};
     expect(items.keys, {'i1', 'i2'});
     final i1 = items['i1']!;

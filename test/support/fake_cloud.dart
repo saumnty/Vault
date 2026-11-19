@@ -83,6 +83,7 @@ class FakeCloudStorage implements CloudStorage {
 
   @override
   Future<CloudFile> rename(String fileId, String newName) async {
+    renameCalls++;
     _requireAuth();
     _check('rename');
     final b = _blobs[fileId];
@@ -149,6 +150,10 @@ class FakeCloudStorage implements CloudStorage {
 
   @override
   String? get currentAccountEmail => email;
+
+  /// Sin id: el tag de cuenta usa el correo (como un proveedor sin id).
+  @override
+  String? get currentAccountId => null;
 
   @override
   Future<CloudAccount> signIn() async {
@@ -280,8 +285,14 @@ class FakeCloudStorage implements CloudStorage {
     return b.bytes;
   }
 
+  /// Llamadas a [delete] y [rename] (la verificación de la copia en la nube
+  /// nunca debe hacer ninguna, D75).
+  int deleteCalls = 0;
+  int renameCalls = 0;
+
   @override
   Future<void> delete(String fileId) async {
+    deleteCalls++;
     _requireAuth();
     _check('delete');
     if (_blobs.remove(fileId) == null) throw const CloudNotFoundException();

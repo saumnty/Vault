@@ -277,6 +277,7 @@ class VaultDataRepository {
       'thumbPath': thumbPath,
       'thumbFileId': thumbFileId,
       'thumbDriveFileId': null,
+      'thumbAccountTag': null,
     });
   }
 
@@ -385,6 +386,9 @@ class VaultDataRepository {
   /// sigue en [expectKeyGen] y con [expectPath] (el archivo que se subió).
   /// `false` si no existe o cambió: lo subido no se registra (y NO se borra
   /// nada en la nube; lo limpia la rotación).
+  ///
+  /// D75: [accountTag] es el tag de la cuenta capturado al EMPEZAR la subida
+  /// (`null` = sin tagger: la fila queda «sin comprobar»).
   Future<bool> markCloudVerifiedIf(
     String id, {
     required String driveFileId,
@@ -392,6 +396,7 @@ class VaultDataRepository {
     required int size,
     required int expectKeyGen,
     required String expectPath,
+    String? accountTag,
   }) => _updateItemIf(
     id,
     {
@@ -399,6 +404,7 @@ class VaultDataRepository {
       'driveFileId': driveFileId,
       'cloudMd5': md5,
       'cloudSize': size,
+      'cloudAccountTag': accountTag,
     },
     expectKeyGen: expectKeyGen,
     expectPath: expectPath,
@@ -437,6 +443,8 @@ class VaultDataRepository {
           'cloudMd5': null,
           'cloudSize': null,
           'thumbDriveFileId': null,
+          'cloudAccountTag': null,
+          'thumbAccountTag': null,
           'syncStatus': SyncStatus.pendiente.dbValue,
         },
         where: 'id = ? AND keyGen = ? AND encryptedPath = ?',
@@ -498,11 +506,12 @@ class VaultDataRepository {
     String thumbDriveFileId, {
     required int expectKeyGen,
     required String expectThumbPath,
+    String? accountTag,
   }) async {
     final db = await _dbProvider();
     final n = await db.update(
       'vault_items',
-      {'thumbDriveFileId': thumbDriveFileId},
+      {'thumbDriveFileId': thumbDriveFileId, 'thumbAccountTag': accountTag},
       where: 'id = ? AND keyGen = ? AND thumbPath = ?',
       whereArgs: [id, expectKeyGen, expectThumbPath],
     );

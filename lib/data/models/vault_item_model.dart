@@ -56,6 +56,13 @@ class VaultItemModel {
   /// para que ningún sitio que crea items la olvide.
   final int keyGen;
 
+  /// D75 (v11): tag (hash con sal, nunca el correo) de la cuenta de Google en
+  /// la que se COMPROBÓ el `.vault` ([driveFileId]) y la `.thumb`
+  /// ([thumbDriveFileId]). `null` = sin comprobar en ninguna cuenta: la caché
+  /// no lo purga y no cuenta para borrar originales hasta verificarlo.
+  final String? cloudAccountTag;
+  final String? thumbAccountTag;
+
   const VaultItemModel({
     required this.keyGen,
     required this.id,
@@ -79,6 +86,8 @@ class VaultItemModel {
     this.thumbDriveFileId,
     this.fileId,
     this.thumbFileId,
+    this.cloudAccountTag,
+    this.thumbAccountTag,
   });
 
   /// Lanza [ArgumentError] si alguna ruta es absoluta.
@@ -107,6 +116,9 @@ class VaultItemModel {
     'fileId': fileId,
     'thumbFileId': thumbFileId,
     'keyGen': keyGen,
+    // Solo si hay valor: un alta normal no los escribe (quedan NULL).
+    'cloudAccountTag': ?cloudAccountTag,
+    'thumbAccountTag': ?thumbAccountTag,
   };
 
   factory VaultItemModel.fromMap(Map<String, dynamic> map) => VaultItemModel(
@@ -133,5 +145,8 @@ class VaultItemModel {
     thumbFileId: map['thumbFileId'] as String?,
     // Filas anteriores a v10 (snapshots viejos en memoria): generación 1.
     keyGen: (map['keyGen'] as int?) ?? 1,
+    // Filas anteriores a v11: sin comprobar.
+    cloudAccountTag: map['cloudAccountTag'] as String?,
+    thumbAccountTag: map['thumbAccountTag'] as String?,
   );
 }
