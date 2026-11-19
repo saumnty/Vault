@@ -1,0 +1,491 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../../core/crypto/auth_controller.dart';
+import '../../core/crypto/crypto_debug.dart';
+import '../../core/theme/app_colors.dart';
+import '../../core/theme/app_motion.dart';
+import '../../core/theme/app_shadows.dart';
+import '../../core/theme/app_spacing.dart';
+import '../../core/theme/app_typography.dart';
+import '../../shared/haptics.dart';
+import '../../shared/widgets/app_buttons.dart';
+import '../../shared/widgets/shake_widget.dart';
+import 'widgets/pin_dots.dart';
+import 'widgets/pin_keypad.dart';
+
+/// Pantalla de PIN: crea la bóveda (primera vez) o la desbloquea.
+///
+/// Con [onVaultCreated] (onboarding, F8) la creación NO termina aquí: se
+/// persiste la bandera de onboarding pendiente, se entrega el resultado (con
+/// el código de recuperación) y el flujo sigue en los pasos siguientes. Sin
+/// él, tras crear la bóveda se llama directamente a [onAuthenticated].
+class PinScreen extends StatefulWidget {
+  final VoidCallback onAuthenticated;
+  final AuthController? authController;
+  final ValueChanged<VaultCreationResult>? onVaultCreated;
+
+  /// Longitud máxima del PIN (se envía solo al completarla).
+  static const int maxPinLength = 6;
+
+  const PinScreen({
+    super.key,
+    required this.onAuthenticated,
+    this.authController,
+    this.onVaultCreated,
+  });
+
+  @override
+  State<PinScreen> createState() => _PinScreenState();
+}
+
+class _PinScreenState extends State<PinScreen> with WidgetsBindingObserver {
+  late final AuthController _authController =
+      widget.authController ?? AuthController();
+  Timer? _lockTimer;
+
+  String _pin = '';
+  bool _hasVault = false;
+  bool _isLoading = true;
+  bool _isBusy = false;
+  bool _biometricEnabled = false;
+  bool _hasError = false;
+  bool _unlocked = false;
+  bool _biometricInFlight = false;
+  int _shakes = 0;
+  int _submitSeq = 0;
+
+  /// Al crear la bóveda: PIN de la primera entrada, pendiente de confirmar.
+  /// Sin confirmación, un toque perdido/duplicado al crear dejaba la bóveda
+  /// con un PIN distinto del que el usuario cree tener ("PIN incorrecto"
+  /// para siempre con el PIN "correcto").
+  String? _firstPin;
+
+  /// Segundos de espera restantes por bloqueo (0 = sin bloqueo).
+  int _lockSeconds = 0;
+  String _statusMessage = _enterPin;
+
+  static const String _enterPin = 'Ingresa tu PIN maestro';
+  static const String _createPin = 'Crea un nuevo PIN';
+  static const String _confirmPin = 'Confirma tu PIN';
+
+  /// Mensaje de reposo según el paso actual.
+  String get _idleMessage =>
+      _hasVault ? _enterPin : (_firstPin == null ? _createPin : _confirmPin);
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _checkVaultStatus();
+  }
+
+  /// La biometría automática solo se lanza con la app en primer plano (tras
+  /// un autobloqueo la pantalla puede construirse en segundo plano).
+  bool _pendingBiometric = false;
+
+  bool get _inForeground {
+    final s = WidgetsBinding.instance.lifecycleState;
+    return s == null || s == AppLifecycleState.resumed;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _pendingBiometric) {
+      _pendingBiometric = false;
+      if (mounted && _biometricEnabled && _lockSeconds == 0) {
+        _unlockWithBiometrics();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _lockTimer?.cancel();
+    super.dispose();
+  }
+
+  bool get _locked => _lockSeconds > 0;
+  bool get _inputEnabled => !_isBusy && !_locked && !_unlocked;
+
+  String get _title => _locked ? _lockoutMessage(_lockSeconds) : _statusMessage;
+
+  String _lockoutMessage(int seconds) =>
+      'Demasiados intentos. Espera $seconds s';
+
+  Future<void> _checkVaultStatus() async {
+    final vaultExists = await _authController.hasVault();
+    final biometricEnabled =
+        vaultExists && await _authController.isBiometricUnlockEnabled();
+    final lockout = vaultExists
+        ? await _authController.pinLockoutRemaining()
+        : null;
+    // Fase 8 (D69): con una bóveda secundaria, la biometría (que abre la
+    // principal) NO se lanza sola: solo con su botón.
+    final autoBiometric =
+        biometricEnabled && !await _authController.hasSecondaryVault();
+    if (!mounted) return;
+    setState(() {
+      _hasVault = vaultExists;
+      _biometricEnabled = biometricEnabled;
+      _isLoading = false;
+      _statusMessage = vaultExists ? _enterPin : _createPin;
+    });
+    if (lockout != null) _startLockout(lockout);
+    if (autoBiometric && lockout == null) {
+      if (_inForeground) {
+        await _unlockWithBiometrics();
+      } else {
+        _pendingBiometric = true;
+      }
+    }
+  }
+
+  /// Cuenta atrás visible del bloqueo; al llegar a 0 vuelve a consultar al
+  /// limitador por si aún queda tiempo.
+  void _startLockout(Duration remaining) {
+    _lockTimer?.cancel();
+    setState(() => _lockSeconds = remaining.inSeconds + 1);
+    _lockTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
+      if (_lockSeconds > 1) {
+        setState(() => _lockSeconds--);
+        return;
+      }
+      timer.cancel();
+      final still = await _authController.pinLockoutRemaining();
+      if (!mounted) return;
+      if (still != null) {
+        _startLockout(still);
+      } else {
+        setState(() {
+          _lockSeconds = 0;
+          _statusMessage = _enterPin;
+        });
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------- entrada
+
+  void _onDigit(int digit) {
+    if (!_inputEnabled || _pin.length >= PinScreen.maxPinLength) return;
+    setState(() {
+      _pin += '$digit';
+      if (_hasError) {
+        _hasError = false;
+        _statusMessage = _idleMessage;
+      }
+    });
+    if (_pin.length == PinScreen.maxPinLength) _submit();
+  }
+
+  void _onBackspace() {
+    if (!_inputEnabled || _pin.isEmpty) return;
+    setState(() => _pin = _pin.substring(0, _pin.length - 1));
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final ch = event.character;
+    if (ch != null && ch.length == 1 && '0123456789'.contains(ch)) {
+      _onDigit(int.parse(ch));
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.backspace) {
+      _onBackspace();
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.enter) {
+      _submit();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  // ----------------------------------------------------------------- acciones
+
+  Future<void> _fail(String message) async {
+    AppHaptics.error();
+    setState(() {
+      _hasError = true;
+      _shakes++;
+      _statusMessage = message;
+    });
+    // Deja ver los puntos rojos durante la sacudida y luego limpia.
+    await Future<void>.delayed(AppMotion.shake);
+    if (mounted) setState(() => _pin = '');
+  }
+
+  /// S-06: un PIN nuevo (crear/confirmar) exige 6 dígitos; desbloquear acepta
+  /// los 4 de bóvedas antiguas.
+  int get _minLength =>
+      _hasVault ? AuthController.minPinLength : AuthController.minNewPinLength;
+
+  Future<void> _submit() async {
+    final pin = _pin;
+    // Guarda síncrona: el auto-envío del último dígito, el botón Continuar y
+    // Enter pueden llegar en el mismo frame; solo el primero pasa (_isBusy se
+    // pone a true antes de cualquier await).
+    if (pin.length < _minLength || !_inputEnabled) {
+      if (kDebugMode && _isBusy) {
+        cryptoDebugLog('pin-ui: envío ignorado, ya hay uno en vuelo');
+      }
+      return;
+    }
+    final id = ++_submitSeq;
+    if (kDebugMode) {
+      cryptoDebugLog(
+        'pin-ui: envío#$id ${pin.length} dígitos '
+        '(${_hasVault ? 'desbloquear' : (_firstPin == null ? 'crear' : 'confirmar')})',
+      );
+    }
+
+    if (!_hasVault && _firstPin == null) {
+      // Primer paso de la creación: pedir el mismo PIN otra vez.
+      setState(() {
+        _firstPin = pin;
+        _pin = '';
+        _statusMessage = _confirmPin;
+      });
+      return;
+    }
+    if (!_hasVault && _firstPin != pin) {
+      setState(() {
+        _firstPin = null;
+        _isBusy = true;
+      });
+      try {
+        await _fail('Los PIN no coinciden. Crea un nuevo PIN');
+      } finally {
+        if (mounted) setState(() => _isBusy = false);
+      }
+      return;
+    }
+
+    setState(() {
+      _isBusy = true;
+      _statusMessage = _hasVault ? 'Verificando…' : 'Creando bóveda…';
+    });
+    try {
+      if (_hasVault) {
+        final isValid = await _authController.unlockWithPin(pin);
+        if (isValid) {
+          await _finishUnlock();
+          return;
+        }
+        final lockout = await _authController.pinLockoutRemaining();
+        await _fail('PIN incorrecto');
+        if (lockout != null && mounted) _startLockout(lockout);
+      } else {
+        final onCreated = widget.onVaultCreated;
+        final result = await _authController.createVault(
+          pin,
+          onboardingPending: onCreated != null,
+        );
+        _firstPin = null;
+        if (!mounted) return;
+        if (onCreated != null) {
+          onCreated(result);
+          return;
+        }
+        await _finishUnlock();
+        return;
+      }
+    } on PinLockedOutException catch (e) {
+      if (mounted) {
+        setState(() => _pin = '');
+        _startLockout(e.remaining);
+      }
+    } on UnlockCancelledException {
+      // La app se bloqueó mientras se derivaba la llave: nada que mostrar.
+      if (mounted) {
+        setState(() {
+          _pin = '';
+          _statusMessage = _idleMessage;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _pin = '';
+          _firstPin = null;
+          _statusMessage = 'Error: $e';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _isBusy = false);
+    }
+  }
+
+  /// Transición de desbloqueo: puntos en acento, háptica y fundido.
+  Future<void> _finishUnlock() async {
+    if (!mounted) return;
+    AppHaptics.success();
+    setState(() => _unlocked = true);
+    await Future<void>.delayed(AppMotion.unlock);
+    if (mounted) widget.onAuthenticated();
+  }
+
+  Future<void> _unlockWithBiometrics() async {
+    // Un solo diálogo biométrico a la vez y nunca durante un envío de PIN.
+    if (_biometricInFlight || _isBusy || _unlocked) return;
+    _biometricInFlight = true;
+    try {
+      final ok = await _authController.unlockWithBiometrics();
+      if (ok) {
+        await _finishUnlock();
+        return;
+      }
+      // Llave invalidada (cambio de huellas/rostro) o desactivada.
+      if (mounted) {
+        setState(() {
+          _biometricEnabled = false;
+          _statusMessage = 'Biometría desactivada. Ingresa tu PIN maestro';
+        });
+      }
+    } on BiometricCancelledException {
+      // El usuario prefirió el PIN.
+    } on UnlockCancelledException {
+      // Bloqueo durante el desbloqueo: se queda en el PIN.
+    } catch (_) {
+      if (mounted) {
+        setState(() => _statusMessage = 'No se pudo usar la biometría');
+      }
+    } finally {
+      _biometricInFlight = false;
+    }
+  }
+
+  // -------------------------------------------------------------------- build
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    return Scaffold(
+      body: SafeArea(
+        child: Focus(
+          autofocus: true,
+          onKeyEvent: _onKey,
+          child: LayoutBuilder(
+            builder: (context, constraints) => SingleChildScrollView(
+              padding: AppSpacing.page,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  minHeight: constraints.maxHeight - AppSpacing.page.vertical,
+                ),
+                child: Center(child: _content()),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _content() {
+    return AnimatedOpacity(
+      opacity: _unlocked ? 0 : 1,
+      duration: AppMotion.unlock,
+      curve: AppMotion.emphasized,
+      child: AnimatedScale(
+        scale: _unlocked ? 1.06 : 1,
+        duration: AppMotion.unlock,
+        curve: AppMotion.emphasized,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _LockBadge(open: _unlocked),
+            const SizedBox(height: AppSpacing.xl),
+            Semantics(
+              liveRegion: true,
+              child: Text(
+                _title,
+                textAlign: TextAlign.center,
+                style: _hasError
+                    ? AppTypography.titleSmall.copyWith(color: AppColors.danger)
+                    : AppTypography.titleSmall,
+              ),
+            ),
+            if (!_hasVault && _firstPin == null) ...[
+              const SizedBox(height: AppSpacing.xs),
+              const Text(
+                'Elige un PIN de 6 dígitos',
+                style: AppTypography.bodySecondary,
+              ),
+            ],
+            const SizedBox(height: AppSpacing.xl),
+            ShakeWidget(
+              shakeCount: _shakes,
+              child: PinDots(
+                key: const ValueKey('pin-dots'),
+                length: PinScreen.maxPinLength,
+                filled: _pin.length,
+                hasError: _hasError,
+                success: _unlocked,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.xxl),
+            PinKeypad(
+              enabled: _inputEnabled,
+              onDigit: _onDigit,
+              onBackspace: _onBackspace,
+              onBiometric: _hasVault && _biometricEnabled
+                  ? _unlockWithBiometrics
+                  : null,
+            ),
+            const SizedBox(height: AppSpacing.xl),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: AppSizes.pinMaxWidth),
+              child: SizedBox(
+                width: double.infinity,
+                child: AppFilledButton(
+                  label: 'Continuar',
+                  busy: _isBusy,
+                  onPressed: _inputEnabled && _pin.length >= _minLength
+                      ? _submit
+                      : null,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LockBadge extends StatelessWidget {
+  const _LockBadge({required this.open});
+
+  final bool open;
+
+  @override
+  Widget build(BuildContext context) {
+    return ExcludeSemantics(
+      child: Container(
+        width: AppSizes.keypadKey,
+        height: AppSizes.keypadKey,
+        decoration: const BoxDecoration(
+          shape: BoxShape.circle,
+          color: AppColors.accentContainer,
+          boxShadow: AppShadows.glow,
+        ),
+        child: AnimatedSwitcher(
+          duration: AppMotion.fast,
+          child: Icon(
+            open ? Icons.lock_open_rounded : Icons.lock_rounded,
+            key: ValueKey(open),
+            size: AppSizes.iconXl,
+            color: AppColors.accentLight,
+          ),
+        ),
+      ),
+    );
+  }
+}

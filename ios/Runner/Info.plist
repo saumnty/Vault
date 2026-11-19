@@ -2,12 +2,32 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- iOS: Google Sign-In. GIDClientID = cliente OAuth iOS (publico) y el
+	     esquema de URL es su REVERSED_CLIENT_ID. -->
+	<key>GIDClientID</key>
+	<string>1084069117024-8fbi173vdos9ocupmg93rap3o0g5kafm.apps.googleusercontent.com</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.1084069117024-8fbi173vdos9ocupmg93rap3o0g5kafm</string>
+			</array>
+		</dict>
+	</array>
+	<!-- iOS: permisos de fototeca para importar desde la galería (F4) -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Para importar fotos y videos.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Para guardar en Fotos las copias que exportes.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Vault</string>
+	<string>Kern</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -15,7 +35,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>vault</string>
+	<string>Kern</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -66,5 +86,17 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Para desbloquear con Face ID.</string>
+	<!-- iOS: F6b. AVPlayer reproduce desde el servidor HTTP propio en
+	     127.0.0.1 (loopback, token de 256 bits). NSAllowsLocalNetworking solo
+	     exime de ATS a localhost / direcciones locales; NO se activa
+	     NSAllowsArbitraryLoads: el resto del tráfico sigue exigiendo HTTPS.
+	     Sin probar en dispositivo (se compila en Codemagic). -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

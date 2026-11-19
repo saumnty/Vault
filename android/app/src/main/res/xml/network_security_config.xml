@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  F6b: el visor reproduce video desde un servidor HTTP propio en loopback
+  (127.0.0.1, puerto efímero, ruta con token de 256 bits) que descifra el
+  .vault bloque a bloque. ExoPlayer (Media3 DefaultHttpDataSource) usa
+  HttpURLConnection, sujeto a esta política: desde Android 9 el texto plano
+  está prohibido por defecto.
+
+  Se permite cleartext SOLO para 127.0.0.1 y localhost. Todo lo demás
+  (Google Drive, OAuth...) sigue exigiendo HTTPS: base-config lo prohíbe
+  explícitamente y confía solo en las CA del sistema (sin CA de usuario).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
