@@ -91,7 +91,9 @@ class _UnfinishedMigrationScreenState extends State<UnfinishedMigrationScreen> {
 
   Future<void> _continue() async {
     final nav = Navigator.of(context);
-    unawaited(_s.resume());
+    // D78: `resume` ya no vuelve en silencio si está en curso; la pantalla
+    // del cambio muestra el estado en cualquier caso.
+    unawaited(_s.resume().catchError((Object _) {}));
     await nav.pushReplacement<void, void>(
       MaterialPageRoute<void>(
         builder: (_) => AccountMigrationScreen(service: _s),

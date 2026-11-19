@@ -23,6 +23,7 @@ import '../../shared/widgets/choice_sheet.dart';
 import '../../shared/widgets/cloud_privacy_note.dart';
 import '../gallery/delete_originals_sheet.dart';
 import '../sync/quota_bar.dart';
+import '../sync/sync_actions.dart';
 import '../vault/vault_services.dart';
 import 'account_migration_screen.dart';
 import 'cloud_verification_screen.dart';
@@ -525,11 +526,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _signingIn = true);
     try {
       await sync.signIn();
+    } on SyncAccountActionBlockedException catch (e) {
+      _snack(e.message);
     } on CloudException {
       // El mensaje queda en summary.lastMessage (se muestra abajo).
     } finally {
       if (mounted) setState(() => _signingIn = false);
     }
+  }
+
+  /// D78 (§B.5): estado de la nube para el Diagnóstico. Solo nombres de
+  /// fase/motivo y conteos: ni correos, ni ids, ni nombres.
+  Future<String> _cloudDiagnostics() async {
+    final sync = _sync;
+    if (sync == null) return 'Nube: no disponible';
+    try {
+      await sync.refreshCounts();
+    } on Object {
+      // conteos de antes
+    }
+    final s = sync.summary.value;
+    final phase = widget.services.migration?.status.value.phase;
+    final last = widget.services.verification?.last.value;
+    return cloudDiagnosticsText(
+      summary: s,
+      migrationPhase: phase?.name,
+      verificationLine: last?.logLine,
+    );
+  }
+
+  /// D78: último resultado de «Sincronizar ahora» (subtítulo).
+  String? _syncMessage;
+
+  /// D78: «Sincronizar ahora» con el resultado en pantalla (SnackBar y
+  /// subtítulo); nunca vuelve en silencio.
+  Future<void> _syncNow(SyncService sync) async {
+    if (!sync.isRunning) setState(() => _syncMessage = null);
+    final (outcome, text) = await runManualSync(sync);
+    _showSyncOutcome(sync, outcome, text);
+  }
+
+  void _showSyncOutcome(SyncService sync, SyncRunOutcome o, String text) {
+    if (!mounted) return;
+    setState(() => _syncMessage = text);
+    final migration = widget.services.migration;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        syncOutcomeSnackBar(
+          sync,
+          o,
+          text,
+          onOpenMigration: migration == null
+              ? null
+              : () => unawaited(_openMigration(migration)),
+        ),
+      );
   }
 
   Future<void> _openMigration(AccountMigrationService migration) async {
@@ -558,6 +610,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _signOut() async {
     final sync = _sync;
     if (sync == null) return;
+    final migration = widget.services.migration;
+    final migrating = migration?.status.value.active ?? false;
+    // D78: desactivado ⇒ dice por qué y, con un cambio de cuenta, lleva a él.
+    final reason = accountActionBlockReason(
+      sync,
+      migrating: migrating,
+      rotating: _rotating,
+    );
+    if (reason != null) {
+      final toMigration =
+          migration != null &&
+          accountBlockedByMigration(sync, migrating: migrating);
+      final go = await showConfirmSheet(
+        context,
+        title: 'Ahora no puedes cerrar sesión',
+        message: reason,
+        confirmLabel: toMigration ? 'Ver cambio de cuenta' : 'Entendido',
+        cancelLabel: 'Cerrar',
+      );
+      if (go && toMigration && mounted) await _openMigration(migration);
+      return;
+    }
     final ok = await showConfirmSheet(
       context,
       title: '¿Cerrar sesión de Google?',
@@ -577,6 +651,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       await sync.signOut();
       _snack('Sesión cerrada');
+    } on SyncAccountActionBlockedException catch (e) {
+      _snack(e.message);
     } on Object {
       _snack('No se pudo cerrar la sesión');
     }
@@ -756,12 +832,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       SettingsTile(
         icon: Icons.offline_pin_outlined,
         title: 'Liberar espacio sin conexión',
-        subtitle: 'Quita la marca de lo que ya está en la nube',
+        subtitle: _busyStorage
+            ? 'Espera: hay otra operación de almacenamiento en curso'
+            : 'Quita la marca de lo que ya está en la nube',
         onTap: _busyStorage ? null : _freeOffline,
       ),
       SettingsTile(
         icon: Icons.cleaning_services_outlined,
         title: 'Vaciar caché ahora',
+        // D78: desactivado ⇒ dice por qué.
+        subtitle: _busyStorage
+            ? 'Espera: hay otra operación de almacenamiento en curso'
+            : null,
         onTap: _busyStorage ? null : _clearCache,
       ),
       if (widget.services.gallery?.regeneration != null)
@@ -825,15 +907,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 padding: AppSpacing.page,
                 child: QuotaBar(quota: sync.quota.value),
               ),
+              // D78: siempre se puede tocar; el resultado (o el motivo de la
+              // pausa) se dice en pantalla.
               SettingsTile(
+                key: const ValueKey('sync-now-tile'),
                 icon: Icons.sync,
                 title: 'Sincronizar ahora',
-                subtitle: s.phase == SyncPhase.running
-                    ? 'Sincronizando…'
-                    : null,
-                onTap: s.phase == SyncPhase.running
-                    ? null
-                    : () => unawaited(sync.run(manual: true)),
+                subtitle: syncNowSubtitle(s) ?? _syncMessage,
+                onTap: () => unawaited(_syncNow(sync)),
               ),
               if (widget.services.verification != null)
                 SettingsTile(
@@ -852,13 +933,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   subtitle: 'Mueve tu bóveda a otra cuenta sin perder nada',
                   onTap: () => _openMigration(migration),
                 ),
+              // Con un cambio de cuenta o de llave en curso no se cierra
+              // sesión (los dos necesitan la misma cuenta hasta terminar).
+              // D78: el motivo a la vista y el toque lo explica.
               SettingsTile(
+                key: const ValueKey('sign-out-tile'),
                 icon: Icons.logout,
                 title: 'Cerrar sesión de Google',
                 destructive: true,
-                // Con un cambio de cuenta o de llave en curso no se cierra
-                // sesión (los dos necesitan la misma cuenta hasta terminar).
-                onTap: migrating || _rotating ? null : _signOut,
+                subtitle: accountActionBlockReason(
+                  sync,
+                  migrating: migrating,
+                  rotating: _rotating,
+                ),
+                onTap: _signOut,
               ),
             ] else
               Padding(
@@ -884,11 +972,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ],
                     const SizedBox(height: AppSpacing.md),
+                    if (migration != null && migrating) ...[
+                      // D78: durante un cambio de cuenta la sesión no se
+                      // cambia por fuera: lleva a su pantalla.
+                      const SizedBox(height: AppSpacing.sm),
+                      const Text(
+                        'Hay un cambio de cuenta sin terminar: inicia sesión '
+                        'desde su pantalla.',
+                        key: ValueKey('sign-in-blocked-note'),
+                        style: AppTypography.caption,
+                      ),
+                    ],
                     AppFilledButton(
                       label: 'Iniciar sesión con Google',
                       icon: Icons.login,
                       busy: _signingIn,
-                      onPressed: _signIn,
+                      onPressed: migration != null && migrating
+                          ? () => _openMigration(migration)
+                          : _signIn,
                     ),
                   ],
                 ),
@@ -1056,6 +1157,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                                 versionLoader:
                                                     _env.versionLoader,
                                               ),
+                                          cloudStateLoader: _sync == null
+                                              ? null
+                                              : _cloudDiagnostics,
                                         ),
                                       ),
                                     ),

@@ -5,16 +5,25 @@ import '../../data/sync/sync_service.dart';
 import '../../shared/widgets/app_buttons.dart';
 
 /// Texto accesible del estado de sincronización.
+///
+/// D78: nunca dice «al día» con la sincronización en pausa, con archivos
+/// sin comprobar en la cuenta actual o con archivos pendientes en
+/// `vault_items` (no solo en la cola).
 String syncSummaryLabel(SyncSummary s) {
   if (s.accountEmail == null) return 'Sincronización: sin cuenta de Google';
   if (s.phase == SyncPhase.running || s.counts.uploading > 0) {
     return 'Sincronización: subiendo';
   }
-  if (s.counts.errors > 0) {
-    return 'Sincronización: ${s.counts.errors} con error';
+  final pause = s.pauseReason;
+  if (pause != null) return 'Sincronización: en pausa (${syncPauseText(pause)})';
+  if (s.errorTotal > 0) {
+    return 'Sincronización: ${s.errorTotal} con error';
   }
-  if (s.counts.pending > 0) {
-    return 'Sincronización: ${s.counts.pending} pendientes';
+  if (s.pendingTotal > 0) {
+    return 'Sincronización: ${s.pendingTotal} pendientes';
+  }
+  if (s.cloud.unverified > 0) {
+    return 'Sincronización: ${s.cloud.unverified} sin comprobar';
   }
   return 'Sincronización: al día';
 }
@@ -38,11 +47,17 @@ class SyncCloudButton extends StatelessWidget {
         } else if (s.phase == SyncPhase.running || s.counts.uploading > 0) {
           icon = Icons.cloud_sync_outlined;
           color = AppColors.accentLight;
-        } else if (s.counts.errors > 0) {
+        } else if (s.pauseReason != null) {
+          icon = Icons.cloud_off_outlined;
+          color = AppColors.warning;
+        } else if (s.errorTotal > 0) {
           icon = Icons.cloud_off_outlined;
           color = AppColors.danger;
-        } else if (s.counts.pending > 0) {
+        } else if (s.pendingTotal > 0) {
           icon = Icons.cloud_upload_outlined;
+          color = AppColors.warning;
+        } else if (s.cloud.unverified > 0) {
+          icon = Icons.cloud_queue_outlined;
           color = AppColors.warning;
         } else {
           icon = Icons.cloud_done_outlined;

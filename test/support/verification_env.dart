@@ -34,8 +34,11 @@ class VerifyEnv {
   /// `null` = sin la guarda de sesión; si no, el ticket que devuelve.
   SessionTicket? Function()? ticket;
 
-  Future<void> setUp({String initial = pruebas}) async {
-    cloud = MultiAccountCloud(initial);
+  Future<void> setUp({
+    String initial = pruebas,
+    MultiAccountCloud Function(String initial)? cloudFactory,
+  }) async {
+    cloud = cloudFactory?.call(initial) ?? MultiAccountCloud(initial);
     a = PhoneA()..cloud = cloud;
     await a.setUp();
     tagger = CloudAccountTagger(cloud: cloud, dbProvider: () => a.vdb.database);
@@ -149,7 +152,9 @@ class VerifyEnv {
   AccountMigrationService migration({
     Future<String?> Function()? backup,
     bool wireVerification = true,
+    Duration signInTimeout = const Duration(minutes: 3),
   }) => AccountMigrationService(
+    signInTimeout: signInTimeout,
     cloud: cloud,
     items: a.items,
     migration: repo,

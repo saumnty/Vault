@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -43,9 +44,29 @@ class MultiAccountCloud extends FakeCloudStorage {
   @override
   String? get currentAccountEmail => _current;
 
+  /// D78: el próximo `signIn()` no termina hasta que se complete (selector de
+  /// Google colgado, iOS). Al completarlo con un correo, la sesión pasa a esa
+  /// cuenta (como un selector que responde tarde).
+  Completer<String>? hangNext;
+
+  /// D78: cuántos `signIn()` siguientes se «cancelan» antes de usar la cola.
+  int cancelNext = 0;
+
   @override
   Future<CloudAccount> signIn() async {
     signInCalls++;
+    final hang = hangNext;
+    if (hang != null) {
+      hangNext = null;
+      final email = await hang.future;
+      _current = email;
+      account(email);
+      return CloudAccount(email: email);
+    }
+    if (cancelNext > 0) {
+      cancelNext--;
+      throw const CloudSignInCancelledException();
+    }
     if (signInQueue.isEmpty) throw const CloudSignInCancelledException();
     _current = signInQueue.removeAt(0);
     account(_current!);

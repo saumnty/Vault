@@ -1,6 +1,7 @@
 import 'package:sqflite_sqlcipher/sqflite.dart';
 
 import '../../core/services/app_paths.dart';
+import '../models/cloud_copy_counts.dart';
 import '../models/folder_model.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
@@ -244,6 +245,40 @@ class VaultDataRepository {
       orderBy: 'createdAt ASC',
     );
     return rows.map(VaultItemModel.fromMap).toList();
+  }
+
+  /// D78 (§B.3): conteos de archivos sin copia real comprobada en la cuenta
+  /// [accountTag] (`null` = sin sesión: todo lo «en la nube» cuenta como sin
+  /// comprobar). Con [checkTags] = false (sin tags, pruebas antiguas) no se
+  /// cuentan los «sin comprobar».
+  Future<CloudCopyCounts> cloudCopyCounts({
+    String? accountTag,
+    bool checkTags = true,
+  }) async {
+    final db = await _dbProvider();
+    final rows = await db.rawQuery(
+      'SELECT '
+      'COUNT(*) AS total, '
+      "SUM(CASE WHEN syncStatus IN ('pendiente','subiendo') OR "
+      "(syncStatus = 'error' AND driveFileId IS NULL) THEN 1 ELSE 0 END) "
+      'AS localOnly, '
+      "SUM(CASE WHEN syncStatus IN ('en_nube','en_cache','sin_conexion') AND "
+      'driveFileId IS NOT NULL AND '
+      '(cloudAccountTag IS NULL OR cloudAccountTag != ?) THEN 1 ELSE 0 END) '
+      'AS unverified, '
+      "SUM(CASE WHEN syncStatus = 'error' AND driveFileId IS NOT NULL "
+      'THEN 1 ELSE 0 END) AS noCopy '
+      'FROM vault_items',
+      [accountTag ?? ''],
+    );
+    final r = rows.first;
+    int v(String k) => (r[k] as int?) ?? 0;
+    return CloudCopyCounts(
+      total: v('total'),
+      localOnly: v('localOnly'),
+      unverified: checkTags ? v('unverified') : 0,
+      noCopy: v('noCopy'),
+    );
   }
 
   /// Todos los items (cambio de cuenta), los más antiguos primero.

@@ -355,22 +355,8 @@ class _RestoreFlowState extends State<RestoreFlow> {
   }
 
   Widget _noBackup() {
-    final (title, message) = switch (_probe) {
-      RestoreProbeResult.incomplete => (
-        'El respaldo está incompleto',
-        'Esta cuenta tiene tus llaves pero no el índice de tus archivos, así '
-            'que no hay nada que mostrar todavía.',
-      ),
-      RestoreProbeResult.invalid => (
-        'El respaldo no es válido',
-        'Encontramos un respaldo en esta cuenta, pero no se puede leer.',
-      ),
-      _ => (
-        'No hay respaldo en esta cuenta de Google',
-        'No encontramos una bóveda de Vault respaldada en esta cuenta. '
-            'Prueba con otra cuenta o crea una bóveda nueva.',
-      ),
-    };
+    // D78: el mensaje dice qué encontró (solo conteos y tamaños).
+    final (title, message) = describeRestoreProbe(_probe, _svc.lastInventory);
     return OnboardingPage(
       key: const ValueKey('restore-nobackup'),
       title: title,

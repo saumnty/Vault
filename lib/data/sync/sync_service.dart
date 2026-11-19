@@ -9,6 +9,8 @@ import '../../core/crypto/key_recovery_service.dart';
 import '../../core/logging/vault_log.dart';
 import '../cloud/cloud_names.dart';
 import '../cloud/cloud_storage.dart';
+import '../cloud/guarded_sign_in.dart';
+import '../models/cloud_copy_counts.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
 import '../repositories/vault_data_repository.dart';
@@ -21,9 +23,109 @@ import 'sync_queue_repository.dart';
 // Los nombres remotos viven en `cloud_names.dart` (D60); se reexportan para
 // no cambiar los imports existentes.
 export '../cloud/cloud_names.dart';
+export '../models/cloud_copy_counts.dart';
 
 /// Estado global de la sincronización, para la UI.
 enum SyncPhase { idle, running, offline, waitingWifi, needsSignIn, quotaFull }
+
+/// D78 (parte B, §B.4): por qué la sincronización normal está en pausa.
+enum SyncPauseReason {
+  /// Hay un cambio de cuenta de Google sin terminar.
+  migration,
+
+  /// «Verificar copia en la nube» en curso.
+  verification,
+
+  /// Mantenimiento de la rotación (M7: borrar datos de la cuenta anterior).
+  rotationMaintenance,
+}
+
+/// Texto corto del motivo de la pausa (sin datos).
+String syncPauseText(SyncPauseReason r) => switch (r) {
+  SyncPauseReason.migration => 'hay un cambio de cuenta sin terminar',
+  SyncPauseReason.verification => 'se está comprobando tu copia en la nube',
+  SyncPauseReason.rotationMaintenance =>
+    'se están borrando los datos de la cuenta anterior',
+};
+
+/// D78: resultado de [SyncService.run] (nunca vuelve en silencio).
+enum SyncRunKind {
+  /// La pasada corrió y terminó sin bloqueo.
+  completed,
+
+  /// Ya había una pasada en curso.
+  alreadyRunning,
+
+  /// Bóveda bloqueada (o el servicio ya no existe).
+  locked,
+
+  /// Otra bóveda abierta: la sincronización es solo de la principal.
+  otherVault,
+
+  /// En pausa ([SyncRunOutcome.pauseReason]).
+  paused,
+
+  /// Sin sesión de Google.
+  noAccount,
+  offline,
+  waitingWifi,
+  quotaFull,
+
+  /// Se detuvo (bloqueo, «Detener» o la red cambió).
+  cancelled,
+
+  /// Error de la nube ([SyncRunOutcome.message]).
+  failed,
+}
+
+@immutable
+class SyncRunOutcome {
+  const SyncRunOutcome(this.kind, {this.pauseReason, this.message});
+  final SyncRunKind kind;
+  final SyncPauseReason? pauseReason;
+
+  /// Detalle de un fallo (en español, sin datos).
+  final String? message;
+
+  /// `true` si la pasada no llegó a correr (o se cortó) por una guarda.
+  bool get blocked => kind != SyncRunKind.completed;
+
+  @override
+  String toString() =>
+      'SyncRunOutcome(${kind.name}${pauseReason == null ? '' : ', ${pauseReason!.name}'})';
+}
+
+/// D78: mensaje en pantalla para el resultado de una sincronización manual.
+String syncRunMessage(SyncRunOutcome o, {SyncCounts? counts}) =>
+    switch (o.kind) {
+      SyncRunKind.completed =>
+        (counts?.errors ?? 0) > 0
+            ? 'Sincronización terminada: ${counts!.errors} con error.'
+            : 'Sincronización terminada.',
+      SyncRunKind.alreadyRunning => 'Ya hay una sincronización en curso.',
+      SyncRunKind.locked => 'La bóveda está bloqueada.',
+      SyncRunKind.otherVault => 'No disponible en este momento.',
+      SyncRunKind.paused =>
+        'En pausa: ${syncPauseText(o.pauseReason ?? SyncPauseReason.migration)}.',
+      SyncRunKind.noAccount =>
+        'Sin cuenta de Google: inicia sesión para sincronizar.',
+      SyncRunKind.offline => 'Sin conexión. Se reanudará al volver la red.',
+      SyncRunKind.waitingWifi => 'Esperando Wi-Fi («Solo Wi-Fi» está activo).',
+      SyncRunKind.quotaFull => 'Tu Google Drive no tiene espacio.',
+      SyncRunKind.cancelled => 'Sincronización detenida.',
+      SyncRunKind.failed =>
+        'No se pudo sincronizar: ${o.message ?? 'error de la nube'}.',
+    };
+
+/// D78: la sesión de Google no se puede cambiar por fuera de un cambio de
+/// cuenta, una rotación o una verificación en curso. [message] en español.
+class SyncAccountActionBlockedException implements Exception {
+  const SyncAccountActionBlockedException(this.message, {this.reason});
+  final String message;
+  final SyncPauseReason? reason;
+  @override
+  String toString() => 'SyncAccountActionBlockedException';
+}
 
 class SyncSummary {
   const SyncSummary({
@@ -31,6 +133,8 @@ class SyncSummary {
     this.counts = const SyncCounts(),
     this.accountEmail,
     this.lastMessage,
+    this.pauseReason,
+    this.cloud = const CloudCopyCounts(),
   });
 
   final SyncPhase phase;
@@ -40,11 +144,37 @@ class SyncSummary {
   /// Último error global (p. ej. de inicio de sesión), en español.
   final String? lastMessage;
 
+  /// D78: motivo de la pausa de la sincronización normal (`null` = no hay).
+  final SyncPauseReason? pauseReason;
+
+  /// D78: archivos sin copia real comprobada (de `vault_items`, no de la
+  /// cola).
+  final CloudCopyCounts cloud;
+
+  /// Pendientes = cola ∪ archivos solo en el teléfono (§B.3).
+  int get pendingTotal =>
+      counts.pending > cloud.localOnly ? counts.pending : cloud.localOnly;
+
+  /// Con error = cola ∪ archivos sin copia en ninguna parte.
+  int get errorTotal =>
+      counts.errors > cloud.noCopy ? counts.errors : cloud.noCopy;
+
+  /// D78: «al día» SOLO sin pausa, sin nada en la cola, sin archivos
+  /// pendientes/con error y sin archivos sin comprobar en esta cuenta.
+  bool get upToDate =>
+      accountEmail != null &&
+      pauseReason == null &&
+      phase != SyncPhase.running &&
+      counts.total == 0 &&
+      cloud.withoutCloudCopy == 0;
+
   SyncSummary copyWith({
     SyncPhase? phase,
     SyncCounts? counts,
     Object? accountEmail = _keep,
     Object? lastMessage = _keep,
+    Object? pauseReason = _keep,
+    CloudCopyCounts? cloud,
   }) => SyncSummary(
     phase: phase ?? this.phase,
     counts: counts ?? this.counts,
@@ -54,6 +184,10 @@ class SyncSummary {
     lastMessage: identical(lastMessage, _keep)
         ? this.lastMessage
         : lastMessage as String?,
+    pauseReason: identical(pauseReason, _keep)
+        ? this.pauseReason
+        : pauseReason as SyncPauseReason?,
+    cloud: cloud ?? this.cloud,
   );
 
   static const Object _keep = Object();
@@ -232,7 +366,10 @@ class SyncService {
     Future<int> Function()? currentKeyGen,
     this.accountTag,
     this.afterSignIn,
-  }) : _now = nowMs ?? (() => DateTime.now().millisecondsSinceEpoch),
+    this.isOtherVaultOpen,
+    GuardedSignIn? signInGate,
+  }) : _signInGate = signInGate ?? GuardedSignIn(),
+       _now = nowMs ?? (() => DateTime.now().millisecondsSinceEpoch),
        _random = random ?? Random(),
        rotation = rotation ?? const NoRotationGuard(),
        currentKeyGen = currentKeyGen ?? (() async => 1);
@@ -253,6 +390,13 @@ class SyncService {
   /// D75: tras un [signIn] correcto (en lugar de `run`): la app comprueba la
   /// copia en la nube si la cuenta no es la de los tags (y luego sincroniza).
   final Future<void> Function()? afterSignIn;
+
+  /// D78: `true` con OTRA bóveda abierta (la adicional): [run] lo dice en vez
+  /// de «bloqueada». `null` = no se distingue.
+  final bool Function()? isOtherVaultOpen;
+
+  /// D78: selector de Google con plazo y salida.
+  final GuardedSignIn _signInGate;
 
   final CloudStorage cloud;
   final SyncQueueRepository queue;
@@ -301,11 +445,61 @@ class SyncService {
 
   /// Cambio de cuenta de Google en curso: la sincronización normal queda en
   /// pausa (la subida a la cuenta nueva la dirige `AccountMigrationService`).
-  bool pausedForMigration = false;
+  bool get pausedForMigration => _pausedForMigration;
+  set pausedForMigration(bool v) {
+    _pausedForMigration = v;
+    _publishPause();
+  }
+
+  bool _pausedForMigration = false;
 
   /// D75: «Verificar copia en la nube» en curso: la sincronización normal
   /// espera (la verificación la relanza al terminar).
-  bool pausedForVerification = false;
+  bool get pausedForVerification => _pausedForVerification;
+  set pausedForVerification(bool v) {
+    _pausedForVerification = v;
+    _publishPause();
+  }
+
+  bool _pausedForVerification = false;
+
+  /// D78: mantenimiento de la rotación (M7, borrar datos de la cuenta
+  /// anterior): nada se sube mientras la sesión está en la otra cuenta.
+  bool get pausedForAccountCleanup => _pausedForAccountCleanup;
+  set pausedForAccountCleanup(bool v) {
+    _pausedForAccountCleanup = v;
+    _publishPause();
+  }
+
+  bool _pausedForAccountCleanup = false;
+
+  /// D78: motivo de la pausa actual (`null` = sin pausa). Prioridad: cambio
+  /// de cuenta, mantenimiento de la rotación, verificación.
+  SyncPauseReason? get pauseReason => _pausedForMigration
+      ? SyncPauseReason.migration
+      : _pausedForAccountCleanup
+      ? SyncPauseReason.rotationMaintenance
+      : _pausedForVerification
+      ? SyncPauseReason.verification
+      : null;
+
+  void _publishPause() {
+    if (_disposed) return;
+    final r = pauseReason;
+    if (summary.value.pauseReason == r) return;
+    summary.value = summary.value.copyWith(pauseReason: r);
+    // Los conteos pueden haber cambiado (fin de una verificación, cambio de
+    // cuenta terminado): se refrescan sin esperar.
+    unawaited(
+      _publish().catchError((Object _) {
+        // BD cerrada a mitad: el resumen se rehace en la próxima pasada
+      }),
+    );
+  }
+
+  /// D78: último bloqueo registrado (evita repetir el mismo en el
+  /// diagnóstico en cada pasada automática).
+  String? _lastBlockLogged;
 
   /// D75: tag de una cuenta en la que la verificación encontró el respaldo de
   /// recuperación de OTRA bóveda con el mismo nombre: en esa cuenta no se
@@ -375,15 +569,66 @@ class SyncService {
 
   // ---------------------------------------------------------------- cuenta
 
+  /// D78: guarda común de «Iniciar sesión» y «Cerrar sesión» (Ajustes y la
+  /// hoja de la cuadrícula): con un cambio de cuenta, un mantenimiento de la
+  /// rotación, una rotación registrada o una verificación en curso, la sesión
+  /// no se cambia por fuera. `null` = permitido.
+  SyncAccountActionBlockedException? accountActionBlock() {
+    if (_pausedForMigration) {
+      return const SyncAccountActionBlockedException(
+        'No disponible: termina o cancela el cambio de cuenta.',
+        reason: SyncPauseReason.migration,
+      );
+    }
+    if (_pausedForAccountCleanup) {
+      return const SyncAccountActionBlockedException(
+        'No disponible: se están borrando los datos de la cuenta anterior.',
+        reason: SyncPauseReason.rotationMaintenance,
+      );
+    }
+    if (rotation.active) {
+      return const SyncAccountActionBlockedException(
+        'No disponible: termina primero el cambio de llave maestra.',
+      );
+    }
+    if (_pausedForVerification) {
+      return const SyncAccountActionBlockedException(
+        'No disponible: se está comprobando tu copia en la nube. Espera a '
+        'que termine.',
+        reason: SyncPauseReason.verification,
+      );
+    }
+    return null;
+  }
+
+  /// `true` mientras el selector de Google está abierto.
+  bool get signInInProgress => _signInGate.inProgress;
+
+  /// Libera la espera del selector de Google (salida si se cuelga).
+  void abandonSignIn() => _signInGate.abandon();
+
+  /// Inicio de sesión interactivo. D78: con una guarda activa lanza
+  /// [SyncAccountActionBlockedException]; el selector tiene plazo; cancelar
+  /// deja un mensaje en [SyncSummary.lastMessage] y un evento.
   Future<void> signIn() async {
+    final block = accountActionBlock();
+    if (block != null) {
+      VaultLog.d('Inicio de sesión bloqueado', category: 'auth');
+      throw block;
+    }
     try {
-      await cloud.signIn();
+      await _signInGate.signIn(cloud);
       summary.value = summary.value.copyWith(
         accountEmail: cloud.currentAccountEmail,
         lastMessage: null,
         phase: SyncPhase.idle,
       );
     } on CloudSignInCancelledException {
+      summary.value = summary.value.copyWith(
+        lastMessage:
+            'No elegiste ninguna cuenta. En iPhone, si aparece otra cuenta '
+            'ya elegida, toca «Usar otra cuenta».',
+      );
       return;
     } on CloudException catch (e) {
       summary.value = summary.value.copyWith(lastMessage: describeSyncError(e));
@@ -402,9 +647,17 @@ class SyncService {
     }
   }
 
+  /// Cierra la sesión de Google. D78: con una guarda activa lanza
+  /// [SyncAccountActionBlockedException] (no cambia nada).
   Future<void> signOut() async {
+    final block = accountActionBlock();
+    if (block != null) {
+      VaultLog.d('Cierre de sesión bloqueado', category: 'auth');
+      throw block;
+    }
     _token?.cancel();
     await cloud.signOut();
+    VaultLog.d('Sesión de Google cerrada', category: 'auth');
     // Otra cuenta (o la misma, más tarde) debe recibir de nuevo el respaldo de
     // recuperación: se olvida la marca de "ya subido".
     await prefs.setRecoveryUploadedSha('');
@@ -447,22 +700,73 @@ class SyncService {
   }
 
   /// Reintento manual de errores (todos, o uno).
-  Future<void> retryErrors({int? jobId}) async {
+  Future<SyncRunOutcome> retryErrors({int? jobId}) async {
     await queue.retryErrors(onlyId: jobId);
-    await run(manual: true);
+    return run(manual: true);
+  }
+
+  /// D78: «Detener» (salida si una pasada parece colgada): cancela la subida
+  /// en curso y los reintentos programados, como al bloquear.
+  void stop() {
+    VaultLog.d('Sincronización detenida a mano', category: 'sync');
+    cancel();
   }
 
   // -------------------------------------------------------------- ejecución
+
+  /// D78: registra un bloqueo en el diagnóstico. Las pasadas manuales siempre;
+  /// las automáticas solo cuando cambia el motivo (sin ruido).
+  SyncRunOutcome _blocked(SyncRunOutcome o, {required bool manual}) {
+    final key = o.toString();
+    if (manual || key != _lastBlockLogged) {
+      VaultLog.d(
+        'Sincronización no iniciada: ${o.kind.name}'
+        '${o.pauseReason == null ? '' : ' (${o.pauseReason!.name})'}'
+        '${manual ? ', manual' : ''}',
+        category: 'sync',
+      );
+    }
+    _lastBlockLogged = key;
+    return o;
+  }
 
   /// Procesa la cola. [manual]: ignora la espera de backoff de los pendientes.
   ///
   /// Con [pausedForMigration] solo corre si [force] (la usa el cambio de
   /// cuenta, que es quien manda la subida mientras dura).
-  Future<void> run({bool manual = false, bool force = false}) async {
-    if (_running || _disposed) return;
-    if (!isUnlocked()) return;
-    if ((pausedForMigration || pausedForVerification) && !force) return;
+  ///
+  /// D78: devuelve SIEMPRE un [SyncRunOutcome] con el motivo (nunca vuelve en
+  /// silencio) y cada bloqueo deja un evento en el diagnóstico.
+  Future<SyncRunOutcome> run({bool manual = false, bool force = false}) async {
+    if (_disposed) {
+      return const SyncRunOutcome(SyncRunKind.locked);
+    }
+    if (_running) {
+      return _blocked(
+        const SyncRunOutcome(SyncRunKind.alreadyRunning),
+        manual: manual,
+      );
+    }
+    if (!isUnlocked()) {
+      return _blocked(
+        SyncRunOutcome(
+          isOtherVaultOpen?.call() ?? false
+              ? SyncRunKind.otherVault
+              : SyncRunKind.locked,
+        ),
+        manual: manual,
+      );
+    }
+    final reason = pauseReason;
+    if (reason != null && !force) {
+      return _blocked(
+        SyncRunOutcome(SyncRunKind.paused, pauseReason: reason),
+        manual: manual,
+      );
+    }
+    _lastBlockLogged = null;
     _running = true;
+    var outcome = const SyncRunOutcome(SyncRunKind.completed);
     VaultLog.d('Sincronización iniciada', category: 'sync');
     final token = _token = CloudCancelToken();
     _wake?.cancel();
@@ -480,16 +784,16 @@ class SyncService {
       if (cloud.currentAccountEmail == null &&
           await cloud.signInSilently() == null) {
         await _finish(SyncPhase.needsSignIn);
-        return;
+        return outcome = const SyncRunOutcome(SyncRunKind.noAccount);
       }
       final net = await network.current();
       if (!net.isOnline) {
         await _finish(SyncPhase.offline);
-        return;
+        return outcome = const SyncRunOutcome(SyncRunKind.offline);
       }
       if (net == NetworkKind.mobile && await prefs.getWifiOnly()) {
         await _finish(SyncPhase.waitingWifi);
-        return;
+        return outcome = const SyncRunOutcome(SyncRunKind.waitingWifi);
       }
       var phase = await _drain(token);
       if (phase == SyncPhase.running && !token.isCancelled) {
@@ -503,13 +807,32 @@ class SyncService {
       if (!token.isCancelled && phase == SyncPhase.running) {
         unawaited(refreshQuota());
       }
+      outcome = SyncRunOutcome(switch (phase) {
+        _ when token.isCancelled => SyncRunKind.cancelled,
+        SyncPhase.offline => SyncRunKind.offline,
+        SyncPhase.waitingWifi => SyncRunKind.waitingWifi,
+        SyncPhase.needsSignIn => SyncRunKind.noAccount,
+        SyncPhase.quotaFull => SyncRunKind.quotaFull,
+        SyncPhase.idle => SyncRunKind.cancelled,
+        SyncPhase.running => SyncRunKind.completed,
+      });
+      if (outcome.blocked) {
+        VaultLog.d(
+          'Sincronización detenida: ${outcome.kind.name}',
+          category: 'sync',
+        );
+      }
+      return outcome;
     } on StateError {
       // Bóveda bloqueada a mitad de la ejecución: se descarta sin ruido.
       _publishQuiet();
+      return outcome = const SyncRunOutcome(SyncRunKind.locked);
     } on CloudException catch (e) {
       VaultLog.e('Sincronización con error', e, 'sync');
-      summary.value = summary.value.copyWith(lastMessage: describeSyncError(e));
+      final message = describeSyncError(e);
+      summary.value = summary.value.copyWith(lastMessage: message);
       await _finish(SyncPhase.idle);
+      return outcome = SyncRunOutcome(SyncRunKind.failed, message: message);
     } finally {
       _running = false;
       VaultLog.d('Sincronización terminada', category: 'sync');
@@ -545,12 +868,30 @@ class SyncService {
     } on StateError {
       // bloqueada
     }
+    final cloudCounts = await _cloudCounts();
+    if (_disposed) return;
     summary.value = summary.value.copyWith(
       phase: phase,
       counts: counts,
       accountEmail: cloud.currentAccountEmail,
+      pauseReason: pauseReason,
+      cloud: cloudCounts,
     );
     _scheduleWake(phase, next);
+  }
+
+  /// D78: conteos de `vault_items` sin copia real comprobada (los de antes si
+  /// la BD está cerrada o no tiene las columnas de v11).
+  Future<CloudCopyCounts> _cloudCounts() async {
+    if (!isUnlocked()) return summary.value.cloud;
+    try {
+      return await items.cloudCopyCounts(
+        accountTag: await _currentTag(),
+        checkTags: accountTag != null,
+      );
+    } on Object {
+      return summary.value.cloud;
+    }
   }
 
   void _scheduleWake(SyncPhase phase, int? nextAt) {
@@ -569,10 +910,13 @@ class SyncService {
     if (_disposed) return;
     try {
       final counts = isUnlocked() ? await queue.counts() : const SyncCounts();
+      final cloudCounts = await _cloudCounts();
       if (_disposed) return;
       summary.value = summary.value.copyWith(
         counts: counts,
         accountEmail: cloud.currentAccountEmail,
+        pauseReason: pauseReason,
+        cloud: cloudCounts,
       );
     } on StateError {
       _publishQuiet();
@@ -696,7 +1040,7 @@ class SyncService {
     if (rotation.freezeMeta) return; // D61: conjunto viejo congelado
     // D75: ni con un cambio de cuenta ni con una verificación en curso (la
     // cuenta de la sesión puede no ser aquella cuyas referencias tiene la BD).
-    if (pausedForMigration || pausedForVerification) return;
+    if (pauseReason != null) return;
     try {
       if (await prefs.getDirtyAt() == null) return;
       if (cloud.currentAccountEmail == null) return;
@@ -1193,7 +1537,7 @@ class SyncService {
   /// cuenta ACTUAL (`cloudAccountTag` igual al tag de la sesión, no nulo).
   Future<bool> cloudVerifier(VaultItemModel item) async {
     if (rotation.active) return false;
-    if (pausedForMigration || pausedForVerification) return false;
+    if (pauseReason != null) return false;
     try {
       final fresh = await items.getItem(item.id);
       if (fresh == null ||

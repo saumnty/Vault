@@ -45,25 +45,51 @@ class DiagnosticsBuffer {
   int get length => _entries.length;
   bool get isEmpty => _entries.isEmpty;
 
+  /// D78 (parte B): destino persistente (`DiagnosticsStore`). Recibe cada
+  /// entrada YA saneada. Nunca debe registrar nada (sería recursivo).
+  void Function(DiagEntry entry)? sink;
+
+  /// D78: se llama al cambiar de bóveda (B5): lo que el destino persistente
+  /// tenga aún sin escribir se descarta (podría venir de la otra bóveda).
+  void Function()? onSlotChanged;
+
   void add(DiagLevel level, String category, String message) {
-    _entries.addLast(
-      DiagEntry(
-        _clock(),
-        level,
-        sanitize(category, max: 16),
-        sanitize(message),
-      ),
+    final entry = DiagEntry(
+      _clock(),
+      level,
+      sanitize(category, max: 16),
+      sanitize(message),
     );
+    _entries.addLast(entry);
     while (_entries.length > capacity) {
       _entries.removeFirst();
     }
     revision.value++;
+    final s = sink;
+    if (s != null) {
+      try {
+        s(entry);
+      } on Object {
+        // el destino persistente nunca rompe el registro
+      }
+    }
   }
 
   void clear() {
     if (_entries.isEmpty) return;
     _entries.clear();
     revision.value++;
+  }
+
+  /// D78: cambio de bóveda (lo llama `AuthController`, B5): vacía la memoria
+  /// y descarta lo pendiente de persistir.
+  void slotChanged() {
+    clear();
+    try {
+      onSlotChanged?.call();
+    } on Object {
+      // ignorado
+    }
   }
 
   /// Texto exportable (una línea por entrada).

@@ -1040,24 +1040,89 @@ class VaultDatabase {
     }
     final db = await database; // exige sesión desbloqueada (de la principal)
     final dbGen = openedGen!;
-    final range = await db.rawQuery(
-      'SELECT MIN(keyGen) AS lo, MAX(keyGen) AS hi FROM vault_items',
-    );
+    final password = _openPassword!;
+    _exporting++;
     try {
-      await db.rawQuery('PRAGMA wal_checkpoint(TRUNCATE)');
-    } catch (_) {
-      // Modo journal normal: no hay WAL que vaciar.
+      final range = await db.rawQuery(
+        'SELECT MIN(keyGen) AS lo, MAX(keyGen) AS hi FROM vault_items',
+      );
+      try {
+        await db.rawQuery('PRAGMA wal_checkpoint(TRUNCATE)');
+      } catch (_) {
+        // Modo journal normal: no hay WAL que vaciar.
+      }
+      await close();
+      final source = File(_dbPath);
+      final snapshot = File('$_dbPath.snapshot');
+      if (await snapshot.exists()) await snapshot.delete();
+      final copy = await source.copy(snapshot.path);
+      // D78: el diagnóstico persistente NO sale del teléfono: se vacía en la
+      // COPIA (la tabla de este teléfono queda intacta).
+      await _scrubSnapshotCopy(copy.path, password);
+      return SnapshotCopy(
+        copy,
+        dbGen: dbGen,
+        minKeyGen: range.first['lo'] as int?,
+        maxKeyGen: range.first['hi'] as int?,
+      );
+    } finally {
+      _exporting--;
     }
-    await close();
-    final source = File(_dbPath);
-    final snapshot = File('$_dbPath.snapshot');
-    if (await snapshot.exists()) await snapshot.delete();
-    return SnapshotCopy(
-      await source.copy(snapshot.path),
-      dbGen: dbGen,
-      minKeyGen: range.first['lo'] as int?,
-      maxKeyGen: range.first['hi'] as int?,
-    );
+  }
+
+  /// D78: copias del snapshot en curso (el diagnóstico persistente no
+  /// escribe mientras tanto: una escritura a mitad de la copia la rompería).
+  int _exporting = 0;
+
+  /// `true` mientras la BD se re-cifra o se copia para el snapshot.
+  bool get isBusyForCopy => _rekeying != null || _exporting > 0;
+
+  /// D78: vacía `diag_events` en la copia [path] (misma llave). `VACUUM`
+  /// reescribe el archivo para que no queden páginas libres con eventos. Si
+  /// la copia no se puede abrir o limpiar, se borra y se lanza (el snapshot
+  /// no se sube con el diagnóstico dentro).
+  Future<void> _scrubSnapshotCopy(String path, String password) async {
+    Database? copy;
+    try {
+      copy = await _openWith(password, path: path);
+      final has = await copy.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'diag_events'",
+      );
+      if (has.isNotEmpty) {
+        final n =
+            (await copy.rawQuery(
+                  'SELECT COUNT(*) AS n FROM diag_events',
+                )).first['n']
+                as int;
+        if (n > 0) {
+          await copy.delete('diag_events');
+          await copy.execute('VACUUM');
+        }
+      }
+    } catch (_) {
+      try {
+        await copy?.close();
+      } catch (_) {}
+      copy = null;
+      final f = File(path);
+      if (await f.exists()) await f.delete();
+      rethrow;
+    } finally {
+      try {
+        await copy?.close();
+      } catch (_) {}
+      for (final suffix in const ['-wal', '-shm', '-journal']) {
+        final f = File('$path$suffix');
+        if (f.existsSync()) {
+          try {
+            f.deleteSync();
+          } on FileSystemException {
+            // se limpiará en el próximo snapshot
+          }
+        }
+      }
+    }
   }
 }
 

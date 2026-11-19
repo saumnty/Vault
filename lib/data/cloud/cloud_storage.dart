@@ -89,6 +89,16 @@ class CloudSignInCancelledException extends CloudException {
   ]);
 }
 
+/// D78: el selector de cuentas de Google no respondió en el plazo
+/// (`GuardedSignIn`). La espera se libera; un resultado tardío se ignora.
+class CloudSignInTimeoutException extends CloudException {
+  const CloudSignInTimeoutException([
+    super.message =
+        'El selector de Google no respondió. Vuelve a intentarlo; si se '
+        'repite, cierra Kern del todo y ábrela de nuevo.',
+  ]);
+}
+
 /// Cuenta de Drive sin espacio (403 storageQuotaExceeded).
 class CloudQuotaExceededException extends CloudException {
   const CloudQuotaExceededException([

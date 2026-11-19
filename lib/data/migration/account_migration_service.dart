@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import '../../core/logging/vault_log.dart';
 import '../../core/session/session_ticket.dart';
 import '../cloud/cloud_storage.dart';
+import '../cloud/guarded_sign_in.dart';
 import '../models/sync_status.dart';
 import '../models/vault_item_model.dart';
 import '../repositories/vault_data_repository.dart';
@@ -156,8 +157,17 @@ class AccountMigrationService {
     int Function()? nowMs,
     this.freeSpaceMargin = 100 * 1024 * 1024,
     this.maxUploadRounds = 40,
+    Duration signInTimeout = GuardedSignIn.defaultTimeout,
   }) : _freeSpace = freeSpace ?? (() async => null),
+       _signInGate = GuardedSignIn(timeout: signInTimeout),
        _now = nowMs ?? (() => DateTime.now().millisecondsSinceEpoch);
+
+  /// D78: selector de Google con plazo (no deja `_running` colgado) y salida
+  /// con [pause].
+  final GuardedSignIn _signInGate;
+
+  /// D78: última fase registrada en el diagnóstico (transiciones).
+  MigrationPhase? _loggedPhase;
 
   final CloudStorage cloud;
   final VaultDataRepository items;
@@ -321,19 +331,40 @@ class AccountMigrationService {
   /// D67 (fase 8): con [sessionTicket] (la app) solo corre con la principal
   /// abierta y para, sin escribir nada más, en cuanto la sesión cambia
   /// (bloqueo u otra bóveda).
+  ///
+  /// D78: si ya está corriendo lanza [MigrationException] (antes volvía en
+  /// silencio y el botón «no hacía nada»).
   Future<void> resume() async {
-    if (_running) return;
+    if (_running) {
+      VaultLog.d('Cambio de cuenta: ya en curso', category: 'migration');
+      throw const MigrationException(
+        'El cambio de cuenta ya está en curso. Si no avanza, toca «Pausar» '
+        'y vuelve a intentarlo.',
+      );
+    }
     final SessionTicket? ticket;
     final provider = sessionTicket;
     if (provider != null) {
       ticket = provider();
-      if (ticket == null) return;
+      if (ticket == null) {
+        VaultLog.d(
+          'Cambio de cuenta no reanudado: bóveda no disponible',
+          category: 'migration',
+        );
+        return;
+      }
     } else {
       ticket = null;
     }
     bool stale() => ticket != null && !ticket.isValid;
     final first = await migration.load();
-    if (first == null || stale()) return;
+    if (first == null || stale()) {
+      VaultLog.d(
+        'Cambio de cuenta no reanudado: ${first == null ? 'no hay ninguno' : 'sesión cambiada'}',
+        category: 'migration',
+      );
+      return;
+    }
     _running = true;
     _cancelRequested = false;
     _token = CloudCancelToken();
@@ -344,6 +375,14 @@ class AccountMigrationService {
         final state = await migration.load();
         if (stale()) throw const _Stop();
         if (state == null) break;
+        if (state.phase != _loggedPhase) {
+          // D78: transición de fase en el diagnóstico (solo el nombre).
+          _loggedPhase = state.phase;
+          VaultLog.d(
+            'Cambio de cuenta: fase ${state.phase.name}',
+            category: 'migration',
+          );
+        }
         _emit(state, running: true);
         final next = await _step(state);
         if (!next) break;
@@ -421,6 +460,39 @@ class AccountMigrationService {
 
   // -------------------------------------------------------------- fase 1
 
+  /// D78 (§B.4): la sesión de Google debe ser la que espera la fase ([old]:
+  /// la cuenta anterior; si no, la nueva). Si no lo es, pausa SIN bajar nada
+  /// como «ausente» ni subir nada a otra cuenta. Sin la cuenta esperada
+  /// guardada (fila antigua) no se puede comprobar y se sigue como antes.
+  Future<void> _requireAccount(
+    MigrationState state, {
+    required bool old,
+  }) async {
+    final expected = old ? state.oldEmail : state.newEmail;
+    if (expected == null) return;
+    var current = cloud.currentAccountEmail;
+    current ??= (await cloud.signInSilently())?.email;
+    if (current != null &&
+        current.toLowerCase() == expected.toLowerCase()) {
+      return;
+    }
+    VaultLog.d(
+      'Cambio de cuenta en pausa: ${current == null ? 'sin sesión' : 'la sesión de Google cambió'} '
+      '(${state.phase.name})',
+      category: 'migration',
+    );
+    final which = old ? 'anterior' : 'nueva';
+    await _pause(
+      state,
+      current == null
+          ? 'En pausa: inicia sesión con la cuenta $which y toca «Reanudar».'
+          : 'En pausa: la sesión de Google cambió a otra cuenta. No se bajó '
+                'ni se subió nada a ella. Vuelve a la cuenta $which o '
+                'cancela.',
+    );
+    throw const _Stop();
+  }
+
   Future<void> _download(MigrationState state) async {
     await _requireNetwork(state);
     final all = await items.getAllItems();
@@ -461,6 +533,7 @@ class AccountMigrationService {
     progress(0);
     for (final item in missing) {
       _checkCancelled();
+      await _requireAccount(state, old: true);
       try {
         await fetcher.ensureLocal(
           item,
@@ -492,6 +565,7 @@ class AccountMigrationService {
     }
     for (final item in missingThumbs) {
       _checkCancelled();
+      await _requireAccount(state, old: true);
       try {
         await _downloadThumb(item);
       } on CloudNotFoundException {
@@ -564,6 +638,7 @@ class AccountMigrationService {
     }
     if (current != null) {
       await cloud.signOut();
+      VaultLog.d('Sesión de Google cerrada (cambio de cuenta)', category: 'auth');
       await prefs.setRecoveryUploadedSha('');
     }
     await _publishWaiting(
@@ -572,15 +647,20 @@ class AccountMigrationService {
     );
     final CloudAccount account;
     try {
-      account = await cloud.signIn();
+      // D78: con plazo (un selector que no responde ya no deja `_running`
+      // colgado) y con salida («Pausar»).
+      account = await _signInGate.signIn(cloud);
     } on CloudSignInCancelledException {
+      if (_cancelRequested) throw const _Cancelled();
       await _publishWaiting(
         state,
-        'No elegiste ninguna cuenta. Vuelve a intentarlo.',
+        'No elegiste ninguna cuenta. Vuelve a intentarlo. En iPhone, si '
+        'aparece la cuenta anterior ya elegida, toca «Usar otra cuenta».',
       );
       throw const _Stop();
     }
     if (account.email == old) {
+      VaultLog.d('Cambio de cuenta: se eligió la misma cuenta', category: 'auth');
       await cloud.signOut();
       await _publishWaiting(
         state,
@@ -677,7 +757,13 @@ class AccountMigrationService {
     var lastRemaining = -1;
     for (var round = 0; round < maxUploadRounds; round++) {
       _checkCancelled();
-      await sync.run(manual: true, force: true);
+      // D78: nunca se sube a una cuenta que no es la nueva.
+      await _requireAccount(state, old: false);
+      final outcome = await sync.run(manual: true, force: true);
+      if (outcome.kind == SyncRunKind.locked ||
+          outcome.kind == SyncRunKind.otherVault) {
+        throw const _Stop();
+      }
       _checkCancelled();
       final remaining = await _remainingUploads();
       status.value = status.value.copyWith(
@@ -748,6 +834,7 @@ class AccountMigrationService {
   }
 
   Future<bool> _finalize(MigrationState state) async {
+    await _requireAccount(state, old: false);
     final backup = await recoveryBackupProvider();
     // D60: nombres de la generación vigente (el snapshot se cifra con ella).
     final gen = await sync.currentKeyGen();
@@ -766,6 +853,7 @@ class AccountMigrationService {
         now: _now(),
       );
       await prefs.setRecoveryUploadedSha('');
+      await _requireAccount(state, old: false);
       await sync.run(manual: true, force: true);
       final b = await cloud.findByName(backupName);
       final s = await cloud.findByName(snapName);
@@ -798,45 +886,69 @@ class AccountMigrationService {
     }
     final old = state.oldEmail;
     final newEmail = state.newEmail;
-    await cloud.signOut();
-    final account = await cloud.signIn();
-    if (account.email != old) {
-      // Vuelve a la cuenta nueva y avisa.
-      await cloud.signOut();
-      await cloud.signIn();
-      throw MigrationException(
-        'Elegiste otra cuenta. Para borrar, inicia sesión con $old.',
-      );
-    }
-    var deleted = 0;
-    for (final f in await cloud.list()) {
-      if (_isVaultFile(f.name)) {
-        try {
-          await cloud.delete(f.id);
-          deleted++;
-        } on CloudNotFoundException {
-          // ya no estaba
-        }
-      }
-    }
-    VaultLog.d(
-      'Datos de la cuenta anterior borrados: $deleted',
-      category: 'migration',
-    );
-    if (await prefs.getOldAccountKept() == old) {
-      await prefs.clearOldAccountKept();
-    }
+    // D78 (como D73): try/finally; SIEMPRE se vuelve a la cuenta nueva y una
+    // cancelación del selector da un mensaje propio (antes salía una
+    // excepción de la nube, «No se pudo completar», y quedaba sin sesión).
+    Object? failure;
+    var finished = false;
     await cloud.signOut();
     try {
-      final back = await cloud.signIn();
-      if (back.email != newEmail) {
-        throw MigrationException(
-          'Datos borrados. Inicia sesión con $newEmail para seguir sincronizando.',
+      final CloudAccount account;
+      try {
+        account = await _signInGate.signIn(cloud);
+      } on CloudSignInCancelledException {
+        throw const MigrationException(
+          'No elegiste ninguna cuenta: no se borró nada.',
         );
       }
-    } finally {
-      await _finishClean();
+      if (account.email != old) {
+        throw MigrationException(
+          'Elegiste otra cuenta. Para borrar, inicia sesión con $old.',
+        );
+      }
+      var deleted = 0;
+      for (final f in await cloud.list()) {
+        if (_isVaultFile(f.name)) {
+          try {
+            await cloud.delete(f.id);
+            deleted++;
+          } on CloudNotFoundException {
+            // ya no estaba
+          }
+        }
+      }
+      VaultLog.d(
+        'Datos de la cuenta anterior borrados: $deleted',
+        category: 'migration',
+      );
+      if (await prefs.getOldAccountKept() == old) {
+        await prefs.clearOldAccountKept();
+      }
+      finished = true;
+    } on Object catch (e) {
+      failure = e;
     }
+    try {
+      if (cloud.currentAccountEmail == null ||
+          cloud.currentAccountEmail != newEmail) {
+        if (cloud.currentAccountEmail != null) await cloud.signOut();
+        final back = await _signInGate.signIn(cloud);
+        if (back.email != newEmail) {
+          failure ??= MigrationException(
+            'Datos borrados. Inicia sesión con $newEmail para seguir '
+            'sincronizando.',
+          );
+        }
+      }
+    } on Object catch (e) {
+      VaultLog.e('Volver a la cuenta nueva', e, 'migration');
+      failure ??= MigrationException(
+        '${finished ? 'Datos borrados. ' : ''}Inicia sesión con $newEmail '
+        'para seguir sincronizando.',
+      );
+    }
+    if (finished) await _finishClean();
+    if (failure != null) throw failure;
   }
 
   /// Conserva los datos de la cuenta anterior y termina.
@@ -879,7 +991,12 @@ class AccountMigrationService {
         'Ya se empezó a subir a esta cuenta: cancela o termina el cambio.',
       );
     }
-    if (_running) return;
+    if (_running) {
+      throw const MigrationException(
+        'El cambio de cuenta ya está en curso. Si no avanza, toca «Pausar» '
+        'y vuelve a intentarlo.',
+      );
+    }
     if (cloud.currentAccountEmail != null &&
         cloud.currentAccountEmail != state.oldEmail) {
       await cloud.signOut();
@@ -898,6 +1015,8 @@ class AccountMigrationService {
   void pause() {
     _cancelRequested = true;
     _token?.cancel();
+    // D78: salida si el selector de Google se quedó abierto sin responder.
+    _signInGate.abandon(category: 'migration');
   }
 
   /// Cancela el cambio y vuelve a la cuenta anterior sin perder nada:
@@ -930,7 +1049,15 @@ class AccountMigrationService {
       // Hay que volver a la cuenta anterior.
       if (current != null) await cloud.signOut();
       await prefs.setRecoveryUploadedSha('');
-      final account = await cloud.signIn();
+      final CloudAccount account;
+      try {
+        account = await _signInGate.signIn(cloud);
+      } on CloudSignInCancelledException {
+        throw MigrationException(
+          'No elegiste ninguna cuenta. Para cancelar inicia sesión con tu '
+          'cuenta anterior ($old).',
+        );
+      }
       if (account.email != old) {
         await cloud.signOut();
         throw MigrationException(
@@ -1010,10 +1137,12 @@ class AccountMigrationService {
   /// [abandonStayOnCurrent]). Devuelve el correo elegido, solo para la UI.
   Future<String?> signInCurrent() async {
     try {
-      return (await cloud.signIn()).email;
+      return (await _signInGate.signIn(cloud)).email;
     } on CloudSignInCancelledException {
-      VaultLog.d('Selector de Google cancelado', category: 'auth');
-      return null;
+      return null; // el selector ya lo registró
+    } on CloudException catch (e) {
+      // D78: el motivo en pantalla (plazo vencido, sin red...).
+      throw MigrationException(describeSyncError(e));
     }
   }
 

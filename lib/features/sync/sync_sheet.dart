@@ -1,35 +1,69 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
 import '../../data/cloud/cloud_storage.dart';
+import '../../data/migration/account_migration_service.dart'
+    show MigrationStatus;
 import '../../data/sync/sync_queue_repository.dart';
 import '../../data/sync/sync_service.dart';
 import '../../shared/widgets/app_buttons.dart';
 import '../../shared/widgets/blur_sheet.dart';
 import '../../shared/widgets/cloud_privacy_note.dart';
 import 'quota_bar.dart';
+import 'sync_actions.dart';
 
 /// Hoja "Sincronización" (mínimo de F5; el ajuste definitivo irá en F8).
-Future<void> showSyncSheet(BuildContext context, SyncService sync) {
+///
+/// D78: con [migrating] (cambio de cuenta sin terminar) «Iniciar sesión» y
+/// «Cerrar sesión» llevan a su pantalla ([onOpenMigration]) en lugar de
+/// cambiar la sesión por fuera; mismas guardas que Ajustes
+/// (`sync_actions.dart`).
+Future<void> showSyncSheet(
+  BuildContext context,
+  SyncService sync, {
+  ValueListenable<MigrationStatus>? migration,
+  ValueListenable<Object?>? rotationRecord,
+  VoidCallback? onOpenMigration,
+}) {
   return showBlurSheet<void>(
     context,
-    builder: (context) => SyncSheetContent(sync: sync),
+    builder: (context) => SyncSheetContent(
+      sync: sync,
+      migration: migration,
+      rotationRecord: rotationRecord,
+      onOpenMigration: onOpenMigration,
+    ),
   );
 }
 
-String _phaseText(SyncSummary s) => switch (s.phase) {
-  SyncPhase.running => 'Sincronizando…',
-  SyncPhase.offline => 'Sin conexión. Se reanudará al volver la red.',
-  SyncPhase.waitingWifi => 'Esperando Wi-Fi (solo Wi-Fi activado).',
-  SyncPhase.needsSignIn => 'Inicia sesión con Google para sincronizar.',
-  SyncPhase.quotaFull => 'Tu Google Drive no tiene espacio.',
-  SyncPhase.idle =>
-    s.accountEmail == null
-        ? 'Conecta tu cuenta de Google para respaldar tu bóveda cifrada.'
-        : (s.counts.total == 0 ? 'Todo está al día.' : 'En cola.'),
-};
+/// D78: «Todo está al día» SOLO si de verdad lo está (sin pausa, sin cola y
+/// sin archivos pendientes o sin comprobar en `vault_items`).
+String syncPhaseText(SyncSummary s) {
+  final pause = s.pauseReason;
+  if (pause != null && s.phase != SyncPhase.running) {
+    return 'En pausa: ${syncPauseText(pause)}.';
+  }
+  return switch (s.phase) {
+    SyncPhase.running => 'Sincronizando…',
+    SyncPhase.offline => 'Sin conexión. Se reanudará al volver la red.',
+    SyncPhase.waitingWifi => 'Esperando Wi-Fi (solo Wi-Fi activado).',
+    SyncPhase.needsSignIn => 'Inicia sesión con Google para sincronizar.',
+    SyncPhase.quotaFull => 'Tu Google Drive no tiene espacio.',
+    SyncPhase.idle =>
+      s.accountEmail == null
+          ? 'Conecta tu cuenta de Google para respaldar tu bóveda cifrada.'
+          : s.upToDate
+          ? 'Todo está al día.'
+          : s.cloud.unverified > 0
+          ? '${s.cloud.unverified} archivo(s) sin comprobar en esta cuenta.'
+          : s.cloud.noCopy > 0
+          ? '${s.cloud.noCopy} archivo(s) sin copia en ninguna parte.'
+          : 'En cola.',
+  };
+}
 
 String _kindLabel(SyncJobKind k) => switch (k) {
   SyncJobKind.file => 'Archivo',
@@ -40,9 +74,24 @@ String _kindLabel(SyncJobKind k) => switch (k) {
 };
 
 class SyncSheetContent extends StatefulWidget {
-  const SyncSheetContent({super.key, required this.sync});
+  const SyncSheetContent({
+    super.key,
+    required this.sync,
+    this.migration,
+    this.rotationRecord,
+    this.onOpenMigration,
+  });
 
   final SyncService sync;
+
+  /// D78: estado del cambio de cuenta (`null` = no disponible).
+  final ValueListenable<MigrationStatus>? migration;
+
+  /// D78: registro de la rotación de la llave (`null` = sin rotación).
+  final ValueListenable<Object?>? rotationRecord;
+
+  /// D78: abre la pantalla del cambio de cuenta (la hoja se cierra antes).
+  final VoidCallback? onOpenMigration;
 
   @override
   State<SyncSheetContent> createState() => _SyncSheetContentState();
@@ -82,10 +131,45 @@ class _SyncSheetContentState extends State<SyncSheetContent> {
     if (mounted) setState(() => _errors = errors);
   }
 
+  /// D78: mensaje del último toque (resultado o motivo del bloqueo), visible
+  /// en la propia hoja (una SnackBar quedaría debajo).
+  String? _notice;
+  bool _syncing = false;
+
+  bool get _migrating => widget.migration?.value.active ?? false;
+  bool get _rotating => widget.rotationRecord?.value != null;
+
+  /// D78: durante un cambio de cuenta, la sesión se cambia SOLO desde su
+  /// pantalla: se cierra la hoja y se abre.
+  bool _redirectToMigration() {
+    if (!accountBlockedByMigration(_sync, migrating: _migrating)) return false;
+    final open = widget.onOpenMigration;
+    if (open == null) {
+      setState(
+        () => _notice = accountActionBlockReason(_sync, migrating: true),
+      );
+      return true;
+    }
+    Navigator.of(context).maybePop();
+    open();
+    return true;
+  }
+
   Future<void> _signIn() async {
-    setState(() => _signingIn = true);
+    if (_redirectToMigration()) return;
+    final reason = accountActionBlockReason(_sync, rotating: _rotating);
+    if (reason != null) {
+      setState(() => _notice = reason);
+      return;
+    }
+    setState(() {
+      _signingIn = true;
+      _notice = null;
+    });
     try {
       await _sync.signIn();
+    } on SyncAccountActionBlockedException catch (e) {
+      if (mounted) setState(() => _notice = e.message);
     } on CloudException {
       // El mensaje queda en summary.lastMessage y se muestra abajo.
     } finally {
@@ -93,18 +177,65 @@ class _SyncSheetContentState extends State<SyncSheetContent> {
     }
   }
 
+  Future<void> _signOut() async {
+    if (_redirectToMigration()) return;
+    final reason = accountActionBlockReason(_sync, rotating: _rotating);
+    if (reason != null) {
+      setState(() => _notice = reason);
+      return;
+    }
+    try {
+      await _sync.signOut();
+      if (mounted) setState(() => _notice = 'Sesión cerrada.');
+    } on SyncAccountActionBlockedException catch (e) {
+      if (mounted) setState(() => _notice = e.message);
+    } on Object {
+      if (mounted) setState(() => _notice = 'No se pudo cerrar la sesión.');
+    }
+  }
+
+  Future<void> _syncNow() async {
+    setState(() {
+      _syncing = true;
+      _notice = null;
+    });
+    try {
+      final (_, text) = await runManualSync(_sync);
+      if (mounted) setState(() => _notice = text);
+    } finally {
+      if (mounted) setState(() => _syncing = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: Listenable.merge([_sync.summary, _sync.quota]),
+      listenable: Listenable.merge([
+        _sync.summary,
+        _sync.quota,
+        ?widget.migration,
+        ?widget.rotationRecord,
+      ]),
       builder: (context, _) {
         final s = _sync.summary.value;
         final signedIn = s.accountEmail != null;
+        final running = s.phase == SyncPhase.running;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            SheetHeader(title: 'Sincronización', message: _phaseText(s)),
+            SheetHeader(title: 'Sincronización', message: syncPhaseText(s)),
             _account(s),
+            if (_notice != null) ...[
+              const SizedBox(height: AppSpacing.sm),
+              Semantics(
+                liveRegion: true,
+                child: Text(
+                  _notice!,
+                  key: const ValueKey('sync-sheet-notice'),
+                  style: AppTypography.bodySecondary,
+                ),
+              ),
+            ],
             if (s.lastMessage != null) ...[
               const SizedBox(height: AppSpacing.sm),
               Semantics(
@@ -121,7 +252,7 @@ class _SyncSheetContentState extends State<SyncSheetContent> {
               const SizedBox(height: AppSpacing.lg),
               QuotaBar(quota: _sync.quota.value),
               const SizedBox(height: AppSpacing.lg),
-              _counts(s.counts),
+              _counts(s),
             ],
             const SizedBox(height: AppSpacing.lg),
             const CloudPrivacyNote(),
@@ -142,12 +273,25 @@ class _SyncSheetContentState extends State<SyncSheetContent> {
               },
             ),
             const SizedBox(height: AppSpacing.sm),
-            AppFilledButton(
-              label: 'Sincronizar ahora',
-              icon: Icons.sync,
-              busy: s.phase == SyncPhase.running,
-              onPressed: signedIn ? () => _sync.run(manual: true) : null,
-            ),
+            // D78: siempre se puede tocar; el resultado se dice arriba. Con
+            // una pasada en curso, «Detener» es la salida si se cuelga.
+            if (running)
+              AppTextButton(
+                key: const ValueKey('sync-sheet-stop'),
+                label: 'Detener la sincronización',
+                onPressed: () {
+                  _sync.stop();
+                  setState(() => _notice = 'Sincronización detenida.');
+                },
+              )
+            else
+              AppFilledButton(
+                key: const ValueKey('sync-sheet-sync-now'),
+                label: 'Sincronizar ahora',
+                icon: Icons.sync,
+                busy: _syncing,
+                onPressed: _syncNow,
+              ),
             if (_errors.isNotEmpty) ...[
               const SizedBox(height: AppSpacing.lg),
               Semantics(
@@ -187,12 +331,22 @@ class _SyncSheetContentState extends State<SyncSheetContent> {
             ),
           ),
         ),
-        AppTextButton(label: 'Cerrar sesión', onPressed: () => _sync.signOut()),
+        AppTextButton(
+          key: const ValueKey('sync-sheet-sign-out'),
+          label: 'Cerrar sesión',
+          onPressed: _signOut,
+        ),
       ],
     );
   }
 
-  Widget _counts(SyncCounts c) {
+  /// D78: pendientes y errores = cola ∪ archivos de `vault_items`.
+  Widget _counts(SyncSummary s) {
+    final c = SyncCounts(
+      pending: s.pendingTotal,
+      uploading: s.counts.uploading,
+      errors: s.errorTotal,
+    );
     Widget cell(String label, int n, Color color) => Expanded(
       child: Semantics(
         label: '$label: $n',

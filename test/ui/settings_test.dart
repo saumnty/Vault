@@ -403,12 +403,24 @@ void main() {
         find.text('Disponible al terminar el cambio de llave maestra'),
         findsOneWidget,
       );
-      for (final t in ['Cambiar PIN', 'Cerrar sesión de Google']) {
-        final tile = tester.widget<SettingsTile>(
-          find.ancestor(of: find.text(t), matching: find.byType(SettingsTile)),
-        );
-        expect(tile.onTap, isNull, reason: t);
-      }
+      final pinTile = tester.widget<SettingsTile>(
+        find.ancestor(
+          of: find.text('Cambiar PIN'),
+          matching: find.byType(SettingsTile),
+        ),
+      );
+      expect(pinTile.onTap, isNull);
+      // D78: «Cerrar sesión» ya no es un botón muerto: dice por qué y el
+      // toque lo explica sin cerrar la sesión.
+      const reason = 'No disponible: termina primero el cambio de llave maestra.';
+      expect(find.text(reason), findsOneWidget);
+      await tester.ensureVisible(find.text('Cerrar sesión de Google'));
+      await tester.tap(find.text('Cerrar sesión de Google'));
+      await tester.pumpAndSettle();
+      expect(find.text('Ahora no puedes cerrar sesión'), findsOneWidget);
+      await tester.tap(find.text('Entendido'));
+      await tester.pumpAndSettle();
+      expect(find.text('Cerrar sesión de Google'), findsOneWidget);
     });
 
     testWidgets('Comprobar mi código: vigente y no coincide', (tester) async {

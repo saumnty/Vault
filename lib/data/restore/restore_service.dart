@@ -34,6 +34,182 @@ enum RestoreProbeResult {
   invalid,
 }
 
+/// D78 (parte B, §B.6): lo que hay en la cuenta de Google, calculado del
+/// mismo `list()` del [RestoreService.probe]. SOLO conteos y tamaños: sin
+/// nombres, ids ni correos.
+@immutable
+class CloudInventory {
+  const CloudInventory({
+    this.backups = 0,
+    this.backupGens = const {},
+    this.bridges = 0,
+    this.snapshots = 0,
+    this.snapshotGens = const {},
+    this.snapshotBytes = 0,
+    this.files = 0,
+    this.fileBytes = 0,
+    this.thumbs = 0,
+    this.thumbBytes = 0,
+    this.quarantine = 0,
+    this.others = 0,
+  });
+
+  /// Respaldos de llaves (`recovery_backup[.kN].json`) y sus generaciones.
+  final int backups;
+  final Set<int> backupGens;
+
+  /// Puentes de una rotación.
+  final int bridges;
+
+  /// Índices (snapshots de la BD), sus generaciones y bytes.
+  final int snapshots;
+  final Set<int> snapshotGens;
+  final int snapshotBytes;
+  final int files;
+  final int fileBytes;
+  final int thumbs;
+  final int thumbBytes;
+
+  /// Archivos en cuarentena (`lost_*`).
+  final int quarantine;
+
+  /// Archivos que no son de Kern/Vault.
+  final int others;
+
+  bool get isEmpty =>
+      backups == 0 &&
+      bridges == 0 &&
+      snapshots == 0 &&
+      files == 0 &&
+      thumbs == 0 &&
+      quarantine == 0;
+
+  static CloudInventory of(Iterable<CloudFile> all) {
+    var backups = 0, bridges = 0, snapshots = 0, snapBytes = 0;
+    var files = 0, fileBytes = 0, thumbs = 0, thumbBytes = 0;
+    var quarantine = 0, others = 0;
+    final backupGens = <int>{};
+    final snapGens = <int>{};
+    for (final f in all) {
+      final info = CloudNames.parse(f.name);
+      switch (info?.kind) {
+        case null:
+          others++;
+        case CloudNameKind.recoveryBackup:
+          backups++;
+          backupGens.add(info!.gen);
+        case CloudNameKind.bridgeBackup:
+          bridges++;
+        case CloudNameKind.dbSnapshot:
+          snapshots++;
+          snapGens.add(info!.gen);
+          snapBytes += f.size;
+        case CloudNameKind.file:
+          files++;
+          fileBytes += f.size;
+        case CloudNameKind.thumb:
+          thumbs++;
+          thumbBytes += f.size;
+        case CloudNameKind.quarantine:
+          quarantine++;
+      }
+    }
+    return CloudInventory(
+      backups: backups,
+      backupGens: backupGens,
+      bridges: bridges,
+      snapshots: snapshots,
+      snapshotGens: snapGens,
+      snapshotBytes: snapBytes,
+      files: files,
+      fileBytes: fileBytes,
+      thumbs: thumbs,
+      thumbBytes: thumbBytes,
+      quarantine: quarantine,
+      others: others,
+    );
+  }
+
+  /// Línea de diagnóstico: solo números.
+  String get logLine =>
+      'respaldos=$backups, puentes=$bridges, índices=$snapshots, '
+      'archivos=$files, miniaturas=$thumbs, cuarentena=$quarantine, '
+      'otros=$others';
+}
+
+/// Tamaño legible sin depender de la UI (KB/MB con una cifra).
+String _size(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).round()} KB';
+  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+}
+
+String _cifrados(int n) =>
+    n == 1 ? '1 archivo cifrado' : '$n archivos cifrados';
+
+/// D78 (§B.6): título y mensaje de «no se puede restaurar» que dicen QUÉ se
+/// encontró (en vez del genérico «No hay respaldo»). Sin datos personales.
+(String, String) describeRestoreProbe(
+  RestoreProbeResult result,
+  CloudInventory? inv,
+) {
+  const elsewhere =
+      'Si tu bóveda sigue en otro teléfono, ábrela allí: se completará sola '
+      'al comprobar la copia en la nube.';
+  switch (result) {
+    case RestoreProbeResult.found:
+      return ('Respaldo encontrado', 'Esta cuenta tiene un respaldo completo.');
+    case RestoreProbeResult.incomplete:
+      final files = inv == null || inv.files == 0
+          ? ''
+          : ' Hay ${_cifrados(inv.files)}.';
+      return (
+        'El respaldo está incompleto',
+        'Esta cuenta tiene el respaldo de tus llaves pero no el índice de tus '
+            'archivos, así que no hay nada que mostrar todavía.$files '
+            '$elsewhere',
+      );
+    case RestoreProbeResult.invalid:
+      final n = inv?.backups ?? 0;
+      return (
+        'El respaldo no es válido',
+        'Encontramos ${n <= 1 ? 'un respaldo de llaves' : '$n respaldos de llaves'} '
+            'en esta cuenta, pero no se puede leer.',
+      );
+    case RestoreProbeResult.noBackup:
+      if (inv == null || inv.isEmpty) {
+        return (
+          'No hay respaldo en esta cuenta de Google',
+          'Esta cuenta no tiene ningún dato de Kern. Prueba con otra cuenta o '
+              'crea una bóveda nueva.',
+        );
+      }
+      final parts = <String>[
+        if (inv.snapshots == 1)
+          'una copia de la base de datos (${_size(inv.snapshotBytes)})'
+        else if (inv.snapshots > 1)
+          '${inv.snapshots} copias de la base de datos '
+              '(${_size(inv.snapshotBytes)})',
+        if (inv.files > 0) _cifrados(inv.files),
+        if (inv.thumbs > 0)
+          inv.thumbs == 1 ? '1 miniatura' : '${inv.thumbs} miniaturas',
+      ];
+      final found = parts.isEmpty
+          ? 'algunos restos'
+          : parts.length == 1
+          ? parts.first
+          : '${parts.sublist(0, parts.length - 1).join(', ')} y ${parts.last}';
+      final only = inv.snapshots > 0 && inv.files == 0 && inv.thumbs == 0
+          ? 'Solo hay '
+          : 'Hay ';
+      return (
+        'Falta el respaldo de tus llaves',
+        '$only$found en esta cuenta, pero falta el respaldo de la llave, así '
+            'que no se puede restaurar desde aquí. $elsewhere',
+      );
+  }
+}
+
 /// Fases visibles de la restauración.
 enum RestoreStage { downloadingDb, opening, thumbnails, installing }
 
@@ -219,9 +395,27 @@ class RestoreService {
   /// los válidos y se emparejan con el snapshot de SU generación (el puente,
   /// con el de la generación que abre). Orden en que se prueban: principales
   /// de la mayor generación, puentes y principales menores.
+  ///
+  /// D78: deja en [lastInventory] lo que vio (solo conteos y tamaños) para
+  /// que el mensaje diga qué encontró, y lo registra (solo números).
   Future<RestoreProbeResult> probe() async {
     _forget();
     final all = await cloud.list();
+    final inventory = _inventory = CloudInventory.of(all);
+    final result = await _probe(all);
+    VaultLog.d(
+      'Restauración: ${result.name}; ${inventory.logLine}',
+      category: 'restore',
+    );
+    return result;
+  }
+
+  CloudInventory? _inventory;
+
+  /// D78: inventario del último [probe] (`null` = aún no se buscó).
+  CloudInventory? get lastInventory => _inventory;
+
+  Future<RestoreProbeResult> _probe(List<CloudFile> all) async {
     final backups = <(CloudFile, CloudNameInfo)>[
       for (final f in all)
         if (CloudNames.parse(f.name) case final info?

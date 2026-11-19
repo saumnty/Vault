@@ -54,6 +54,12 @@ class ScriptedRestoreService extends RestoreService {
   @override
   RestoreCodeMatch? get lastMatch => match;
 
+  /// D78: inventario que «vio» el probe (`null` = desconocido).
+  CloudInventory? inventory;
+
+  @override
+  CloudInventory? get lastInventory => inventory;
+
   @override
   String? get accountEmail => signedIn ? email : null;
 

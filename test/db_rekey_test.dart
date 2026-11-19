@@ -14,6 +14,8 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:vault/core/crypto/auth_controller.dart';
 import 'package:vault/core/crypto/key_hierarchy.dart';
+import 'package:vault/core/logging/diagnostics_buffer.dart';
+import 'package:vault/core/logging/diagnostics_store.dart';
 import 'package:vault/core/session/vault_session.dart';
 import 'package:vault/data/repositories/vault_database.dart';
 
@@ -214,6 +216,34 @@ void main() {
     final a = (await db.query('vault_items', where: "id = 'a'")).single;
     expect(a['cloudAccountTag'], 'tagA');
     expect(a['thumbAccountTag'], 'tagA');
+    await vdb.close();
+  });
+
+  test('D78: eventos del diagnóstico entrando durante el re-cifrado no '
+      'rompen la verificación (el almacén espera)', () async {
+    final vdb = newDb();
+    final buffer = DiagnosticsBuffer();
+    final store = DiagnosticsStore(
+      buffer: buffer,
+      dbProvider: () => vdb.database,
+      primaryOpen: () => true,
+      secondaryOpen: () => false,
+      suspended: () => vdb.isBusyForCopy,
+      flushDelay: const Duration(milliseconds: 1),
+    )..install();
+    buffer.add(DiagLevel.debug, 'sync', 'antes');
+    await store.flush();
+    final rekeying = rekey(vdb);
+    expect(vdb.isBusyForCopy, isTrue);
+    for (var i = 0; i < 20; i++) {
+      buffer.add(DiagLevel.debug, 'rotation', 'durante $i');
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+    }
+    await rekeying; // no lanza VaultRekeyVerificationException
+    await store.flush();
+    final db = await vdb.database;
+    expect((await db.query('diag_events')).length, 21);
+    store.uninstall();
     await vdb.close();
   });
 

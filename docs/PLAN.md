@@ -88,9 +88,9 @@ Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (RE
 | A1 | BD v11 incremental: `cloudAccountTag`/`thumbAccountTag`, `vault_meta` (sal), `diag_events`; tests v10→v11 (con datos, adicional, `rekeyTo`, restauración) | 🧪 D75 |
 | A2 | «Cambio de cuenta sin terminar» al abrir, `abandonStayOnCurrent`, fase desconocida, `resume` sin errores silenciosos, `onUnlocked` por pasos con la guarda primero | 🧪 D76/D77 |
 | A3 | «Verificar copia en la nube» (Ajustes y automática), caché/originales/flush solo con el tag de la cuenta actual | 🧪 D75 |
-| B4 | Guardas y mensajes de «Sincronizar ahora»/«Cerrar sesión» (Ajustes y hoja), `SyncRunOutcome`, cuenta comprobada dentro de la migración, selector con plazo (iOS) | ⬜ |
-| B5 | Banner en la cuadrícula | ⬜ |
-| B6 | Diagnóstico persistente cifrado con Borrar (tabla ya creada en v11) | ⬜ |
-| B7 | Mensaje de restauración con inventario | ⬜ |
+| B4 | Guardas y mensajes de «Sincronizar ahora»/«Cerrar sesión» (Ajustes y hoja), `SyncRunOutcome`, cuenta comprobada dentro de la migración, selector con plazo (iOS) | 🧪 D78 (`test/sync_guards_test.dart`, `test/ui/sync_guards_ui_test.dart`) |
+| B5 | Banner en la cuadrícula, «al día» honesto | 🧪 D79 (`test/ui/sync_guards_ui_test.dart`, `test/sync_guards_test.dart`) |
+| B6 | Diagnóstico persistente cifrado con Borrar (tabla ya creada en v11) | 🧪 D80 (`test/diagnostics_store_test.dart`, `test/db_rekey_test.dart`) |
+| B7 | Mensaje de restauración con inventario | 🧪 D81 (`test/restore_inventory_test.dart`) |
 
-Dónde retomar: parte A hecha (analyze y tests en verde; iPhone sin probar, pasos en REPORTE «Migración atascada (iPhone)»). Siguiente: parte B.
+Dónde retomar: partes A y B hechas (analyze y tests en verde; emulador e iPhone sin probar). Siguiente: pruebas a mano en el emulador con la cuenta de pruebas (REPORTE «Migración atascada (iPhone) — parte B») y después los pasos del iPhone.

@@ -521,10 +521,10 @@ class KeyRotationService {
       );
     }
     _maintenance = true;
-    final wasPaused = sync.pausedForMigration;
+    final wasPaused = sync.pausedForAccountCleanup;
     // La sincronización normal NO puede subir nada a la cuenta anterior
-    // mientras esté iniciada.
-    sync.pausedForMigration = true;
+    // mientras esté iniciada. D78: con su propio motivo de pausa (visible).
+    sync.pausedForAccountCleanup = true;
     sync.cancel();
     Object? failure;
     var deleted = 0;
@@ -572,7 +572,7 @@ class KeyRotationService {
         );
         VaultLog.e('Volver a la cuenta actual', e, 'rotation');
       }
-      sync.pausedForMigration = wasPaused;
+      sync.pausedForAccountCleanup = wasPaused;
       _maintenance = false;
       unawaited(
         sync.refreshCounts().catchError((Object _) {

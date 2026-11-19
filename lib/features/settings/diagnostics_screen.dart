@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -8,6 +9,9 @@ import '../../core/crypto/aes_gcm_backend.dart';
 import '../../core/crypto/argon2_backend.dart';
 import '../../core/crypto/key_rotation_store.dart';
 import '../../core/logging/diagnostics_buffer.dart';
+import '../../core/logging/diagnostics_store.dart';
+import '../../data/sync/sync_service.dart' show SyncSummary;
+import '../../shared/widgets/choice_sheet.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
@@ -65,6 +69,27 @@ String rotationDiagnosticsLabel(RotationRecord? rec) {
   return '${rec.phase.name}$resume (gen ${rec.fromGen} → ${rec.toGen})';
 }
 
+/// D78 (§B.5): estado de la nube para el Diagnóstico (solo lectura). Solo
+/// nombres de fase/motivo y conteos: ni correos, ni ids, ni nombres.
+String cloudDiagnosticsText({
+  required SyncSummary summary,
+  String? migrationPhase,
+  String? verificationLine,
+}) {
+  final c = summary.cloud;
+  final q = summary.counts;
+  return [
+    'Cambio de cuenta: ${migrationPhase ?? 'ninguno'}',
+    'Sesión de Google: ${summary.accountEmail == null ? 'no' : 'sí'}',
+    'Pausa: ${summary.pauseReason?.name ?? 'ninguna'}',
+    'Archivos: ${c.total}; solo en el teléfono=${c.localOnly}, '
+        'sin comprobar=${c.unverified}, sin copia=${c.noCopy}',
+    'Cola: pendientes=${q.pending}, subiendo=${q.uploading}, '
+        'con error=${q.errors}',
+    'Última verificación: ${verificationLine ?? 'ninguna en esta sesión'}',
+  ].join('\n');
+}
+
 /// Reúne el encabezado real (versión, SO, backends, modo).
 Future<DiagnosticsHeader> loadDiagnosticsHeader({
   AppVersionLoader versionLoader = loadAppVersion,
@@ -106,12 +131,21 @@ class DiagnosticsScreen extends StatefulWidget {
   const DiagnosticsScreen({
     super.key,
     this.buffer,
+    this.store,
     this.headerLoader = loadDiagnosticsHeader,
+    this.cloudStateLoader,
   });
 
   /// Por defecto [DiagnosticsBuffer.instance].
   final DiagnosticsBuffer? buffer;
+
+  /// D78: diagnóstico persistente. Por defecto [DiagnosticsStore.instance]
+  /// (solo si no se inyecta [buffer]); `null` = solo la memoria.
+  final DiagnosticsStore? store;
   final Future<DiagnosticsHeader> Function() headerLoader;
+
+  /// D78: estado de la nube (solo conteos y nombres de fase; sin datos).
+  final Future<String> Function()? cloudStateLoader;
 
   @override
   State<DiagnosticsScreen> createState() => _DiagnosticsScreenState();
@@ -120,7 +154,14 @@ class DiagnosticsScreen extends StatefulWidget {
 class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   late final DiagnosticsBuffer _buffer =
       widget.buffer ?? DiagnosticsBuffer.instance;
+  late final DiagnosticsStore? _store =
+      widget.store ??
+      (widget.buffer == null ? DiagnosticsStore.instance : null);
   DiagnosticsHeader? _header;
+  String? _cloudState;
+  List<DiagEntry> _entries = const [];
+  bool _reloading = false;
+  bool _reloadAgain = false;
 
   @override
   void initState() {
@@ -128,11 +169,80 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     widget.headerLoader().then((h) {
       if (mounted) setState(() => _header = h);
     });
+    final cloud = widget.cloudStateLoader;
+    if (cloud != null) {
+      cloud().then(
+        (t) {
+          if (mounted) setState(() => _cloudState = t);
+        },
+        onError: (Object _) {
+          // sin estado de la nube
+        },
+      );
+    }
+    _entries = _buffer.entries;
+    _buffer.revision.addListener(_reload);
+    unawaited(_reload());
+  }
+
+  @override
+  void dispose() {
+    _buffer.revision.removeListener(_reload);
+    super.dispose();
+  }
+
+  Future<void> _reload() async {
+    final store = _store;
+    if (store == null) {
+      if (mounted) setState(() => _entries = _buffer.entries);
+      return;
+    }
+    if (_reloading) {
+      _reloadAgain = true;
+      return;
+    }
+    _reloading = true;
+    try {
+      do {
+        _reloadAgain = false;
+        final list = await store.entries();
+        if (mounted) setState(() => _entries = list);
+      } while (_reloadAgain && mounted);
+    } finally {
+      _reloading = false;
+    }
   }
 
   String _fullText() {
     final h = _header?.toText() ?? '';
-    return '$h\n\n${_buffer.export()}'.trim();
+    final c = _cloudState == null ? '' : '\n$_cloudState';
+    final lines = _entries.map((e) => e.format()).join('\n');
+    return '$h$c\n\n$lines'.trim();
+  }
+
+  /// D78: «Borrar diagnóstico» (con confirmación): tabla y memoria.
+  Future<void> _clear() async {
+    final ok = await showConfirmSheet(
+      context,
+      title: '¿Borrar el diagnóstico?',
+      message:
+          'Se borran todos los eventos guardados en este teléfono. No afecta '
+          'a tus archivos ni a la nube.',
+      confirmLabel: 'Borrar diagnóstico',
+      destructive: true,
+    );
+    if (!ok || !mounted) return;
+    final store = _store;
+    if (store != null) {
+      await store.clearAll();
+    } else {
+      _buffer.clear();
+    }
+    await _reload();
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Diagnóstico borrado')));
   }
 
   Future<void> _copy() async {
@@ -176,10 +286,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                   constraints: const BoxConstraints(
                     maxWidth: AppSizes.contentMaxWidth,
                   ),
-                  child: ValueListenableBuilder<int>(
-                    valueListenable: _buffer.revision,
-                    builder: (context, _, _) => _body(),
-                  ),
+                  child: _body(),
                 ),
               ),
             ),
@@ -190,7 +297,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   }
 
   Widget _body() {
-    final entries = _buffer.entries;
+    final entries = _entries;
     return Padding(
       padding: AppSpacing.page,
       child: Column(
@@ -198,8 +305,17 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         children: [
           if (_header != null)
             Padding(
-              padding: const EdgeInsets.only(bottom: AppSpacing.md),
+              padding: const EdgeInsets.only(bottom: AppSpacing.sm),
               child: Text(_header!.toText(), style: AppTypography.log),
+            ),
+          if (_cloudState != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.md),
+              child: Text(
+                _cloudState!,
+                key: const ValueKey('diagnostics-cloud-state'),
+                style: AppTypography.log,
+              ),
             ),
           Expanded(
             child: entries.isEmpty
@@ -222,12 +338,22 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                   ),
           ),
           const SizedBox(height: AppSpacing.md),
-          const Text(
-            'No contiene nombres de archivo, rutas, correos ni claves.',
+          Text(
+            _store == null
+                ? 'No contiene nombres de archivo, rutas, correos ni claves.'
+                : 'No contiene nombres de archivo, rutas, correos ni claves. '
+                      'Se guardan los últimos 500 eventos, cifrados, solo en '
+                      'este teléfono.',
             style: AppTypography.caption,
           ),
           const SizedBox(height: AppSpacing.md),
           AppFilledButton(label: 'Copiar', icon: Icons.copy, onPressed: _copy),
+          const SizedBox(height: AppSpacing.sm),
+          AppTextButton(
+            key: const ValueKey('diagnostics-clear'),
+            label: 'Borrar diagnóstico',
+            onPressed: _clear,
+          ),
         ],
       ),
     );

@@ -17,7 +17,9 @@ import '../gallery/gallery_picker_screen.dart';
 import '../gallery/import_options_sheet.dart';
 import '../gallery/import_progress_sheet.dart';
 import '../gallery/originals_pending_banner.dart';
+import '../settings/account_migration_screen.dart';
 import '../settings/key_rotation_screen.dart';
+import '../sync/cloud_status_banner.dart';
 import '../settings/settings_environment.dart';
 import '../settings/settings_screen.dart';
 import '../settings/unfinished_migration_screen.dart';
@@ -133,6 +135,53 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
       ),
     );
     if (mounted) _controller.load(silent: true);
+  }
+
+  /// D78: hoja de Sincronización con las mismas guardas que Ajustes.
+  void _openSyncSheet() {
+    final sync = _services.sync;
+    if (sync == null) return;
+    unawaited(
+      showSyncSheet(
+        context,
+        sync,
+        migration: _services.migration?.status,
+        rotationRecord: _services.rotation?.auth.rotationStore.record,
+        onOpenMigration: _services.migration == null
+            ? null
+            : _openMigrationScreen,
+      ),
+    );
+  }
+
+  /// D78: la pantalla del cambio de cuenta (sin terminar, o en curso).
+  void _openMigrationScreen() {
+    final migration = _services.migration;
+    if (migration == null || !mounted) return;
+    final st = migration.status.value;
+    if (st.active && !st.running) {
+      unawaited(_showUnfinishedMigration());
+      return;
+    }
+    unawaited(
+      Navigator.of(context).push<void>(
+        AppPageRoute<void>(
+          builder: (_) => AccountMigrationScreen(service: migration),
+        ),
+      ),
+    );
+  }
+
+  /// D78: «Verificar copia» desde el aviso de la cuadrícula; el resultado en
+  /// pantalla.
+  Future<void> _verifyCloud() async {
+    final v = _services.verification;
+    if (v == null) return;
+    _snack('Comprobando tu copia en la nube…');
+    final r = await v.verify();
+    if (!mounted) return;
+    _snack(r.summary);
+    _controller.load(silent: true);
   }
 
   final TextEditingController _search = TextEditingController();
@@ -545,8 +594,7 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                           ? null
                           : SyncCloudButton(
                               sync: _services.sync!,
-                              onTap: () =>
-                                  showSyncSheet(context, _services.sync!),
+                              onTap: _openSyncSheet,
                             ),
                     ),
                     if (c.isFiltering && !c.isSelecting)
@@ -563,6 +611,21 @@ class _HomeVaultScreenState extends State<HomeVaultScreen> {
                         record: _services.rotation!.auth.rotationStore.record,
                         progress: _services.rotation!.progress,
                         onTap: _openRotation,
+                      ),
+                    // D78 (§B.3): un solo aviso de la nube, por prioridad
+                    // (el cambio de cuenta primero; con rotación, el suyo).
+                    if (_services.sync != null && !c.isSelecting)
+                      CloudStatusBanner(
+                        sync: _services.sync!,
+                        migration: _services.migration?.status,
+                        rotationRecord:
+                            _services.rotation?.auth.rotationStore.record,
+                        verification: _services.verification?.progress,
+                        onOpenMigration: _openMigrationScreen,
+                        onVerify: _services.verification == null
+                            ? null
+                            : _verifyCloud,
+                        onOpenSync: _openSyncSheet,
                       ),
                     if (_pendingOriginals > 0 && !c.isSelecting)
                       OriginalsPendingBanner(

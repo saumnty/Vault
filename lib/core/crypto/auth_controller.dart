@@ -1325,7 +1325,8 @@ class AuthController {
     // B5 (fase 8): al cambiar de bóveda, el diagnóstico en memoria de la
     // anterior (entradas tardías) no se ve en la nueva.
     if (_lastOpenedSlot != null && _lastOpenedSlot != slot) {
-      DiagnosticsBuffer.instance.clear();
+      // D78: también descarta lo pendiente de persistir (diagnóstico).
+      DiagnosticsBuffer.instance.slotChanged();
     }
     _lastOpenedSlot = slot;
   }

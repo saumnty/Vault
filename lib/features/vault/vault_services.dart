@@ -9,6 +9,8 @@ import 'package:path/path.dart' as p;
 
 import '../../core/crypto/auth_controller.dart';
 import '../../core/crypto/secure_kv_store.dart';
+import '../../core/logging/diagnostics_buffer.dart';
+import '../../core/logging/diagnostics_store.dart';
 import '../../core/services/app_paths.dart';
 import '../../core/services/cache_manager.dart';
 import '../../core/services/plain_temp_manager.dart';
@@ -427,6 +429,11 @@ class VaultServices {
         // D76: cada paso aislado (un fallo no impide los demás) y la guarda
         // del cambio de cuenta PRIMERO, antes de cualquier purga.
         await runUnlockSteps(stillValid: () => t.isValid, [
+          // D78: lo registrado con la sesión bloqueada se escribe ahora en el
+          // diagnóstico persistente.
+          UnlockStep('diagnóstico', () async {
+            await DiagnosticsStore.instance?.flush();
+          }),
           // Cambio de cuenta a medias: pausa la sincronización y la caché.
           // NO se reanuda solo: la raíz muestra «Cambio de cuenta sin
           // terminar» y el usuario elige (D76).
@@ -492,6 +499,16 @@ class VaultServices {
     final session = VaultSession();
     final cloud = CloudProvider.instance;
     final prefsStore = FlutterSecureKeyValueStore();
+    // D78: diagnóstico persistente (cifrado en la BD de la principal; nada de
+    // la adicional; en pausa mientras la BD se re-cifra o se copia).
+    final diagnostics = DiagnosticsStore.instance ??= DiagnosticsStore(
+      buffer: DiagnosticsBuffer.instance,
+      dbProvider: () => VaultDatabase.instance.database,
+      primaryOpen: () => session.isUnlockedAs(VaultSlot.primary),
+      secondaryOpen: () => session.isUnlockedAs(VaultSlot.secondary),
+      suspended: () => VaultDatabase.instance.isBusyForCopy,
+    );
+    diagnostics.install();
     // D75: tag (hash con sal) de la cuenta de Google de la sesión.
     final tagger = CloudAccountTagger(
       cloud: cloud,
@@ -673,6 +690,8 @@ class VaultServices {
       // D67: la sincronización es solo de la principal (con la secundaria
       // abierta no corre ninguna pasada).
       isUnlocked: PrimaryGates.unlocked(session),
+      // D78: con la adicional abierta, `run` no dice «bloqueada».
+      isOtherVaultOpen: () => session.isUnlockedAs(VaultSlot.secondary),
       resolvePath: AppPaths.resolve,
       recoveryBackupProvider: () => AuthController().exportRecoveryBackup(),
       snapshotProvider: () => VaultDatabase.instance.exportEncryptedSnapshot(),
