@@ -9,14 +9,19 @@ import '../../shared/format.dart';
 import '../../shared/widgets/app_buttons.dart';
 import '../../shared/widgets/choice_sheet.dart';
 import '../vault/services/trash_service.dart';
+import '../vault/vault_services.dart' show ThumbnailLoader;
+import '../vault/widgets/thumbnail_view.dart';
 
 /// Ajustes > Papelera: lo que se borró de la bóveda, restaurable durante
 /// [kTrashRetentionDays] días. Pasado ese plazo se elimina solo (al
 /// desbloquear), también de Google Drive.
 class TrashScreen extends StatefulWidget {
-  const TrashScreen({super.key, required this.service});
+  const TrashScreen({super.key, required this.service, this.thumbnailLoader});
 
   final TrashService service;
+
+  /// Mismo cargador (LRU) que usa la cuadrícula. `null` = solo ícono.
+  final ThumbnailLoader? thumbnailLoader;
 
   @override
   State<TrashScreen> createState() => _TrashScreenState();
@@ -211,6 +216,31 @@ class _TrashScreenState extends State<TrashScreen> {
     );
   }
 
+  static const double _thumbSize = 64;
+
+  /// Carpeta: ícono. Archivo: su miniatura (ThumbnailView ya pone el ícono por
+  /// tipo si no hay miniatura y la insignia ▶ + duración en videos).
+  Widget _leading(TrashEntry e) {
+    final item = e.item;
+    final loader = widget.thumbnailLoader;
+    if (e.isFolder || item == null || loader == null) {
+      return SizedBox(
+        width: _thumbSize,
+        height: _thumbSize,
+        child: Icon(
+          e.isFolder ? Icons.folder_outlined : Icons.insert_drive_file_outlined,
+          color: AppColors.accentLight,
+        ),
+      );
+    }
+    return SizedBox(
+      key: ValueKey('trash-thumb-${e.id}'),
+      width: _thumbSize,
+      height: _thumbSize,
+      child: ThumbnailView(item: item, loader: loader, radius: AppRadii.smAll),
+    );
+  }
+
   Widget _row(TrashEntry e) {
     return Semantics(
       container: true,
@@ -228,12 +258,7 @@ class _TrashScreenState extends State<TrashScreen> {
           ),
           child: Row(
             children: [
-              Icon(
-                e.isFolder
-                    ? Icons.folder_outlined
-                    : Icons.insert_drive_file_outlined,
-                color: AppColors.accentLight,
-              ),
+              _leading(e),
               const SizedBox(width: AppSpacing.md),
               Expanded(
                 child: ExcludeSemantics(

@@ -1101,6 +1101,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       MaterialPageRoute<void>(
                                         builder: (_) => TrashScreen(
                                           service: widget.services.trash!,
+                                          thumbnailLoader:
+                                              widget.services.thumbnailLoader,
                                         ),
                                       ),
                                     ),

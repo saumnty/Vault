@@ -95,3 +95,10 @@ Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (RE
 | B6b | BUG-1: diagnóstico que dejaba de guardar. Sin esperas sin fin, reintento con espera creciente, «no pudo guardar N eventos» en la pantalla, desbloqueo sin esperarlo | 🧪 D83 (`test/diagnostics_store_test.dart`, grupo D83); emulador sin repetir |
 
 Dónde retomar: partes A y B hechas, más la corrección del diagnóstico (D83). Analyze y tests en verde; emulador e iPhone sin probar. Siguiente: pruebas a mano en el emulador con la cuenta de pruebas (REPORTE «Migración atascada (iPhone) — parte B») y después los pasos del iPhone.
+
+### v2.1 (2026-11-19)
+| Paso | Qué | Estado |
+|---|---|---|
+| 1 | Miniaturas en la Papelera con el mismo cargador LRU, ▶ + duración en videos, ícono de respaldo; verificado que nada purga las miniaturas de lo que está en la Papelera | 🧪 D84 (`test/v21_test.dart`, `test/ui/trash_screen_test.dart`) |
+| 2 | Búsqueda por etiqueta (sin mayúsculas ni acentos), combinable con filtros, sin la Papelera, sin migración | 🧪 D85 (`test/v21_test.dart`, `test/f9_filters_controller_test.dart`) |
+| 3 | Pruebas en emulador e iPhone | ⏳ REPORTE «Pruebas de iPhone v2.1» |

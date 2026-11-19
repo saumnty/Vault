@@ -69,9 +69,17 @@ class VaultBrowserController extends ChangeNotifier {
 
   /// Carpetas primero, luego archivos; filtrado por la búsqueda.
   List<BrowserEntry> get entries {
-    final q = _query.trim().toLowerCase();
-    bool match(BrowserEntry e) => q.isEmpty || e.name.toLowerCase().contains(q);
-    return [..._folders.where(match), ..._files.where(match)];
+    final q = TagRepository.fold(_query.trim());
+    bool match(BrowserEntry e) =>
+        q.isEmpty || TagRepository.fold(e.name).contains(q);
+    // v2.1: un archivo también coincide si el nombre de una de sus etiquetas
+    // coincide. Con filtros la BD ya aplicó el texto (nombre o etiqueta).
+    bool matchFile(FileEntry e) =>
+        q.isEmpty ||
+        isFiltering ||
+        match(e) ||
+        _tagMatchIds.contains(e.item.id);
+    return [..._folders.where(match), ..._files.where(matchFile)];
   }
 
   bool get hasAnyContent => _folders.isNotEmpty || _files.isNotEmpty;
@@ -127,6 +135,7 @@ class VaultBrowserController extends ChangeNotifier {
                   : (i) => itemMatchesKind(i, _filter.kind!),
             )
           : await repo.getItemsByFolder(folderId);
+      _tagMatchIds = global ? const {} : await _tagMatchesFor(_query);
       final crumbs = folderId == null
           ? const <FolderModel>[]
           : await repo.getBreadcrumbs(folderId!);
@@ -169,8 +178,34 @@ class VaultBrowserController extends ChangeNotifier {
     if (value == _query) return;
     _query = value;
     notifyListeners();
-    // En modo filtros la búsqueda por nombre se hace en la BD.
-    if (isFiltering) load(silent: true);
+    // En modo filtros la búsqueda (nombre o etiqueta) se hace en la BD.
+    if (isFiltering) {
+      load(silent: true);
+    } else {
+      _refreshTagMatches();
+    }
+  }
+
+  /// Archivos cuyas etiquetas coinciden con la búsqueda (sin filtros activos;
+  /// la cuadrícula filtra la carpeta actual en memoria).
+  Set<String> _tagMatchIds = const {};
+
+  Future<Set<String>> _tagMatchesFor(String query) async {
+    final tags = services.tags;
+    if (tags == null || query.trim().isEmpty) return const {};
+    try {
+      return await tags.itemIdsByTagText(query);
+    } on Object {
+      return const {}; // best-effort: queda la búsqueda por nombre
+    }
+  }
+
+  Future<void> _refreshTagMatches() async {
+    final q = _query;
+    final ids = await _tagMatchesFor(q);
+    if (_disposed || q != _query) return; // llegó tarde
+    _tagMatchIds = ids;
+    notifyListeners();
   }
 
   /// Aplica filtros (etiquetas/tipo/fechas). Con filtros la vista es una
@@ -210,7 +245,11 @@ class VaultBrowserController extends ChangeNotifier {
     } else {
       await tags.removeTag(ids, tagId);
     }
-    if (isFiltering) await load(silent: true);
+    if (isFiltering) {
+      await load(silent: true);
+    } else if (_query.trim().isNotEmpty) {
+      _tagMatchIds = await _tagMatchesFor(_query);
+    }
     notifyListeners();
   }
 

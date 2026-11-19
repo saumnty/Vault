@@ -850,3 +850,30 @@ Pruebas nuevas en `test/diagnostics_store_test.dart` (grupo «D83»):
 * pantalla con el aviso, que desaparece al recuperarse.
 
 **Para probar en el emulador (cuenta de pruebas):** repetir la secuencia de BUG-1: importar, `adb install -r` y cancelar el cambio de cuenta. Después abrir Diagnóstico tras cada desbloqueo: deben aparecer «Arranque de la app» y los eventos de migración y verificación. Si sale la línea roja «no pudo guardar», copiar el texto y mandarlo: dice el tipo de error (sin datos).
+
+## v2.1 (2026-11-19, D84–D85)
+
+### Qué se hizo
+* **Miniaturas en la Papelera:** cada archivo muestra su miniatura (64 px) con el mismo `EncryptedThumbnailLoader` (LRU) de la cuadrícula; sin miniatura, ícono por tipo; videos con ▶ y duración; carpetas con su ícono. Revisado: ninguna purga (`CacheManager`, Papelera, regeneración, rotación, restauración) quita miniaturas de lo que está en la Papelera; al eliminar definitivamente se borran como antes. Sin migración.
+* **Búsqueda por etiqueta:** el campo de búsqueda casa con el nombre del archivo o con el de cualquiera de sus etiquetas, sin distinguir mayúsculas ni acentos, también combinado con los filtros (Y). La Papelera sigue sin aparecer. `tagIds` y los filtros no cambian. Sin migración (normalización en Dart).
+
+### Archivos
+`lib/data/trash/trash_repository.dart`, `lib/features/settings/trash_screen.dart`, `lib/features/settings/settings_screen.dart`, `lib/data/tags/tag_repository.dart`, `lib/features/vault/vault_browser_controller.dart`; tests `test/v21_test.dart`, `test/ui/trash_screen_test.dart`, `test/f9_filters_controller_test.dart`.
+
+### Resultados
+`flutter analyze` sin avisos; `flutter test --timeout 3x`: 1340 en verde; `flutter build apk --debug` (ver informe). Sin probar en emulador ni iPhone.
+
+### Límites
+* La búsqueda ignora acentos también en nombres de archivo (antes solo mayúsculas). `ñ` no equivale a `n`.
+* Las carpetas solo casan por nombre. El texto de ayuda del campo sigue siendo «Buscar en esta carpeta» (con filtros la búsqueda es global, como antes).
+* Coste de la búsqueda con texto: compara en Dart todos los archivos vivos; correcto para bóvedas personales.
+
+### Pruebas de iPhone v2.1
+(Con la build nueva instalada ENCIMA de la actual; nunca desinstalar la app.)
+1. **Miniaturas en la Papelera.** Ajustes > Papelera, con al menos una foto, un video y una carpeta borrados (bórralos antes si hace falta). Debe verse la miniatura de la foto y del video; el video con ▶ y su duración; la carpeta con ícono de carpeta. Un archivo sin miniatura (p. ej. un PDF) muestra su ícono por tipo. Al abrir la pantalla las miniaturas aparecen con un breve fundido, sin cuelgues.
+2. **Se conservan.** Con esos elementos en la Papelera, Ajustes > Almacenamiento > «Regenerar miniaturas que faltan» y bloquea/desbloquea: las miniaturas siguen ahí. Restaura la foto: en la cuadrícula conserva su miniatura.
+3. **Eliminar definitivamente.** Elimina uno desde la Papelera: desaparece de la lista; no hay errores.
+4. **Búsqueda por etiqueta.** Crea/usa la etiqueta «Vacaciones» en 2 archivos (uno en una subcarpeta). En la cuadrícula toca la lupa y escribe `vacac`: aparecen los archivos de la carpeta actual con esa etiqueta (y los que tengan ese texto en el nombre). Prueba `VACACIONES` y, con una etiqueta «Música», `musica` y `MÚSICA`: deben dar lo mismo.
+5. **Con filtros.** Activa un filtro (p. ej. Tipo: Foto) y busca por el nombre de la etiqueta: salen solo las fotos con esa etiqueta, de todas las carpetas. Con la etiqueta como filtro de etiquetas más texto de otra etiqueta: solo archivos que cumplan ambas cosas.
+6. **Papelera excluida.** Manda a la Papelera un archivo etiquetado y busca la etiqueta: ya no aparece; al restaurarlo vuelve a aparecer.
+7. **Sin etiquetas.** Busca un texto que solo esté en el nombre de un archivo sin etiquetas: aparece. Busca texto inexistente: estado vacío sin errores.

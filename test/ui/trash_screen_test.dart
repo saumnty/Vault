@@ -1,4 +1,6 @@
 // Fase 5 (v2): pantalla Papelera y texto de confirmación de borrado.
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/core/services/app_paths.dart';
@@ -74,6 +76,55 @@ void main() {
     expect(find.textContaining('Quedan 25 días'), findsNWidgets(2));
     expect(find.textContaining('2 archivo(s)'), findsOneWidget);
     expect(find.text('Vaciar Papelera'), findsOneWidget);
+  });
+
+  testWidgets('archivos con miniatura (mismo cargador), video con ▶ y duración, '
+      'carpeta con ícono', (t) async {
+    await boot(t);
+    await t.runAsync(() async {
+      await env.addCloudItem('v', name: 'Clip.mp4', mime: 'video/mp4');
+      await env.addCloudItem('n', name: 'Sin.jpg', thumb: false);
+      final db = await env.vdb.database;
+      await db.update(
+        'vault_items',
+        {'durationMs': 65000},
+        where: 'id = ?',
+        whereArgs: ['v'],
+      );
+      await service.trash([
+        FileEntry((await env.items.getItem('v'))!),
+        FileEntry((await env.items.getItem('n'))!),
+      ]);
+    });
+    final asked = <String>[];
+    // 1x1 PNG.
+    final png = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+    );
+    usePhoneSize(t);
+    await t.pumpWidget(
+      testApp(
+        TrashScreen(
+          service: service,
+          thumbnailLoader: (item) async {
+            asked.add(item.id);
+            return MemoryImage(png);
+          },
+        ),
+      ),
+    );
+    await settle(t);
+    // Se pide miniatura de los archivos que la tienen, no de la carpeta ni
+    // del que no tiene.
+    expect(asked.toSet(), {'a', 'v'});
+    expect(find.byKey(const ValueKey('trash-thumb-a')), findsOneWidget);
+    expect(find.byKey(const ValueKey('trash-thumb-v')), findsOneWidget);
+    expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
+    expect(find.text('1:05'), findsOneWidget);
+    expect(find.byIcon(Icons.folder_outlined), findsOneWidget);
+    expect(find.byType(Image), findsNWidgets(2));
+    // Sin miniatura: ícono de respaldo por tipo.
+    expect(find.text('Sin.jpg'), findsOneWidget);
   });
 
   testWidgets('restaurar saca el elemento de la lista', (t) async {

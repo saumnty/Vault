@@ -14,6 +14,7 @@ class TrashEntry {
     required this.deletedAt,
     required this.itemCount,
     required this.bytes,
+    this.item,
   });
 
   /// Id del archivo o de la carpeta (= `trashRoot`).
@@ -27,6 +28,10 @@ class TrashEntry {
   /// Archivos que contiene (1 para un archivo).
   final int itemCount;
   final int bytes;
+
+  /// Fila del archivo (v2.1: miniatura y duración en la Papelera). `null`
+  /// en carpetas.
+  final VaultItemModel? item;
 }
 
 /// Acceso a datos de la papelera (v8: `deletedAt` + `trashRoot`).
@@ -148,6 +153,7 @@ class TrashRepository {
           deletedAt: i['deletedAt'] as int,
           itemCount: 1,
           bytes: (i['fileSize'] as int?) ?? 0,
+          item: VaultItemModel.fromMap(i),
         ),
       );
     }

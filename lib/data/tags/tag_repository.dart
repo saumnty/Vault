@@ -33,7 +33,8 @@ class DuplicateTagException implements Exception {
 enum KindFilter { photo, video, file }
 
 /// Filtros combinables. Todo lo indicado debe cumplirse (Y):
-/// * [text]: el nombre contiene el texto (sin distinguir mayúsculas);
+/// * [text]: el nombre del archivo O el nombre de alguna de sus etiquetas
+///   contiene el texto (sin distinguir mayúsculas ni acentos, v2.1 D85);
 /// * [tagIds]: el archivo tiene TODAS esas etiquetas;
 /// * [kind]: foto / video / otro archivo;
 /// * [from]/[to]: fecha de importación (día completo, ambos inclusive).
@@ -243,9 +244,69 @@ class TagRepository {
         'T00:00:00';
   }
 
-  /// Escapa `%`, `_` y `\` para usar el texto en un `LIKE ... ESCAPE '\'`.
-  static String likeEscape(String s) =>
-      s.replaceAll(r'\', r'\\').replaceAll('%', r'\%').replaceAll('_', r'\_');
+  /// Minúsculas y sin acentos, para comparar texto escrito por el usuario
+  /// (`Canción` == `cancion`). `ñ` se trata como letra distinta de `n`.
+  static String fold(String s) {
+    final lower = s.toLowerCase();
+    final b = StringBuffer();
+    for (final r in lower.runes) {
+      if (r >= 0x300 && r <= 0x36F) continue; // marca combinante suelta
+      final c = String.fromCharCode(r);
+      b.write(_foldMap[c] ?? c);
+    }
+    return b.toString();
+  }
+
+  static const Map<String, String> _foldMap = {
+    'á': 'a',
+    'à': 'a',
+    'â': 'a',
+    'ä': 'a',
+    'ã': 'a',
+    'å': 'a',
+    'é': 'e',
+    'è': 'e',
+    'ê': 'e',
+    'ë': 'e',
+    'í': 'i',
+    'ì': 'i',
+    'î': 'i',
+    'ï': 'i',
+    'ó': 'o',
+    'ò': 'o',
+    'ô': 'o',
+    'ö': 'o',
+    'õ': 'o',
+    'ú': 'u',
+    'ù': 'u',
+    'û': 'u',
+    'ü': 'u',
+    'ç': 'c',
+    'ý': 'y',
+    'ÿ': 'y',
+  };
+
+  /// Ids de los archivos vivos (no en la Papelera) con alguna etiqueta cuyo
+  /// nombre contiene [text] (sin mayúsculas ni acentos). Vacío si [text] lo
+  /// está.
+  Future<Set<String>> itemIdsByTagText(String text) async {
+    final q = fold(text.trim());
+    if (q.isEmpty) return const {};
+    final db = await _dbProvider();
+    final tags = await db.query('tags', columns: ['id', 'name']);
+    final tagIds = [
+      for (final t in tags)
+        if (fold(t['name'] as String).contains(q)) t['id'] as String,
+    ];
+    if (tagIds.isEmpty) return const {};
+    final marks = List.filled(tagIds.length, '?').join(',');
+    final rows = await db.rawQuery('''
+      SELECT DISTINCT it.itemId AS id FROM item_tags it
+        JOIN vault_items i ON i.id = it.itemId AND i.deletedAt IS NULL
+       WHERE it.tagId IN ($marks)
+      ''', tagIds);
+    return {for (final r in rows) r['id'] as String};
+  }
 
   /// Archivos (vivos, de TODAS las carpetas) que cumplen [filter], los más
   /// recientes primero. Con un filtro vacío devuelve todos.
@@ -256,11 +317,9 @@ class TagRepository {
     final db = await _dbProvider();
     final where = <String>['i.deletedAt IS NULL'];
     final args = <Object?>[];
-    final text = filter.text.trim();
-    if (text.isNotEmpty) {
-      where.add(r"i.name LIKE ? ESCAPE '\' COLLATE NOCASE");
-      args.add('%${likeEscape(text)}%');
-    }
+    // El texto se compara en Dart (sin acentos): se piden los nombres de las
+    // etiquetas junto a cada archivo, solo si hay texto.
+    final text = fold(filter.text.trim());
     if (filter.from != null) {
       final d = filter.from!;
       where.add('i.createdAt >= ?');
@@ -281,11 +340,24 @@ class TagRepository {
         ..addAll(filter.tagIds)
         ..add(filter.tagIds.length);
     }
-    final rows = await db.rawQuery(
-      'SELECT i.* FROM vault_items i WHERE ${where.join(' AND ')} '
+    final tagNames = text.isEmpty
+        ? ''
+        : ", (SELECT group_concat(t.name, char(10)) FROM item_tags it "
+              'JOIN tags t ON t.id = it.tagId WHERE it.itemId = i.id) '
+              'AS matchTagNames';
+    var rows = await db.rawQuery(
+      'SELECT i.*$tagNames FROM vault_items i WHERE ${where.join(' AND ')} '
       'ORDER BY i.createdAt DESC',
       args,
     );
+    if (text.isNotEmpty) {
+      rows = rows.where((r) {
+        if (fold(r['name'] as String? ?? '').contains(text)) return true;
+        final names = r['matchTagNames'] as String?;
+        if (names == null) return false;
+        return names.split('\n').any((n) => fold(n).contains(text));
+      }).toList();
+    }
     var items = rows.map(VaultItemModel.fromMap).toList();
     final k = filter.kind;
     if (k != null && kindMatcher != null) {

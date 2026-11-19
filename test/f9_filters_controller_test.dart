@@ -72,6 +72,46 @@ void main() {
     expect(ids(), isEmpty);
   });
 
+  Future<void> settleQuery() =>
+      Future<void>.delayed(const Duration(milliseconds: 100));
+
+  test('v2.1: sin filtros, la búsqueda también casa por etiqueta', () async {
+    // 'a' está etiquetada «Viajes»; 'c' no; 'b' está en otra carpeta.
+    c.setQuery('VIAJÉS'.replaceAll('É', 'E'));
+    await settleQuery();
+    expect(ids(), ['a']); // solo la carpeta actual
+    c.setQuery('viaj');
+    await settleQuery();
+    expect(ids(), ['a']);
+    c.setQuery('notas'); // por nombre, como siempre
+    await settleQuery();
+    expect(ids(), ['c']);
+    c.setQuery('');
+    await settleQuery();
+    expect(ids().toSet(), {'a', 'c'});
+    // Etiquetar 'c' con la búsqueda activa la hace aparecer.
+    c.setQuery('viajes');
+    await settleQuery();
+    await c.setTag(
+      [FileEntry((await env.items.getItem('c'))!)],
+      viajes.id,
+      on: true,
+    );
+    expect(ids().toSet(), {'a', 'c'});
+  });
+
+  test('v2.1: con filtros activos el texto casa por etiqueta (Y)', () async {
+    final fam = await tags.create('Familia');
+    await tags.addTag(['c'], fam.id);
+    await c.setFilter(const ItemFilter(kind: KindFilter.file));
+    c.setQuery('familia');
+    await settleQuery();
+    expect(ids(), ['c']); // tipo archivo Y etiqueta «Familia»
+    c.setQuery('viajes');
+    await settleQuery();
+    expect(ids(), isEmpty); // 'a' y 'b' no son «archivo»
+  });
+
   test('clearFilters vuelve a la carpeta actual', () async {
     await c.setFilter(ItemFilter(tagIds: {viajes.id}));
     await c.clearFilters();
