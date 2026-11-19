@@ -827,3 +827,26 @@ Pruebas automáticas (solo nubes falsas): `test/sync_guards_test.dart`, `test/ui
 
 ### Pasos para el iPhone
 Los mismos de la parte A (sección anterior). Añade: tras «Cancelar y quedarme en la cuenta principal», la cuadrícula muestra «Comprobando tu copia en la nube…» y luego, mientras suben, «Tus archivos no tienen copia en la nube · 2 archivo(s) solo están en este teléfono. Subiéndolos…»; cuando desaparece el aviso y el icono dice «al día», las 2 fotos están en la principal. Si algo falla, Ajustes > Acerca de > Diagnóstico conserva ahora los eventos aunque se bloquee: copia el texto (no contiene correos ni nombres) y mándalo.
+
+## Migración atascada (iPhone) — corrección del diagnóstico (2026-11-18, D83)
+**Lo que se vio en el emulador (BUG-1):** después de «[import] Importación iniciada» el Diagnóstico ya no mostró eventos nuevos (ni los del selector, ni los de la migración, ni los de la verificación, ni los «Arranque de la app» siguientes). Pasó tras instalar encima con `adb install -r` y cancelar un cambio de cuenta, y siguió así con varias sesiones, «Bloquear ahora» y forzar el cierre. «Borrar diagnóstico» lo arregló.
+
+**Lo que está demostrado:** en el código anterior, si UNA escritura del diagnóstico no terminaba nunca, todo `flush()` posterior y la lectura de la pantalla quedaban esperando para siempre, aunque la BD volviera a responder. Una prueba sobre el código anterior lo confirmó: `entries()` seguía sin volver 2 s después de que la BD respondiera, con 2 eventos atascados. Como el paso «diagnóstico» era el primero del desbloqueo y se esperaba, con él colgado no corrían la guarda del cambio de cuenta, la verificación ni el resto de pasos. Por eso faltaban justo los eventos de migración y verificación. Los errores de escritura se tragaban sin rastro.
+
+**Lo que es hipótesis:** qué hizo que la escritura se colgara en el emulador. Además, que el problema siguiera después de forzar el cierre (un proceso nuevo empieza sin nada colgado) y que «Borrar» lo arreglara no se explica del todo con lo anterior. No se ha reproducido el disparador exacto: ni la instalación encima ni la reubicación de la sesión. Revisado y descartado en las pruebas:
+* el anillo con AUTOINCREMENT: los ids nuevos son siempre los mayores y el DELETE solo quita los viejos;
+* un almacén viejo enganchado: hay una sola instancia por proceso y `install()` vuelve a enganchar;
+* `slotChanged` al desbloquear la misma bóveda: no se llama;
+* `suspended` atascado: lo pendiente sigue visible en la pantalla.
+
+**Corrección:** ninguna espera sin fin (tope de 10 s por operación). Si guardar falla, lo pendiente se conserva y se reintenta solo con espera creciente. La pantalla muestra en rojo «El diagnóstico no pudo guardar N eventos (tipo; M intentos). Se reintenta solo.», también al copiar. El desbloqueo ya no espera al diagnóstico. Un almacén re-creado ya no duplica eventos. Sin cambios de esquema.
+
+Pruebas nuevas en `test/diagnostics_store_test.dart` (grupo «D83»):
+* BD colgada y luego recuperada, sin perder ni duplicar nada;
+* fallo real de la BD a mitad, con reintento sin eventos nuevos;
+* límite de lo pendiente y conteo de lo descartado;
+* varios bloqueos y desbloqueos, con la copia del snapshot a mitad y el almacén re-creado;
+* suspendido largo;
+* pantalla con el aviso, que desaparece al recuperarse.
+
+**Para probar en el emulador (cuenta de pruebas):** repetir la secuencia de BUG-1: importar, `adb install -r` y cancelar el cambio de cuenta. Después abrir Diagnóstico tras cada desbloqueo: deben aparecer «Arranque de la app» y los eventos de migración y verificación. Si sale la línea roja «no pudo guardar», copiar el texto y mandarlo: dice el tipo de error (sin datos).

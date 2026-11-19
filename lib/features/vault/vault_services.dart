@@ -430,9 +430,12 @@ class VaultServices {
         // del cambio de cuenta PRIMERO, antes de cualquier purga.
         await runUnlockSteps(stillValid: () => t.isValid, [
           // D78: lo registrado con la sesión bloqueada se escribe ahora en el
-          // diagnóstico persistente.
+          // diagnóstico persistente. D83: SIN esperarlo: antes, un flush que
+          // no terminaba dejaba sin correr la guarda del cambio de cuenta, la
+          // verificación y el resto de pasos (y sin sus eventos).
           UnlockStep('diagnóstico', () async {
-            await DiagnosticsStore.instance?.flush();
+            final store = DiagnosticsStore.instance;
+            if (store != null) unawaited(store.flush());
           }),
           // Cambio de cuenta a medias: pausa la sincronización y la caché.
           // NO se reanuda solo: la raíz muestra «Cambio de cuenta sin

@@ -182,13 +182,35 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     }
     _entries = _buffer.entries;
     _buffer.revision.addListener(_reload);
+    _store?.health.addListener(_onHealth);
     unawaited(_reload());
   }
 
   @override
   void dispose() {
     _buffer.revision.removeListener(_reload);
+    _store?.health.removeListener(_onHealth);
     super.dispose();
+  }
+
+  /// D83: «el diagnóstico no pudo guardar N eventos» (solo conteos y tipo).
+  void _onHealth() {
+    if (!mounted) return;
+    final h = _store?.health.value;
+    final recovered = h != null && h.failures == 0 && _lastFailures > 0;
+    _lastFailures = h?.failures ?? 0;
+    setState(() {});
+    // Volvió a poder guardar: se relee la tabla (solo en esa transición, sin
+    // bucles mientras siga fallando).
+    if (recovered) unawaited(_reload());
+  }
+
+  int _lastFailures = 0;
+
+  String? get _healthText {
+    final h = _store?.health.value;
+    if (h == null || h.healthy) return null;
+    return h.describe();
   }
 
   Future<void> _reload() async {
@@ -205,7 +227,13 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     try {
       do {
         _reloadAgain = false;
-        final list = await store.entries();
+        List<DiagEntry> list;
+        try {
+          list = await store.entries();
+        } on Object {
+          // D83: nunca se queda sin refrescar: al menos la memoria.
+          list = _buffer.entries;
+        }
         if (mounted) setState(() => _entries = list);
       } while (_reloadAgain && mounted);
     } finally {
@@ -216,8 +244,10 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   String _fullText() {
     final h = _header?.toText() ?? '';
     final c = _cloudState == null ? '' : '\n$_cloudState';
+    final hs = _healthText;
+    final s = hs == null ? '' : '\n$hs';
     final lines = _entries.map((e) => e.format()).join('\n');
-    return '$h$c\n\n$lines'.trim();
+    return '$h$c$s\n\n$lines'.trim();
   }
 
   /// D78: «Borrar diagnóstico» (con confirmación): tabla y memoria.
@@ -315,6 +345,15 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                 _cloudState!,
                 key: const ValueKey('diagnostics-cloud-state'),
                 style: AppTypography.log,
+              ),
+            ),
+          if (_healthText != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.md),
+              child: Text(
+                _healthText!,
+                key: const ValueKey('diagnostics-store-health'),
+                style: AppTypography.log.copyWith(color: AppColors.danger),
               ),
             ),
           Expanded(

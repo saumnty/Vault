@@ -72,10 +72,30 @@ class DiagnosticsBuffer {
       } on Object {
         // el destino persistente nunca rompe el registro
       }
+    } else {
+      _undelivered.addLast(entry);
+      while (_undelivered.length > capacity) {
+        _undelivered.removeFirst();
+      }
     }
   }
 
+  /// D83: entradas registradas SIN destino persistente enganchado (p. ej. el
+  /// arranque antes del primer desbloqueo). El destino las recoge al
+  /// engancharse ([takeUndelivered]); así un destino re-creado no vuelve a
+  /// guardar lo que el anterior ya recibió (duplicados).
+  final Queue<DiagEntry> _undelivered = Queue<DiagEntry>();
+
+  /// D83: devuelve y olvida las entradas sin destino (de la más antigua a la
+  /// más reciente).
+  List<DiagEntry> takeUndelivered() {
+    final out = List<DiagEntry>.of(_undelivered);
+    _undelivered.clear();
+    return out;
+  }
+
   void clear() {
+    _undelivered.clear();
     if (_entries.isEmpty) return;
     _entries.clear();
     revision.value++;

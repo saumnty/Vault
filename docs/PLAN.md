@@ -92,5 +92,6 @@ Dónde retomar: Fase 1 PARADA. El usuario hace el simulacro de restauración (RE
 | B5 | Banner en la cuadrícula, «al día» honesto | 🧪 D79 (`test/ui/sync_guards_ui_test.dart`, `test/sync_guards_test.dart`) |
 | B6 | Diagnóstico persistente cifrado con Borrar (tabla ya creada en v11) | 🧪 D80 (`test/diagnostics_store_test.dart`, `test/db_rekey_test.dart`) |
 | B7 | Mensaje de restauración con inventario | 🧪 D81 (`test/restore_inventory_test.dart`) |
+| B6b | BUG-1: diagnóstico que dejaba de guardar. Sin esperas sin fin, reintento con espera creciente, «no pudo guardar N eventos» en la pantalla, desbloqueo sin esperarlo | 🧪 D83 (`test/diagnostics_store_test.dart`, grupo D83); emulador sin repetir |
 
-Dónde retomar: partes A y B hechas (analyze y tests en verde; emulador e iPhone sin probar). Siguiente: pruebas a mano en el emulador con la cuenta de pruebas (REPORTE «Migración atascada (iPhone) — parte B») y después los pasos del iPhone.
+Dónde retomar: partes A y B hechas, más la corrección del diagnóstico (D83). Analyze y tests en verde; emulador e iPhone sin probar. Siguiente: pruebas a mano en el emulador con la cuenta de pruebas (REPORTE «Migración atascada (iPhone) — parte B») y después los pasos del iPhone.
